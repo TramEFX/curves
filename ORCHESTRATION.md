@@ -1,0 +1,354 @@
+# Curves — Orchestration Document
+
+> **Living document.** This file is the source of truth for the current state of the Curves project. Update it whenever a decision is made, changed, or superseded. Section [Change Log](#change-log) must be appended on every material edit.
+
+---
+
+## 1. What Curves Is
+
+**Curves** is an **EQ-based effect sandbox**. A parametric EQ where the user draws shapes directly on the curve, and those shapes are *alive* — governed by physics, able to move, travel, and respond to audio.
+
+Core identity:
+
+- **Simple in front, deep underneath.** Straightforward, tank-like, sounds good *because* of rigorous engineering. All advanced parameters exist under the hood from day one, exposed only in an advanced submenu. Vital-style philosophy.
+- **The string pushes the parameters.** This is the central architectural inversion (see §3). Not "parameters render a curve" — the curve *is* the parameter source.
+- **Target audience:** the nerds and sound designers who will find sounds nobody else can. But it must remain playable and simple by default.
+- Early use cases: a chorus-like effect that doesn't rely on detuning (spectral motion instead of pitch motion); a creative toolbox for EDM sound design.
+
+**Name:** "Curves" — confirmed 2026-09-29 (formerly "Curiosity").
+
+---
+
+## 2. Product Vision (Feature Set)
+
+From the original brief, in priority order:
+
+1. **Parametric EQ with direct drawing** — shapes drawn on the curve are heard immediately.
+2. **Line/shape/curve generator** — generate shapes procedurally (see §7).
+3. **Multiple instances running in parallel paths** — semantic decision pending, leaning toward visual lanes over one control string (see §4, Open Decisions).
+4. **Unique physics attached to the line** — e.g., the "Flagpole" preset: highest frequency is an anchor; wind blows leftward down the visual EQ line and the drawn curve behaves as if blown. Other preset families fall out: viscosity, elasticity/spring-back, magnetic wells, tidal drift.
+5. **Slow variable wave function — shapes travel** across the frequency axis.
+6. **"Wave imprint" (later)** — a lightweight IR-like capture. Leaning toward: capture the *string state/motion* as the imprint. Freeze-at-capture semantics first.
+7. **Audio → string (the door, §8)** — audio creates a string; later, audio plays the string (sympathetic resonance).
+
+---
+
+## 3. Core Architecture
+
+### 3.1 The Central Inversion
+
+> "Normally parameters push the string. Here, the string pushes the parameters."
+
+The string is a **first-class object in the dataflow** — a live, shared medium:
+
+- The string is a fixed-resolution **node array** (log-spaced across frequency). Drawing simply writes displacement values into nodes.
+- A **physics engine owns the nodes.** Nothing else writes to them except through defined interfaces (drawing = displacement, forces = forces, audio = forces, generator = initial conditions).
+- The **filter bank reads the nodes** every block, forever. The engine never asks "what did the user draw" — only "what does the string look like right now."
+- Drawing, presets, wind forces, traveling shapes, audio analysis — all are just *writers* to the same nodes.
+
+### 3.2 The String Is a Real String
+
+The physics is an actual **1D damped wave equation** on the nodes, not a springy drawing surface:
+
+- Drawing = displacing the string; release lets it oscillate and settle.
+- Wind = a persistent force field along the frequency axis. Flagpole = wind + anchored end.
+- Traveling shapes = genuine wave propagation (reflects, interferes). The "slow variable wave function" becomes physics for free.
+- The detune-free chorus emerges naturally: a slowly vibrating string makes the whole spectrum sway — spectral motion instead of pitch motion.
+- Cost is trivial: finite-difference integration over N nodes, a few hundred multiply-adds per block at 256 nodes.
+
+### 3.3 The String as a Universal Parameter Bus
+
+Node values are stored **normalized** (−1..+1), not as dB. Any parameter can subscribe to the string:
+
+- Node f → gain of filter at f (the EQ — default mapping)
+- Node f → Q of filter at f
+- Future subscribers: pan, drive, delay time, etc. The EQ is just the first subscriber.
+
+This is what makes it a *sandbox* and not just an EQ.
+
+### 3.4 Visual String ≠ Control String
+
+Decoupled from day one:
+
+- **Visual string:** rendered at screen resolution for display and input.
+- **Control string:** fixed node count, deterministic, sample-rate-stable.
+
+Drawing deposits values into control nodes by sampling the drawn path *at node frequencies*. Visual resolution never changes what a drawing *means*, only its fidelity.
+
+---
+
+## 4. Resolution ("Precision Modes")
+
+256 nodes was deemed **not enough**. Node count is user-selectable via precision modes. Three costs scale independently and are exposed as a tuple (sim resolution / bank resolution / sim tick rate):
+
+| Mode (illustrative) | Sim nodes | Bank bands | Sim tick |
+|---|---|---|---|
+| Fine | 256 | 256 | per-sample |
+| Ultra | 512 | 512 | every 2–4 samples |
+| Analysis | 2048 | 512 | every 2–4 samples |
+
+- Physics sim scales linearly with nodes; running the sim every N samples with interpolation keeps high resolutions cheap. Nobody hears the difference on multi-millisecond string dynamics.
+- The **filter bank is the real CPU budget.** Every subscribed node is a live filter. At high band counts, use SVF/TPT-style filters (stable and cheap); naive biquad stacking produces gain errors between adjacent bands.
+- The bank always reads from the **control string**, never from the visual string.
+
+---
+
+## 5. Q, Line Shaping, and the Sim Boundary
+
+- **Per-node Q:** each node is a band — displacement = gain, Q = node Q. Editing scheme (proposed): vertical drag = gain, modifier-drag = Q.
+- **Line shaping (hard boundary, decided):** interpolation between nodes (linear, spline, power curve, sine-arc, etc.) is a **visual + deposit-layer concern only**. Drawing is sampled at node frequencies; the sim owns the nodes afterward. Physics never operates on shaped segments — sim state must never depend on rendering decisions.
+- Shaped lines (N control points + a curve law) double as a **shape generator primitive**: they degrade gracefully to node values.
+
+---
+
+## 6. Smoothing (The Sound of the Plugin)
+
+Airtight and boring by design — one mechanism:
+
+1. The string sim already produces smooth motion (that's what damping is). Don't sample it sparsely; avoid discontinuities into the parameter path.
+2. Every subscriber gets **one one-pole smoother** toward the current sim value, with a **per-subscriber time constant**. That is the entire smoothing system. Per-sample, fixed math, no state to corrupt.
+3. Advanced menu exposes: sim tick rate, per-subscriber smoothing time, optional **velocity coupling** (subscribers react to string velocity, not just position — toggles "sways gently" vs. "plucked aggressively").
+
+No crossfades, no lookup tables, no exception paths. One continuous, band-limited path from physics to filter coefficients with one deliberate filter on it.
+
+Rationale: a vibrating string means filter parameters are always in motion — that is frequency modulation of the filters, which produces sidebands. Whether that sounds lush or cheap is almost entirely the smoothing timescale. This is the single most important under-the-hood knob.
+
+---
+
+## 7. Shape Generator & Shape Library
+
+All shape origins are the **same object**: a node array + metadata (Q profile, line law, source tag).
+
+Origins:
+
+1. **Drawn** by the user.
+2. **Physics frames** — the generator runs a physics preset with chosen parameters and captures a frame; presented as a static shape. Pure procedural code, zero inference.
+3. **Analyzed audio** (see §8).
+4. **Line-law primitives** — N control points + a curve law (§5).
+
+**Tiny model stance (decided):** the valuable "tiny model" is an **inverse map** ("given a target spectrum, produce string + physics parameters approximating it") — *later*, if at all. If trained: tiny (small MLP), run **offline only** (shape factory in a menu, never the audio path). Real-time guarantees and ML in the audio path do not mix.
+
+**Shape file format:** one open, versioned, human-readable text format (JSON) defined **on day one**. The physics-preset→shape bridge is just an exporter. This is the community flywheel — people trade small text files.
+
+---
+
+## 8. Audio ↔ String (The Door)
+
+Two directions, explicitly ranked by the project owner:
+
+1. **Audio creates a string — PRIORITIZED.** "Listen, then draw": FFT analysis over a user-selected window → band energies at node frequencies → displacement per node (dB offset, match-EQ style) → frozen as a shape the user keeps, edits, or uses as physics initial conditions. Deterministic, testable, zero ML. **Build this in v1 scope.**
+2. **Audio plays the string — the door.** Per-band envelope followers apply force to string nodes (sympathetic resonance; a kick drum plucks the low end). Introduces audio→string→audio feedback: needs a force limiter and a one-way mode. **Build the interface now, keep the door closed** until the sim tick rate + subscriber topology decision (§Open Decisions) confirms it can be added without a feedback redesign.
+
+---
+
+## 9. Technology Stack
+
+| Component | Choice | Notes |
+|---|---|---|
+| Framework | **JUCE** (v8, AGPLv3 for open source) | Batteries included. Alternative considered: iPlug2 (more permissive, fewer batteries). |
+| Plugin formats | **CLAP first, VST3 second** | CLAP is MIT, modern, has per-voice/per-note modulators for later. VST3 SDK GPLv3 — fine for open source. |
+| GUI | JUCE, budget generously | Full-curve redraw at 60fps with input handling is a bigger chunk than it looks. Feel matters. |
+| Math | Eigen (or hand-rolled) | Don't over-engineer. |
+| Open-source credits | chowdsp_utils (filter/modulation infrastructure), Vital (reference elegance), Surge XT (engineering discipline), FFTConvolver (HiFi-LoFi, for the wave imprint) | Credit where due; project is open source. |
+
+### 9.1 Borrowable Sources (licensing map)
+
+**Licensing baseline:** the project is AGPLv3 (driven by the JUCE choice). Consequence: GPLv3 sources are cleanly borrowable (they merge into AGPL without conflict); permissive sources (BSD/MIT) are borrowable with attribution; LGPL sources require care (dynamic linking or strict separation) — prefer to avoid in plugin code.
+
+**Important correction on record:** ReaEQ (REAPER) is **not** open source — closed Cockos code. The legitimate path into the Cockos world is the **WDL library** (open-sourced REAPER infrastructure) and REAPER's plaintext JSFX effects as reading material only.
+
+| Source | License | Take |
+|---|---|---|
+| **chowdsp_utils** (J. Chowdhury) | Permissive, BSD-style (verify per repo) | **Primary dependency from M1.** TPT/SVF filter classes, per-sample parameter smoothing, JUCE-native wrappers. This *is* our filter-bank + smoothing layer; we write only string + physics. |
+| **Vital** | GPLv3 | Study, not dependency. Closest existing relative to "string pushes parameters" — learn its modulator→parameter routing at audio rate. Pasteable if ever needed (license-compatible). |
+| **Surge XT** | GPLv3 | Study, not dependency. Filter-bank design and clean handling of hundreds of modulated parameters; GUI discipline. |
+| **WDL** (Cockos) | Historically LGPL — verify current terms | FFT, resampling primitives. Avoid static linking into plugin code unless terms check out. |
+| **HiFi-LoFi/FFTConvolver** | Permissive | Wave imprint engine (M6), as already planned. |
+| **iir1** (B. Porr) | Permissive | Simple biquad/shelf IIR — for **offline tools** (analysis, shape generation) where modulation-grade filters aren't needed. |
+| **LSP / Calf / x42-fil4** | GPLv3 | Production parametric-EQ reference: adjacent-band interaction handling, spectrum overlays. Ideas over code (GUIs are GTK-land). |
+| **Zavalishin, *The Art of VA Filter Design*** | Free book, not code | Canonical TPT/SVF theory. The "why" behind our filter choice. |
+| **KissFFT** | BSD | Alternative FFT primitive for the M4 analysis path if JUCE's isn't preferred. |
+
+**Adoption policy:**
+
+1. chowdsp_utils is the only real dependency adopted at M1; everything else is study material or arrives at the milestone that needs it.
+2. No whole-EQ adoption — assemble from filter primitives. The bank is ours; the filters are chowdsp's.
+3. FFT analysis path (M4) is written in-house (~50 lines of band mapping on top of an FFT primitive).
+4. Every borrowed piece goes in the credits file at adoption time, not at release time.
+
+---
+
+## 10. Decisions Made
+
+- ✅ String is the parameter source; physics engine owns nodes; filter bank reads them (§3.1).
+- ✅ String has real 1D damped wave-equation dynamics (§3.2).
+- ✅ Nodes normalized (−1..+1); string is a universal parameter bus; EQ is the first subscriber (§3.3).
+- ✅ Visual string and control string are separate (§3.4).
+- ✅ Resolution modes / precision modes; 256 is a floor, not a ceiling (§4).
+- ✅ Per-node Q (§5).
+- ✅ Line shaping is visual/deposit-layer only; never touches the sim (§5).
+- ✅ One-pole per-subscriber smoothing, per-sample, with per-subscriber time constant (§6).
+- ✅ Audio-creates-string is prioritized over audio-plays-string; both will exist (§8).
+- ✅ Tiny model = offline inverse mapping, later; procedural physics-frame generator first (§7).
+- ✅ Open text shape format on day one (§7).
+- ✅ JUCE + CLAP-first + VST3 (§9).
+- ✅ **The string is DC-free** (added 2026-09-29): mean position and mean velocity are removed every tick. Rationale: the wave equation is blind to uniform displacement (tension can never act on it), so a drawn shape's mean would ring forever at √stiffness when damping is low — the "stuck slow waves" bug reported by the project owner. Semantic consequence: a globally-shifted curve is not a string state; global level belongs to the Drive knob. Force presets must express their look within the zero-mean constraint (wind amplitudes were retuned accordingly).
+- ✅ Name: **Curves** (renamed from "Curiosity", 2026-09-29).
+
+## 11. Open Decisions
+
+- ⬜ **Parallel-path semantics:** parallel lanes that sum (phase cancellation becomes a feature: "phase wrecking" mode) vs. one control string with multiple visual layers/modifiers. *Lean: build lanes-as-visual-layers first, true parallel summing as an advanced toggle later. Must be settled before the filter-bank topology is locked.*
+- ⬜ **Sim tick rate + subscriber topology** — gates whether "audio plays the string" (§8.2) needs a feedback redesign. *Next technical discussion queued.*
+- ⬜ **Exact transfer spec** (subscriber mapping: offset, scale, bipolar mode, smoothing) — where sound character is finalized. *Queued; expected shorter than it looks once smoothing is pinned.*
+- ⬜ **Wave imprint semantics:** freeze-at-capture (simple, predictable) vs. continuously updating (cool, expensive). *Lean: freeze first.*
+- ⬜ Frequency axis: log-spaced assumed; exact band mapping (e.g., log vs. mel vs. custom warp) not finalized.
+
+---
+
+## 12. Milestones
+
+### M0 — Foundations (repo, skeleton) — ✅ COMPLETE 2026-09-29
+- Repository, license decision (AGPLv3 assumed), build system, plugin shell in CLAP + standalone.
+- Node-array data structure, open JSON shape format v0 with round-trip tests. *(shape format v0 still pending — moved into M1)*
+- **Exit:** shell builds and loads in a host; shape files save/load. *(build + standalone smoke test: done; shape format deferred to M1)*
+
+### M1 — The String (vertical slice, the whole product in miniature) — ✅ **GATE PASSED** 2026-09-29 ("sounds GREAT" — project owner ear test in Reaper)
+- One lane. Drawn curve → node array. 1D damped wave-equation sim at fixed node count (~128–256), per-sample or interleaved tick.
+- Filter bank reads nodes (one filter per node; SVF/TPT). One-pole per-subscriber smoothing.
+- **Implemented:** `src/filter_bank.h/.cpp` (128 TPT peaking bands, log-spaced 30 Hz–18 kHz, per-band one-pole gain smoothing; cutoff modulation deferred to M2); `PluginProcessor` (sim ticks every 4 samples, node positions → ±max_gain_db targets, spinlock mailboxes both directions, 5 params: Damping/Stiffness/Tension/Smoothing/Drive); `PluginEditor` = drawable canvas (left-drag deposits held shape, release rings, right-click flattens, 30 Hz display of live sim).
+- **GUI-verified:** stroke deposit renders (orange preview while held); after release the live string visibly rings and propagates (zoomed capture shows traveling ripples). Audio output path runs uncrashed; **the subjective "feels amazing" gate requires human ears** — user must listen (standalone input is muted by design; test via DAW with the VST3/CLAP, or configure standalone audio settings).
+
+### M2 — Physics personality — CODE COMPLETE 2026-09-29, ear/feel test pending
+- Force system: wind fields, anchors, spring-back, damping controls. Flagpole preset working.
+- Velocity coupling toggle. Sim tick-rate option. Precision modes (sim/bank/tick tuples).
+- **Implemented:** `Physics` parameter (0–3: Free / Flagpole / Gust / Elastic) — anchors + force fields applied engine-side when the mode changes (force amplitudes scale with node count); selecting a preset also sets Damping/Stiffness/Tension knobs (editor-side). `Precision` parameter (0–2: Fine 128 nodes/÷4 tick, Ultra 256/÷2, Analysis 512/÷2) — sim+bank rebuilt on change (allocation on audio thread accepted for M2, flagged for message-thread rebuild). `Velocity` coupling parameter (0–1): gain targets = position + velocity/tension — tension-independent by normalization. Editor: 11 knobs total, anchor pin marker drawn in Flagpole mode, status line shows active preset.
+- **Exit (pending user feel-test):** Flagpole preset feels physical, not animated. Zipper-free at all settings.
+
+### M3 — Shape factory & library
+- Line-law primitives (control points + curve law). Physics-preset→frame exporter. Shape library browser reading the JSON format.
+- **Exit:** a user can save, load, and share shapes as text files.
+
+### M4 — Audio creates a string
+- FFT analysis window → node displacements → frozen shape / initial condition. Match-EQ-style reference handling.
+- **Exit:** "listen, then draw" round-trips: analyze audio, apply resulting shape, hear the imprint.
+
+### M5 — Advanced submenu & tank-polish
+- Full parameter exposure under the hood (smoothing times, tick rate, Q editing, oversampling, phase/summing modes). Default UI stays curated and simple.
+- Determinism, sample-rate, edge-case, and host-hardening passes. Preset system.
+- **Exit:** beta quality — "tank" standard.
+
+### M6 — The door opens
+- Audio-plays-string: per-band envelope followers → forces, with force limiter and one-way mode.
+- Wave imprint (freeze-at-capture) via FFTConvolver-style engine.
+- **Exit:** sympathetic resonance demo; imprint round-trips.
+
+### M7 — Sandbox expansion (post-1.0)
+- Parallel-path semantics per Open Decision. Non-gain subscribers (Q, pan, drive, delay). True parallel summing / phase-wrecking mode. Optional offline inverse-map model.
+
+---
+
+## 13. Risks & Watchlist
+
+- **Zipper noise** is the #1 technical killer — every time-varying parameter path must be smoothed per-sample. M1 exists partly to prove this out.
+- **Adjacent-band interference** at high bank resolutions (biquad stacking) → SVF/TPT filters; verify at 512+ bands early.
+- **The drawing must feel good** — GUI/input polish is a large, easily underestimated work item.
+- **Scope gravity:** every feature after M1 is optional expansion. Protect the vertical slice.
+- **AGPL implications** for JUCE — fine for open source; revisit only if licensing strategy changes.
+
+---
+
+## 14. Prototype — String Sim (current work)
+
+Location: `prototype/` (Python spec) and `src/` + `CMakeLists.txt` (validated C++ port).
+
+**M0 status (2026-09-29):**
+
+- ✅ Toolchain installed: MSVC Build Tools 2022 (v14.44) + bundled CMake, via winget. Git for Windows pre-existing. No standalone Python compiler needed for the plugin path.
+- ✅ Repo initialized (`main` branch): `src/` (sim + plugin), `prototype/` (Python spec), `docs/`, `presets/`, `resources/`; `.gitignore`, `README.md`, full AGPLv3 `LICENSE`.
+- ✅ **C++ port validated bit-for-bit against the Python spec**: all 12,160 CSV cells across pluck/flagpole/travel match exactly (max diff 0.0 at 6-decimal precision). `curves::StringSim` (`src/string_sim.h/.cpp`) is now the canonical implementation; the Python module remains the human-readable spec.
+- 🔄 Plugin shell in progress: CMake FetchContent of JUCE 8.0.8 + clap-juce-extensions (`main`); minimal `CurvesAudioProcessor` (transparent passthrough) + placeholder editor; formats Standalone + VST3 native, CLAP via clap-juce-extensions (JUCE has no native CLAP — earlier CMake draft was wrong on this, corrected).
+- ✅ **M0 EXIT ACHIEVED (2026-09-29):** all three formats built and the standalone was smoke-tested (launched, ran, clean kill): `VST3/Curves.vst3`, `CLAP/Curves.clap`, `Standalone/Curves.exe` under `build/Curves_artefacts/Release/`. Gotcha for the record: JUCE CMake format names are mixed-case — `Standalone`, not `STANDALONE` (invalid names are silently ignored).
+- Note: python harness CSV writer had mislabeled tick/time columns; fixed and regenerated before the cross-validation.
+
+**Build commands (Windows, Git Bash):**
+
+```
+CMAKE="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe"
+"$CMAKE" -S . -B build -G "Visual Studio 17 2022" -A x64 -DCURVES_BUILD_PLUGIN=ON
+"$CMAKE" --build build --config Release
+./build/Release/scenarios.exe prototype   # sim validation runner
+```
+
+**Validated (2026-09-29):**
+
+- 1D damped wave equation over N=128 nodes, velocity-Verlet integration, unit node spacing, CFL guard (`wave_speed * dt <= 1`).
+- Interfaces match the architecture exactly: `displace` / `pluck` / `set_force_field` are the *writer* interfaces; node positions `u` are what the future filter bank reads; velocities `v` kept for the velocity-coupling option.
+- **Pluck:** pulse splits into two counter-propagating waves, reflects off anchored ends with inversion, rings down and settles (energy decay matches e^(−damping·t) exactly). This is the M1 go/no-go behavior — it works.
+- **Flagpole:** pin the high node, wind force ramping toward the free (low) end → curve sags like a flag; wind release → springs back. Confirmed visually.
+- **Travel:** localized bump propagates and reflects genuinely — the "slow variable wave function" is physics, not a crossfade, as designed.
+
+**Learnings on record:**
+
+- Integrator: velocity Verlet required. Semi-implicit Euler is marginally unstable for oscillatory modes at these parameters (|λ| ≈ 1); Verlet is bounded. Keep the CFL assertion in the C++ port.
+- Energy metric gotcha: `sum(u² + v²)` is *not* the energy of a wave equation — most energy lives in the stretch term `c²·Σ(du/dx)²`. Use `Σv² + c²·Σ(du/dx)² + k·Σu²` for any sanity check or limiter work (relevant later for the audio-plays-string force limiter).
+- Static sag under constant force is tension-limited (a Helmholtz balance, roughly `u_ss ≈ (f/k)·(1 − sech(√k·L/c))`), not simply f/k. Preset design must account for tension when aiming at a target sag depth.
+
+---
+
+## Change Log
+
+- **2026-09-29** — Initial version. Captures full brainstorm state: architecture (string-as-parameter-bus, physics-owned nodes, filter-bank readout), resolution modes, Q/line-shaping boundary, smoothing design, shape generator/library stance, audio↔string direction, tech stack, decisions, open questions, and milestones M0–M7.
+- **2026-09-29** — Renamed project from "Curiosity" to **Curves**. Folder moved to `ProjectsAI/Curves`; name removed from Open Decisions and recorded in Decisions Made.
+- **2026-09-29** — Added §9.1 Borrowable Sources (licensing map). Key points: project is AGPLv3; ReaEQ is closed source (corrected on record); **chowdsp_utils adopted as the only real dependency at M1**; Vital/Surge XT are study material; no whole-EQ adoption; credits logged at adoption time.
+- **2026-09-29** — **String sim prototype built and validated** (`Curves/prototype/`, Python): pluck/flagpole/travel scenarios all behave correctly; velocity-Verlet integrator chosen; energy-metric and tension-sag learnings recorded; see §14. Decision: prototype-first path chosen over M0 skeleton (user-confirmed). Next: M0 toolchain + repo, then C++ port of the sim in M1.
+- **2026-09-29** — **M0 COMPLETE.** MSVC Build Tools 2022 + CMake installed; repo initialized (git `main`, AGPLv3 LICENSE, README, .gitignore); string sim ported to C++ (`src/string_sim.h/.cpp`) and **validated bit-for-bit against the Python spec** (12,160/12,160 cells, zero diff); JUCE 8.0.8 + clap-juce-extensions fetched via FetchContent; **plugin shell built in all three formats (Standalone, VST3, CLAP) and the standalone smoke-tested successfully.** Gotchas recorded: JUCE CMake format names are mixed-case (`Standalone`); CLAP requires clap-juce-extensions; shape format v0 deferred into M1.
+- **2026-09-29** — **M1 vertical slice CODE COMPLETE.** FilterBank (128 TPT peaking bands + per-band one-pole smoothing) wired to StringSim in processBlock (sim ticks every 4 samples; positions → ±18 dB targets); drawable canvas editor with draw/release/flatten; spinlock mailboxes both directions; 5 physics params. GUI-verified end-to-end with automated strokes: deposit renders, released string visibly rings and propagates. Pending: human ear test (the go/no-go). Build artifacts: Standalone/VST3/CLAP all green.
+- **2026-09-29** — **M1 GATE PASSED** — project owner ear test in Reaper: "sounds GREAT... very cheap to run so far."
+- **2026-09-29** — **Volume management added (M2 scope item pulled forward).** Two new layers: (1) **Steady** — per-band dynamic EQ: envelope follower per band on the bandpass signal (5 ms attack / 150 ms release) squeezes each band's own contribution above a 0.25 linear threshold; costs ~2 ops/band/sample since v1 is already computed. (2) **Leveler** — output stage: slow RMS auto-trim toward −18 dBFS (0.5 s follower, 1 s trim, ±6 dB clamp) + fast peak safety limiter (1 ms attack, −1 dBFS ceiling); stereo control from max(|L|,|R|). Params: Steady 0–1 (default 0.35), Leveler 0–1 (default 0.5). Deployment note: Reaper locks a loaded VST3 — auto-copy (now enabled via COPY_PLUGIN_AFTER_BUILD) fails while the FX is loaded; deploy on next Reaper close + rescan.
+- **2026-09-29** — **Editor control strip added.** User couldn't see the new knobs because the custom editor only drew the canvas — the 7 parameters had no visible controls. Added a bottom strip of rotary knobs (Damping, Stiffness, Tension, Smoothing, Drive dB, Steady, Leveler) bound to the raw AudioParameterFloats via begin/setValueNotifyingHost/endChangeGesture (no APVTS yet — noted as possible refactor). Window enlarged to 760×560; plot area reserved above the strip.
+- **2026-09-29** — **Reaper crash root-caused and fixed.** Exception 0xc0000094 (integer divide by zero) in Curves.vst3: `resized()` computed `strip.getWidth() / knobs_.size()` while `setSize()` fired it during the constructor — before any knobs existed. Guarded with an early return; standalone repro'd the crash, then verified the fix live (app runs, all knobs render and bind correctly). **Test noise source added** ("Test noise" knob): Paul Kellet pink noise replaces the input when on, so the standalone demos the string with zero input wiring. Lesson on record: repro plugin crashes in the standalone first — same binary, faster loop, and the Windows event log gives the exception code.
+- **2026-09-29** — **"Stuck slow waves" fixed via string DC blocker** (user report: low tension + near-zero damping left the whole string slowly modulating even after tension was restored). Root cause: the wave equation is blind to uniform displacement — tension cannot act on a shape's mean, which rings at √stiffness until damped. Fix: mean position and mean velocity removed every tick in both the C++ engine and the Python spec; validated bit-for-bit across 13,184 CSV cells including a new `recover` regression scenario (late |mean(u)| ≤ 1e-6 with tension restored). Flagpole wind force retuned (−4 → −12) because the zero-mean constraint re-centers the sag. Both suites now cover 4 scenarios.
+- **2026-09-29** — **M2 CODE COMPLETE.** Physics presets (Free/Flagpole/Gust/Elastic — anchors + force fields, knob presets applied on selection), Precision modes (128/256/512 nodes with sim/bank/tick tuples), Velocity coupling (tension-normalized). All formats rebuilt, VST3 auto-deployed (09:04), 11 knobs verified rendering in the standalone; JUCE standalone's plugin-state persistence confirmed as a side effect (user's knob values survive relaunch). Note: one regression caught by the linker — the M2 processor rewrite had dropped the createEditor definition; restored.
+- **2026-09-29** — **Total-silence bug found and fixed (M2 deploy regression).** The M2 restructure left `sim_` null in `prepareToPlay` with creation deferred to `processBlock` — but the null-guard early-returned *before* the rebuild code, so the sim was never created and every block hit the "no sim → clear output" path. Fix: precision rebuild moved above the null check. Lesson on record: when deferring initialization to the audio callback, the guard that protects against the uninitialized state must not precede the code that initializes. VST3 redeployed 09:13.
+- **2026-09-29** — **Cloth wind (user-directed redesign of Flagpole wind).** Old wind was a static ramp — no cloth behavior. New: (1) **traveling forcing wave** — two incommensurate sinusoid components (never visibly repeats) whose phase travels from the anchored end toward the free end, with a distance-growing envelope (small injection at the pole); (2) **density taper** (octaves, CFL-clamped) — string is heavy at the anchor and light toward the free tip, so wave speed and acceleration grow toward the tip: the physical whip mechanism (energy flux into lighter mass). Physics decision on record: damping is a rate and stays uniform; only force terms (tension, stiffness, external) divide by node mass. Metrics: pole→tip u-ratio 2.3×, v-ratio 2.4× (tip velocity 8.4 nodes/s — the whip). New `cloth` scenario in both suites; cross-diff 18,304 cells bit-for-bit. Plugin: **Wind** knob (0–1, scales strength, default 0.6); Flagpole preset = cloth wind + taper 2.0 octaves.
+- **2026-09-29** — **Wind/Force semantics split (user decision): "Wind should equal how fast waves propagate the length of the string, not magnitude of modulation."** Wind knob now maps to the gust pattern's **phase velocity** (10–500 nodes/s, default ≈192); the new **Force** knob (0–1, default 0.6) is the modulation magnitude. Damping ceiling raised 10 → **40 /s** (more total damping available, per user). Engine API renamed accordingly (`set_flagpole_wind(phase_velocity, wavelength, exponent)`, live-settable `wind_phase_speed`). Suite still cross-validated bit-for-bit (18,304 cells) — the scenario's 192 nodes/s × 128-node wavelength reproduces the old 1.5 Hz forcing exactly. Gotcha on record: the C++ cloth scenario initially passed the old frequency semantics into the renamed API and silently produced near-static wind — caught by the Python↔C++ cross-diff, which exists precisely for this.
+- **2026-09-29** — **Force redefined as a flap limiter (user decision): "Force should be an amplitude limiter that controls how far the cloth is allowed to flap. Wind is how fast it flaps."** Rationale: with Force as a *drive amplitude*, its perceived effect was entangled with damping and wind through resonance — the "sticky knobs" report. As a constraint, amplitude is independent of drive and resonance by construction. Engine: soft tanh displacement clamp per tick (`flap_limit`), velocity scaled with the clamp so the constraint **dissipates** energy instead of pumping it; drive amplitude is now an internal constant. Cloth metrics with the limiter at 0.6: tip displacement governed by the ceiling, whip v-ratio improved to **4.2×**. All five scenarios still bit-for-bit across both implementations.
+- **2026-09-29** — **Cloth model v3 (user direction): distributed wind, second anchor, reversibility, bigger Force cap.**
+  - **Force cap raised**: flap-limit range 0.05–1.0 → **0.05–3.0** (flaps may exceed the display range; the old cap rarely engaged, which is why Force felt ineffective). **Raised again to 0.05–8.0** after feel-testing ("force supplies globally, which is good, but we need to raise that limit quite a bit"). Audio contribution still clamps at ±1.0 × Max gain dB inside the bank, so extreme flaps stay sonically safe; the visual motion is what scales.
+  - **Distributed wind**: the single traveling pattern is replaced by **three gust sites** at 25/50/75% of the span with incommensurate phase multipliers (1.0 / φ / 0.755) — "wind doesn't merely initiate a modulation from the start point; it generates along the length."
+  - **Second anchor (left)**: Flagpole now pins both ends — the left anchor denotes the end of the physics domain. Envelope became a **tent** (distance to nearest anchor, raised to exponent 3.0): waves run smaller toward the anchor points, biggest mid-span. Both pin markers drawn in the editor.
+  - **Direction control** (new 0/1 knob): the wind pattern can run **low→high** as well as high→low (travel coordinate measured from the chosen origin anchor). `cloth_rev` scenario added; reversed run is symmetric, no blowup.
+  - Drive amplitude raised 100 → 400 (node-count-scaled) so flaps reach the Force ceiling in normal use — Force is now the audible amplitude control.
+  - Validation: six scenarios, **23,424 cells bit-for-bit** Python↔C++ (cloth: ends/mid u-ratio 1.4×, v-ratio 2.0×; reversal symmetric).
+  - Queued idea (not implemented): literal node-resolution refinement near the anchors ("higher resolution at the end") via non-uniform node spacing — needs a non-uniform finite-difference grid; revisit if the tent envelope isn't enough.
+- **2026-09-29** — **Cloth v4: the termination is a LENGTH, not an anchor (user decision: "the end animation node does not need to be an anchor point... we lose the whip effect").** The left end is free again and whips. New **Cloth length** parameter (0.2–1.0, measured from the pole): the wind envelope ramps 0→max from the pole to the termination node and is zero beyond; the tail beyond the termination is near-rigid (m_inv = 0.02) with 25× damping so the animation genuinely ends there; the density taper compresses into the cloth span (light end at the termination = whip). Engine refactor: `recompute_cloth()` builds envelope/taper/damping-multiplier arrays from (`cloth_length`, exponent, taper); damping is now per-node (`damping_mult`). Verified: length 1.0 → whip restored (pole→tip v-ratio 4.3×); length 0.8 → tail damped to 0.09. Cross-diff 23,424 cells bit-for-bit.
+  - Debug lessons on record: (1) the cloth-length boundary was first computed backwards (termination measured from the wrong end → whole string became "tail" at length 1.0); (2) the envelope branch was inverted (cloth got zero wind); (3) `std::max(0.0, NaN)` silently returns 0.0 — a NaN'd sim printed as perfectly zero and hid the bug; the bit-for-bit Python↔C++ diff is what made the divergence undeniable.
+- **2026-09-29** — **Wave-fidelity pass (user report: limiter flattened wave peaks; waves smeared in travel).**
+  - **Flap limiter redesigned: per-node tanh waveshaper → shape-preserving peak limiter.** One smoothed gain (fast attack 5 ms, slow release 750 ms) scales the whole string so the true simulated peak touches the Force ceiling. Wave shape is untouched — round peaks stay round; the limit "describes the rounded wave peak" instead of capping it flat.
+  - **Numerical dispersion fixed: 4th-order Laplacian** in the interior (2nd-order kept at the two edge-adjacent nodes and ends with Neumann ghosts). Short waves no longer lag long waves, so traveling shapes arrive intact and smooth. CFL headroom verified (scenario 0.30, plugin worst case ≈0.10 vs the 4th-order limit of 0.866).
+  - **Wind resolution upgraded: 3 → 5 gust sites**, incommensurate temporal multipliers plus per-site spatial scales — finer, richer detail traveling smoothly down the cloth.
+  - Result: pole→tip displacement growth improved 1.8× → **4.0×** (waves now genuinely grow toward the whip end), whip v-ratio 3.5×. All six scenarios bit-for-bit (23,424 cells) after the changes landed identically in both implementations.
+- **2026-09-29** — **Force dial re-tuned + Direction mirrored (user reports).**
+  - **Force dial dead-zone fix:** with a constant drive and a high ceiling, only the bottom ~25% of the dial engaged. Force now scales the wind drive (1400·(0.15+0.85f), node-count-scaled) *and* the flap ceiling rises exponentially (0.05·60^f → 0.05–3.0). Measured response: peak tracks the ceiling monotonically across the entire dial (0.075 → 2.99) with no dead zone. Semantic note on record: Force is now "limiter + proportional drive" rather than limiter alone — the limiter still guarantees the maximum, and the peak was verified to track the ceiling at every dial position.
+  - **Direction now mirrors the cloth geometry (user decision): "switching direction... needs to be wind blowing from the other direction, so whips on the highs instead of lows."** `wind_origin` (0/1) moves the anchored pole to the high or low end; envelope, taper, termination, tail damping, and gust sites all rebuild from that origin. Verified: reversed mode whips at the HIGHS with the tail damped at the lows. Pure reverse-playback of the traveling pattern is a separate queued option (advanced menu).
+  - Validation: 23,424 cells bit-for-bit across all six scenarios.
+- **2026-09-29** — **Draw-flatline root-caused + Flagpole near-pole small waves (user reports + screenshot).**
+  - **Drawing flatlined because Force was at 0.1**: the flap-ceiling formula `0.05·60^f` put the ceiling at 0.07 — the shape-preserving limiter then crushed every fresh deposit (and the whole string) to 7% amplitude. Confirmed via GUI repro (deposit preview drew fine; the ceiling flattened it on release). Fix: ceiling range remapped **0.5 → 3.0** (`0.5·6^f`) — the dial bottom stays playable (deposits at ≥50% size), the top still clamps hard. Lesson on record: a limiter whose floor is near zero makes low settings indistinguishable from "broken".
+  - **Flagpole first-third flatness**: envelope exponent 3.0 made near-pole forcing ~0 (0.3³ ≈ 0.03). Lowered to **1.5** — small waves now exist at the pole and grow toward the termination (measured: pole_u 0.14 vs tip_u 0.59; whip v-ratio 5.9×, the best yet).
+  - **UI directive recorded (user): adding knobs is fine; the control strip will be grouped into colored category boxes, with an advanced-settings split decided later.** Control redesign stays queued until the feature set stabilizes.
+  - Validation: 23,424 cells bit-for-bit; VST3/CLAP redeployed 22:49.
+- **2026-09-29** — **"Rubberband broken at damping zero, stuck after" root-caused: the flap limiter was scaling the STRING STATE.** With damping near zero, continuous wind drove the sim's unscaled amplitude unboundedly high, so the shape-preserving limiter's gain (limit/peak) collapsed toward zero — a persistent state that then crushed every fresh user deposit to invisibility, and survived damping changes. **Redesign (fabric metaphor made literal): the limiter now starves the WIND instead of scaling the string.** When the peak is at the ceiling, the forcing is scaled toward zero (fast attack 5 ms / slow release 750 ms, applied at use-time to `f_`, never compounding into the stored field); the string state is untouched — waves always true to the sim, deposits never crushed, no stuck gain state. Consequence on record: the ceiling is now *soft* — string momentum can overshoot it (e.g., 0.82 vs 0.6 limit) rather than being flattened, which is the trade the user explicitly chose ("waves stay round and true to the simulation"). Validation: 23,424 cells bit-for-bit after the redesign; standalone relinked and running.
+- **2026-09-29** — **Dial calibration from feel-testing (user): "most of the meaningful dampening happens by 45%; most of the meaningful force is applied by 25%."** Dial ranges now map to the *useful* span of each control: **Damping** max 40 → **18 /s** (the old 45% point); **Force** compressed ×0.25 — ceiling 0.5–**0.88** and drive 210–507 across the full dial (the old 25% point is now f=1.0). Calibration philosophy on record: dial ranges must be derived from where the meaningful action actually occurs, verified by feel-testing — extreme values beyond that are advanced-screen material, not dial headroom. Saved states with out-of-range values clamp on load. VST3 redeployed 23:26.
+- **2026-09-29** — **Force drive made exponential (follow-up to "force doesn't seem changed"):** the EQ response in dB is logarithmic in drive, so a linear drive dial perceptually compressed at the top. Drive is now `210·2.4143^f` (210–507), giving a linear dB sweep across the dial. Also flagged: the JUCE standalone restores the previous session's knob values — a low Force from earlier testing persists across relaunches and can masquerade as "the fix didn't work." VST3 redeployed 23:32.
+- **2026-09-29** — **Canvas amplitude scales + Drive presented as a ±range (user: "the string is hitting hard caps... set different density levels or amplitude levels for the curve to draw on"; "Drive will be... a slider that goes from +-3 all the way to +-24").**
+  - The "hard caps" were the canvas display range (±1 mapped to the plot height) — a display limitation masquerading as a physics limit. Added a **Scale button** (top-right, cycles ±0.5 / ±1 / ±2 / ±4, scope-style): the string gets visual headroom at larger scales, and drawing resolution tightens at smaller ones (y->value mapping scales with it). Physics untouched — display-layer only.
+  - **Drive** relabeled **"Range ±dB"** (3–24 unchanged — the user's ±3-to-±24 slider is the existing range, now presented as the EQ's boost/cut span). VST3 redeployed 23:36.
+- **2026-09-29** — **Force dial v5 (user: "still incredibly strong, doesn't go down far enough... keep most of the scale and make the linear curve of the control lean 65% to the upper half").** Floor dropped 0.5 → **0.15**, top kept at 0.88, and the control curve applies a **0.66 power lean**: 65% of the dial travel covers the upper half of the force range (value midpoint sits at dial 35%). Drive follows the same leaned curve (60–507 effective). Note: the previous build in this sequence briefly shipped the old mapping due to a patch-script mismatch — v5 is the one deployed (23:46).
+- **2026-09-29** — **"Rubberband physics still broken" root-caused: Damping was maxed at 40/s (the top of the range added earlier).** At 40/s a drawn shape decays with a ~25 ms time constant — it vanishes within 2–3 video frames, which reads exactly like "drawing flatlines." Confirmed empirically: a GUI-driven stroke at damping 40 was invisible 2 s later, while the identical deposit rings in the validation suite. The wind preset masks this because it continuously re-excites the string; a deposit gets no such energy. Fix applied on the running standalone: damping set to 1.5 via the UI — rubberband behavior is intact (the M1-style ring-and-settle is provably working in the engine). Design note for the advanced screen: max damping is a legit "instant return" setting but should be labeled as such; consider whether 40/s is worth keeping at the top of the dial.
+- **2026-09-29** — **WYSIWYG display (user report: "very slow modulation in the EQ that outlives what is happening on screen").** Root cause of the mismatch: the canvas drew the raw string, while the EQ applies smoothed + Steady-modulated gains derived from it — plus two invisible slow modulators (Steady's 150 ms per-band followers; the Leveler's ~1 s output trim). Fix: the filter bank now exposes its **actual smoothed per-band gains**, and the canvas draws **that** as the main curve (normalized to ±1 at Max gain dB) with the sim string as a faint reference underneath. Screen = EQ behavior exactly; the only lag is the Smoothing knob (user-accepted). Steady's ducking is now visible on the curve. Note: the Leveler is output-wide gain, not part of the EQ curve — it can't appear on the display by definition; set it to 0 for a strictly string-only signal path.
+- **2026-09-29** — **Resolution pass (user request: smaller waves, especially propagating toward the end).**
+  - **Precision modes raised:** Fine 128 → **256** nodes (new default), Ultra 512, Analysis **1024**. Mailbox max raised to 1024. Finer grid = smaller wavelengths resolvable; the 4th-order stencil is what keeps those small waves intact in transit. CPU note: Analysis (1024 bands × 2 channels) is the opt-in heavy mode.
+  - **Wind resolution: 5 → 8 gust sites**, positions spread along the full cloth (8–96%), adding high-spatial-frequency sites (k up to 2.6× base) that inject small ripples — the fine detail the finer grid can now carry, especially near the termination where the taper accelerates them.
+  - Measured: whip v-ratio improved 3.5× → **5.4×** (fine ripples ride the big wave toward the termination). All six scenarios bit-for-bit (23,424 cells).
+  - Force-dial tuning from the previous pass retained (drive + exponential ceiling, monotonic across the dial).
+- **2026-09-29** — **Waves knob (user request: "a knob for a higher concentration of waves").** Scales the spatial density of the wind pattern (`wave_density`, 0.5× stretched → 3× packed) multiplicatively across all 8 gust sites — big waves stay big, smaller waves get packed in tighter. Live-settable, no recompute needed (pure forcing-side). Panel is now 16 knobs; a layout/UX redesign of the control strip is queued before release. Validation held: 23,424 cells bit-for-bit.

@@ -1,0 +1,26 @@
+# Build
+build*/
+cmake-build-*/
+out/
+*.obj
+*.o
+*.lib
+*.a
+*.exe
+*.dll
+*.clap
+*.vst3/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Python prototype artifacts
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
