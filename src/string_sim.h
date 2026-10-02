@@ -58,8 +58,18 @@ public:
     //   amplitude grows with distance from the anchored (high) end, phase
     //   travels toward the free (low) end. Small motion near the anchor,
     //   whip at the tip: cloth behavior, not a tweened ramp.
-    enum ForceModel { kStaticField = 0, kFlagpoleWind = 1 };
+    // kClothAero: the wind is a VELOCITY field, not a force field. Force on
+    //   each node comes from relative velocity (wind - node), quadratic:
+    //   the string can fight the wind, drag rises as it moves faster, and
+    //   amplitude saturates on its own. No flap limiter needed — the
+    //   ceiling is physics, not a bolted-on gain.
+    enum ForceModel { kStaticField = 0, kFlagpoleWind = 1, kClothAero = 2 };
     int force_model = kStaticField;
+    // Both wind models share the cloth geometry (envelope, taper, length,
+    // origin, gust sites); only the force law differs.
+    bool is_wind_model() const {
+        return force_model == kFlagpoleWind || force_model == kClothAero;
+    }
 
     // Flagpole wind parameters. The knob semantics (project decision):
     // WIND = how fast the flapping pattern propagates (phase velocity,
@@ -69,6 +79,37 @@ public:
     // pattern run low->high as well as high->low.
     void set_flagpole_wind(double phase_velocity_nodes_s, double wavelength_nodes,
                            double envelope_exponent);
+
+    // ---- cloth aero model (kClothAero) ----
+    // Same gust geometry as the flagpole wind, but the gust pattern is a
+    // TRANSVERSE WIND VELOCITY field (nodes/s) rather than a force. Per node:
+    //   v_rel = W_i - v_i                       (relative velocity)
+    //   F_i   = aero_rho_cd * |v_rel|*v_rel / (1 + s_i^2)
+    // where s_i = du/dx is the local slope. The 1/(1+s^2) term is the
+    // angle-of-attack factor: a steeply sloped element lies along the flow
+    // and catches less of it, a flat element catches the most. That is what
+    // breaks up rigid-body motion into travelling waves and nodes.
+    //
+    // Consequences (project decisions):
+    //  - Amplitude is self-limiting: drag grows as v^2 and opposes motion,
+    //    so there is a natural equilibrium set by wind_speed. flap_limit is
+    //    unnecessary in this mode and is left off.
+    //  - A string at rest feels the full wind; a string already moving with
+    //    the wind feels almost none. Drawn deposits are never crushed.
+    //  - The string is DC-free, so the SPATIALLY UNIFORM part of the drag is
+    //    removed every tick. Wind cannot produce a static offset here (it
+    //    never could). Visible sag comes from the envelope's shape.
+    void set_cloth_aero(double phase_velocity_nodes_s, double wavelength_nodes,
+                        double envelope_exponent);
+    // Wind speed (nodes/s): the magnitude of the transverse wind velocity
+    // field. This is the Force knob — amplitude rises monotonically with it
+    // and saturates by drag, with no ceiling to tune. Live-settable.
+    double wind_speed = 0.0;
+    // Lumped aerodynamic coefficient (0.5*rho*Cd*A as one number). Not a
+    // measurable physical
+    // constant here: the x-axis is log-frequency, not space, so this is a
+    // tuning knob with physical STRUCTURE, which is where its value lies.
+    double aero_rho_cd = 0.6;
     double wind_strength = 0.0;
     double wind_phase_speed = 192.0;  // nodes/s, live-settable per block
     // Wave concentration (Waves knob, project decision): spatial density of
@@ -152,6 +193,9 @@ private:
     std::vector<double> u_;
     std::vector<double> v_;
     std::vector<double> f_;
+    std::vector<double> w_field_;   // transverse wind VELOCITY per node (kClothAero)
+    double m_inv_max_ = 1.0;        // heaviest inverse mass (aero stability guard)
+    double aero_vrel_max_ = 1e9;    // |v_rel| cap, recomputed per tick from CFL
     std::vector<double> wind_env_;  // precomputed forcing envelope (pole -> termination)
     std::vector<double> m_inv_;     // inverse mass per node (density taper)
     std::vector<double> damping_mult_;  // per-node damping multiplier (tail = termination)

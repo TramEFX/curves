@@ -55,7 +55,21 @@ class StringSim:
         # kFlagpoleWind (1): traveling forcing wave — amplitude grows with
         # distance from the anchored (high) end, phase travels toward the
         # free end. Small motion at the pole, whip at the tip.
+        # kStaticField (0) / kFlagpoleWind (1) / kClothAero (2).
         self.force_model = 0
+        # ---- cloth aero model (kClothAero) ----
+        # The gust pattern becomes a transverse wind VELOCITY field (nodes/s)
+        # instead of a force. Per node:
+        #   v_rel = W_i - v_i
+        #   F_i   = aero_rho_cd * |v_rel|*v_rel / (1 + s_i^2),  s_i = du/dx
+        # Drag rises quadratically with how fast the node moves through the
+        # air, so flap amplitude finds its own equilibrium — the ceiling is
+        # physics, not a limiter. See src/string_sim.h for the full rationale.
+        self.wind_speed = 0.0
+        self.aero_rho_cd = 0.6
+        self._w_field = np.zeros(self.n)
+        self._m_inv_max = 1.0
+        self._aero_vrel_max = 1e9
         self.wind_strength = 0.0
         self.wind_phase_speed = 192.0
         self.wave_density = 1.0  # Waves knob: spatial density of the wind pattern
@@ -115,6 +129,27 @@ class StringSim:
         self._site_k = np.array([1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6])
         self._recompute_cloth()
 
+    def is_wind_model(self):
+        """Both wind models share the cloth geometry (envelope, taper,
+        length, origin, gust sites); only the force law differs."""
+        return self.force_model in (1, 2)
+
+    def set_cloth_aero(self, phase_velocity_nodes_s=192.0, wavelength_nodes=64.0,
+                       envelope_exponent=1.8):
+        """Configure the cloth AERO model: same gust geometry as the
+        flagpole wind, but the pattern is a transverse wind velocity field
+        and the force comes from relative velocity (see __init__ notes).
+        Force knob = wind_speed; no flap ceiling to tune."""
+        self.force_model = 2
+        self.wind_phase_speed = phase_velocity_nodes_s
+        self._wind_exponent = envelope_exponent
+        self._wind_k = 2 * np.pi / max(8.0, wavelength_nodes)
+        self._site_pos = np.array([0.08, 0.22, 0.38, 0.52, 0.66, 0.78, 0.88, 0.96]) * (self.n - 1)
+        self._site_phase = np.zeros(8)
+        self._site_mult = np.array([1.0, 0.787, 1.618, 1.264, 0.755, 1.414, 2.236, 0.9])
+        self._site_k = np.array([1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6])
+        self._recompute_cloth()
+
     def set_cloth_length(self, fraction):
         """Where the animation TERMINATES, as a fraction of the node array
         measured from the anchored pole. The end node is NOT anchored — it
@@ -146,7 +181,7 @@ class StringSim:
         `cloth_length` of the array from the pole; the tail beyond the
         termination damps hard. The termination node is NEVER anchored."""
         low_pole = (self.wind_origin == 1)
-        if self.force_model == 1:
+        if self.is_wind_model():
             self.anchor_high = not low_pole
             self.anchor_low = low_pole
         pole = 0 if low_pole else self.n - 1
@@ -158,7 +193,7 @@ class StringSim:
         env = np.zeros(self.n)
         minv = np.ones(self.n)
         mult = np.ones(self.n)
-        if self.force_model == 1:
+        if self.is_wind_model():
             d = np.minimum(p / max(1.0, span_total * self._cloth_length), 1.0)
             env[in_cloth] = d[in_cloth] ** self._wind_exponent
             minv[in_cloth] = 2.0 ** (self._density_taper * d[in_cloth])
@@ -169,10 +204,21 @@ class StringSim:
         self._m_inv = minv
         self._damping_mult = mult
         self._site_pos = np.array([0.08, 0.22, 0.38, 0.52, 0.66, 0.78, 0.88, 0.96]) * span_total * self._cloth_length
+        self._w_field = np.zeros(self.n)
+        # Heaviest inverse mass bounds how hard drag can push a node — what
+        # the explicit-integration stability guard is sized against.
+        self._m_inv_max = max(1.0, float(np.max(minv)))
 
     def _update_wind_forces(self):
-        if self.force_model != 1:
+        if not self.is_wind_model():
             return
+        # Explicit integration of quadratic drag is stable only while the
+        # drag's effective damping rate stays well under 1/dt. That rate is
+        # bounded by aero_rho_cd * |v_rel| * m_inv_max, so cap |v_rel| to
+        # keep rate*dt <= 0.5. Recomputed per tick (both inputs are live).
+        if self.force_model == 2:
+            denom = self.aero_rho_cd * self._m_inv_max * self.dt
+            self._aero_vrel_max = 0.5 / denom if denom > 1e-12 else 1e9
         self._site_phase += (self._wind_k * self.wind_phase_speed
                              * self._site_mult * self.dt)
         idx = np.arange(self.n)
@@ -182,7 +228,12 @@ class StringSim:
             w += np.sin(self._site_phase[s]
                         - self._wind_k * self.wave_density * self._site_k[s]
                         * (p_i - self._site_pos[s]))
-        self.force[:] = self.wind_strength * self._wind_env * (w / 8.0)
+        if self.force_model == 2:
+            # transverse wind VELOCITY (nodes/s) — same units as self.v
+            self._w_field = self.wind_speed * self._wind_env * (w / 8.0)
+            self.force[:] = 0.0
+        else:
+            self.force[:] = self.wind_strength * self._wind_env * (w / 8.0)
 
     def clear_forces(self):
         self.force[:] = 0.0
@@ -234,6 +285,20 @@ class StringSim:
             if not self.anchor_high:
                 lap[-1] = 2.0 * (u_now[-2] - u_now[-1])
             a = c2 * lap - k * u_now + f * self._flap_gain
+            # Aerodynamic drag against RELATIVE velocity (kClothAero): the
+            # term that lets the string fight the wind. Uses v_now, not
+            # self.v — Verlet evaluates acceleration twice per tick with
+            # different velocities, and the stored value would lag a half
+            # step and cost stability. 1/(1+s^2) is the angle-of-attack
+            # factor: a steep element lies along the flow, catching less.
+            if self.force_model == 2:
+                slope = np.empty(self.n)
+                slope[1:-1] = 0.5 * (u_now[2:] - u_now[:-2])
+                slope[0] = u_now[1] - u_now[0]
+                slope[-1] = u_now[-1] - u_now[-2]
+                vrel = np.clip(self._w_field - v_now,
+                               -self._aero_vrel_max, self._aero_vrel_max)
+                a = a + self.aero_rho_cd * np.abs(vrel) * vrel / (1.0 + slope * slope)
             # Variable density: force terms divide by node mass (tension,
             # stiffness spring, external force). Damping is a rate (1/s)
             # scaled per node by the cloth-termination multiplier (the tail

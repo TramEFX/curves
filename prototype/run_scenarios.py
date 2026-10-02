@@ -150,6 +150,44 @@ def scenario_cloth_rev():
     print(f"  tail_u {tail_u:.3f} (damped)   whip_u {whip_u:.3f} (at the highs)")
 
 
+def scenario_aero():
+    """Cloth AERO: the wind is a velocity field and the force comes from
+    RELATIVE velocity, so the string can fight the wind. Checks the whip is
+    intact, amplitude is bounded without a flap limiter, nothing blows up."""
+    print("scenario: aero (relative-velocity drag, no flap limiter)")
+    sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
+                    wave_speed=300.0, damping=1.2, stiffness=2.0)
+    sim.anchor_high = True
+    sim.set_cloth_aero(phase_velocity_nodes_s=192.0, wavelength_nodes=128.0,
+                       envelope_exponent=1.5)
+    # Calibrated Force = 1.0 at this node count (see ORCHESTRATION section 14):
+    # wind_speed = 37 * force * (tension/300)**0.6 * (128/n)**0.25
+    sim.wind_speed = 37.0
+    sim.aero_rho_cd = 0.6
+    sim.set_density_taper(2.0)
+    sim.set_cloth_length(1.0)
+    # flap_limit deliberately left OFF: drag is the amplitude mechanism now.
+    uframes, vframes = [], []
+    for s in range(4000):
+        sim.tick()
+        if s % 100 == 0:
+            uframes.append((s * sim.dt, sim.u.copy()))
+            vframes.append(sim.v.copy())
+    save_frames("aero", uframes)
+    late_u = [u for t, u in uframes if t >= 1.5]
+    vlast = vframes[15:]
+    pole_u = max(float(np.max(np.abs(u[7 * N // 8:]))) for u in late_u)
+    tip_u = max(float(np.max(np.abs(u[:N // 8]))) for u in late_u)
+    pole_v = max(float(np.max(np.abs(v[7 * N // 8:]))) for v in vlast)
+    tip_v = max(float(np.max(np.abs(v[:N // 8]))) for v in vlast)
+    peak = max(float(np.max(np.abs(u))) for u in late_u)
+    finite = all(np.all(np.isfinite(u)) for _, u in uframes)
+    print(f"  pole_u {pole_u:.3f}  tip_u {tip_u:.3f}  (u-ratio {tip_u / max(pole_u, 1e-6):.1f}x)")
+    print(f"  pole_v {pole_v:.1f}  tip_v {tip_v:.1f}  (v-ratio {tip_v / max(pole_v, 1e-6):.1f}x - the whip)")
+    print(f"  late peak|u| {peak:.3f}  (bounded by drag, no limiter; under the +-1 EQ clamp)")
+    print(f"  finite: {'yes' if finite else 'NO - BLEW UP'}")
+
+
 if __name__ == "__main__":
     scenario_pluck()
     scenario_flagpole()
@@ -157,4 +195,5 @@ if __name__ == "__main__":
     scenario_recover()
     scenario_cloth()
     scenario_cloth_rev()
+    scenario_aero()
     print("done.")

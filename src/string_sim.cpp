@@ -67,6 +67,25 @@ void StringSim::compute_accel(std::vector<double>& a,
 
     for (int i = 0; i < n_; ++i)
         a[i] = c2_ * a[i] - stiffness_ * u_now[i] + f_[i] * flap_gain_;
+    // Aerodynamic drag against RELATIVE velocity (kClothAero). This is the
+    // term that lets the string fight the wind: drag grows quadratically
+    // with how fast the node moves through the air, so amplitude finds its
+    // own equilibrium instead of needing a limiter. Evaluated with v_now,
+    // not v_, because Verlet calls this twice per tick with different
+    // velocities — using the stored v_ would make the feedback lag a half
+    // step and cost stability.
+    //   s = du/dx (local slope); 1/(1+s^2) is the angle-of-attack factor:
+    //   a steep element lies along the flow and catches less of it.
+    if (force_model == kClothAero) {
+        for (int i = 0; i < n_; ++i) {
+            const double s = (i == 0)        ? (u_now[1] - u_now[0])
+                             : (i == n_ - 1) ? (u_now[n_ - 1] - u_now[n_ - 2])
+                                             : 0.5 * (u_now[i + 1] - u_now[i - 1]);
+            const double vrel = std::clamp(w_field_[i] - v_now[i],
+                                           -aero_vrel_max_, aero_vrel_max_);
+            a[i] += aero_rho_cd * std::abs(vrel) * vrel / (1.0 + s * s);
+        }
+    }
     // Variable density: force terms divide by node mass (tension, stiffness
     // spring, external force). Damping is a rate (1/s) scaled per node by
     // the cloth-termination multiplier (tail damps hard so the animation
@@ -79,6 +98,20 @@ void StringSim::set_flagpole_wind(double phase_velocity_nodes_s,
                                    double wavelength_nodes,
                                    double envelope_exponent) {
     force_model = kFlagpoleWind;
+    wind_phase_speed = phase_velocity_nodes_s;
+    envelope_exponent_ = envelope_exponent;
+    wind_k_ = 6.283185307179586 / std::max(8.0, wavelength_nodes);
+    for (int s = 0; s < 8; ++s)
+        site_pos_[s] = kSiteFrac_[s] * static_cast<double>(n_ - 1);
+    recompute_cloth();
+}
+
+// Same cloth geometry as the flagpole wind; the force law is what differs
+// (see the header). Gust sites double as the wind-VELOCITY pattern here.
+void StringSim::set_cloth_aero(double phase_velocity_nodes_s,
+                               double wavelength_nodes,
+                               double envelope_exponent) {
+    force_model = kClothAero;
     wind_phase_speed = phase_velocity_nodes_s;
     envelope_exponent_ = envelope_exponent;
     wind_k_ = 6.283185307179586 / std::max(8.0, wavelength_nodes);
@@ -110,7 +143,7 @@ void StringSim::recompute_cloth() {
     // the array from the pole; the tail beyond the termination damps hard.
     // The termination node is NEVER anchored — it whips freely.
     const bool low_pole = (wind_origin == 1);
-    if (force_model == kFlagpoleWind) {
+    if (is_wind_model()) {
         anchor_high = !low_pole;
         anchor_low = low_pole;
     }
@@ -120,11 +153,12 @@ void StringSim::recompute_cloth() {
     wind_env_.resize(n_);
     m_inv_.resize(n_);
     damping_mult_.resize(n_);
+    w_field_.assign(n_, 0.0);
     for (int i = 0; i < n_; ++i) {
         const double p = low_pole ? static_cast<double>(i)
                                   : static_cast<double>(pole - i);
         const bool in_cloth = p <= span_total * cloth_length_ + 0.5;
-        if (force_model != kFlagpoleWind) {
+        if (!is_wind_model()) {
             wind_env_[i] = 0.0;
             m_inv_[i] = 1.0;
             damping_mult_[i] = 1.0;
@@ -149,10 +183,25 @@ void StringSim::recompute_cloth() {
     }
     for (int s = 0; s < 8; ++s)
         site_pos_[s] = kSiteFrac_[s] * span_total * cloth_length_;
+    // Heaviest inverse mass bounds how hard drag can push a node, which is
+    // what the explicit-integration stability guard is sized against.
+    m_inv_max_ = 1.0;
+    for (int i = 0; i < n_; ++i)
+        m_inv_max_ = std::max(m_inv_max_, m_inv_[i]);
 }
 void StringSim::update_wind_forces() {
-    if (force_model != kFlagpoleWind)
+    if (!is_wind_model())
         return;
+    // Explicit integration of a quadratic drag term is only stable while the
+    // drag's effective damping rate stays well under 1/dt. That rate is
+    // bounded by aero_rho_cd * |v_rel| * m_inv_max, so cap |v_rel| to keep
+    // rate*dt <= 0.5. Recomputed per tick because aero_rho_cd and the taper
+    // are both live-settable. Physically this is a stall cap: the model
+    // stops being meaningful at extreme relative speeds anyway.
+    if (force_model == kClothAero) {
+        const double denom = aero_rho_cd * m_inv_max_ * dt_;
+        aero_vrel_max_ = (denom > 1e-12) ? 0.5 / denom : 1e9;
+    }
     for (int s = 0; s < 8; ++s)
         site_phase_[s] += wind_k_ * wind_phase_speed * kSiteMult_[s] * dt_;
     const bool low_pole = (wind_origin == 1);
@@ -163,7 +212,13 @@ void StringSim::update_wind_forces() {
         for (int s = 0; s < 8; ++s)
             w += std::sin(site_phase_[s]
                           - wind_k_ * wave_density * kSiteK_[s] * (p_i - site_pos_[s]));
-        f_[i] = wind_strength * wind_env_[i] * (w / 8.0);
+        if (force_model == kClothAero) {
+            // transverse wind VELOCITY (nodes/s) — same units as v_
+            w_field_[i] = wind_speed * wind_env_[i] * (w / 8.0);
+            f_[i] = 0.0;
+        } else {
+            f_[i] = wind_strength * wind_env_[i] * (w / 8.0);
+        }
     }
 }
 void StringSim::set_density_taper(double octaves) {

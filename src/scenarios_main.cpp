@@ -191,6 +191,62 @@ void scenario_cloth(const fs::path& out, bool reversed) {
     }
 }
 
+// Cloth AERO: the wind is a velocity field and the force comes from
+// RELATIVE velocity, so the string can fight the wind. Checks the whip is
+// intact, amplitude is bounded without a flap limiter, and nothing blows up.
+void scenario_aero(const fs::path& out) {
+    std::cout << "scenario: aero (relative-velocity drag, no flap limiter)\n";
+    StringParams p;
+    p.tick_rate = kTickRate;
+    p.wave_speed = 300.0;
+    p.damping = 1.2;
+    p.stiffness = 2.0;
+    StringSim sim(kNodes, p);
+    sim.anchor_high = true;  // the pole; the left end is FREE (whips)
+    sim.set_cloth_aero(192.0, 128.0, 1.5);
+    // Calibrated Force = 1.0 at this node count (see ORCHESTRATION section 14):
+    // wind_speed = 37 * force * (tension/300)^0.6 * (128/n)^0.25
+    sim.wind_speed = 37.0;
+    sim.aero_rho_cd = 0.6;
+    sim.set_density_taper(2.0);
+    sim.set_cloth_length(1.0);
+    // flap_limit deliberately left OFF: drag is the amplitude mechanism now.
+    std::vector<std::pair<double, std::vector<double>>> uframes;
+    std::vector<std::vector<double>> vframes;
+    for (int s = 0; s < 4000; ++s) {
+        sim.tick();
+        if (s % 100 == 0) {
+            uframes.emplace_back(s / kTickRate, sim.positions());
+            vframes.push_back(sim.velocities());
+        }
+    }
+    save_frames(out, "cpp_aero", uframes);
+    double pole_u = 0, tip_u = 0, pole_v = 0, tip_v = 0, peak = 0;
+    bool finite = true;
+    for (const auto& [t, u] : uframes) {
+        for (int i = 0; i < kNodes; ++i)
+            if (!std::isfinite(u[i])) finite = false;
+        if (t < 1.5) continue;
+        for (int i = 0; i < kNodes; ++i) {
+            peak = std::max(peak, std::abs(u[i]));
+            if (i < kNodes / 8) tip_u = std::max(tip_u, std::abs(u[i]));
+            if (i >= 7 * kNodes / 8) pole_u = std::max(pole_u, std::abs(u[i]));
+        }
+    }
+    for (std::size_t fi = 15; fi < vframes.size(); ++fi)
+        for (int i = 0; i < kNodes; ++i) {
+            if (i < kNodes / 8) tip_v = std::max(tip_v, std::abs(vframes[fi][i]));
+            if (i >= 7 * kNodes / 8) pole_v = std::max(pole_v, std::abs(vframes[fi][i]));
+        }
+    std::cout << "  pole_u " << pole_u << "  tip_u " << tip_u
+              << "  (u-ratio " << tip_u / std::max(pole_u, 1e-6) << "x)\n";
+    std::cout << "  pole_v " << pole_v << "  tip_v " << tip_v
+              << "  (v-ratio " << tip_v / std::max(pole_v, 1e-6) << "x - the whip)\n";
+    std::cout << "  late peak|u| " << peak
+              << "  (bounded by drag, no limiter; under the +-1 EQ clamp)\n";
+    std::cout << "  finite: " << (finite ? "yes" : "NO - BLEW UP") << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -203,6 +259,7 @@ int main(int argc, char** argv) {
     scenario_recover(out);
     scenario_cloth(out, false);
     scenario_cloth(out, true);
+    scenario_aero(out);
     std::cout << "done.\n";
     return 0;
 }

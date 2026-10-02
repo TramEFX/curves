@@ -90,7 +90,15 @@ void CurvesAudioProcessor::apply_physics(int mode) {
         // Cloth length sets where the animation terminates; beyond it the
         // wind is zero and damping is multiplied (termination behavior).
         sim_->anchor_high = true;
-        sim_->set_flagpole_wind(192.0, static_cast<double>(n_nodes_), 1.5);
+        // Aero model: the wind is a VELOCITY field and the force comes from
+        // relative velocity, so the string fights the wind and flap
+        // amplitude is bounded by drag instead of by a limiter. Phase speed
+        // scales with node count so Wind means the same thing in every
+        // precision mode (at a fixed nodes/s the pattern would traverse a
+        // 1024-node string 8x slower than a 128-node one).
+        sim_->set_cloth_aero(192.0 * n_nodes_ / 128.0,
+                             static_cast<double>(n_nodes_), 1.5);
+        sim_->aero_rho_cd = 0.6;
         sim_->set_density_taper(2.0);
         sim_->set_cloth_length(length_->get());
     } else if (mode == kGust) {
@@ -156,7 +164,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // (gust phase velocity, 10..500 nodes/s). Force = amplitude LIMITER —
     // the flap-distance ceiling, independent of drive and resonance. The
     // drive amplitude itself is an internal constant.
-    sim_->wind_phase_speed = 10.0 + 490.0 * wind_->get();
+    sim_->wind_phase_speed = (10.0 + 490.0 * wind_->get())
+                             * (static_cast<double>(n_nodes_) / 128.0);
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
     sim_->wave_density = 0.5 + 2.5 * waves_->get();
     sim_->set_wind_origin(direction_->get() > 0.5f ? 1 : 0);
@@ -164,18 +173,27 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         sim_->set_cloth_length(length_->get());
         last_length_ = length_->get();
     }
-    // Force dial (calibrated v5, user): floor dropped to 0.15 ("doesn't go
-    // down far enough"), top kept at 0.88 ("keep most of the scale"), and
-    // the control curve leans 65% to the upper half — 65% of the dial
-    // travel covers the upper half of the force range (midpoint at 35%).
-    const double lean = std::pow(force_->get(), 0.66);
-    sim_->wind_strength = (60.0 + 447.0 * lean)
-                          * (static_cast<double>(n_nodes_) / 128.0);
-    sim_->flap_limit = 0.15 + 0.73 * lean;
-    // Force = flap-distance ceiling; cap raised to 8.0 per user request —
-    // extreme settings let the cloth flap far past the display range.
-    // (Audio contribution still clamps at ±1.0 * Max gain dB in the bank.)
-    sim_->flap_limit = 0.05 + 7.95 * force_->get();
+    // Force = WIND SPEED (nodes/s) in the aero model. Drag rises as the
+    // string's own velocity catches up to the wind, so amplitude is
+    // compressive and monotonic across the whole dial with no ceiling to
+    // tune, no dead zone, and no limiter gain that can latch.
+    //
+    // Calibration (measured, ORCHESTRATION §14): peak |u| reaches ~0.95 at
+    // force = 1.0, i.e. just under the ±1 clamp the bank and the display
+    // share — so the EQ curve stays round instead of flat-topping, which is
+    // what keeps the on-screen shape a faithful picture of the EQ.
+    //   wind_speed = 37 * force * (tension/300)^0.6 * (128/n)^0.25
+    // The tension term makes the dial mean the same thing at any Tension
+    // (spread 4.7x -> 1.4x); the node term holds it across precision modes.
+    // No node-count scaling of a FORCE any more: wind_speed is a velocity in
+    // the same units as the node velocities it is compared against.
+    const double tension_norm = std::pow(std::max(1.0f, tension_->get()) / 300.0, 0.6);
+    const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
+    sim_->wind_speed = 37.0 * force_->get() * tension_norm * node_norm;
+    // Flap limiter retired in the aero path: drag IS the amplitude
+    // mechanism. Left off rather than removed so the kFlagpoleWind model and
+    // the six original validation scenarios keep their exact behavior.
+    sim_->flap_limit = 1e9;
     bank_.set_smoothing(smoothing_->get());
     bank_.set_steady(steady_->get(), 0.25);
     leveler_.set_amount(leveler_amt_->get());
