@@ -209,11 +209,27 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // mechanism. Left off rather than removed so the kFlagpoleWind model and
     // the six original validation scenarios keep their exact behavior.
     sim_->flap_limit = 1e9;
-    // Flutter: shedding amount and rate. Gain tops out at 120 (measured
-    // self-sustained peak ~0.35 with no gust wind, and combining it with
-    // wind LOWERS the peak - 0.83 -> 0.72 - because the wake is incoherent
-    // with the gusts, trading big coherent lurches for continuous motion).
-    sim_->shed_gain = 120.0 * flutter_->get();
+    // Flutter: shedding amount and rate, gain topping out at 30.
+    //
+    // AMPLITUDE BUDGET IS SHARED WITH FORCE, and this does not fully fit.
+    // Giving the wake an outward travelling phase ramp made it COHERENT, so
+    // it now ADDS to the gusts where the old incoherent version partly
+    // cancelled them. Measured long-run peak at Force 1.0 (n = 256/512/1024):
+    //   gain  0 -> 0.826 / 1.011 / 0.906
+    //   gain  5 -> 0.841 / 0.931 / 0.943
+    //   gain  8 -> 0.853 / 0.971 / 0.992
+    //   gain 30 -> 1.104 (n=256), 1.585 (n=512)
+    // So only ~5 would keep every precision mode under the clamp at Force
+    // 1.0 - which would make Flutter too weak to be worth having. The range
+    // is kept useful instead: Force and Flutter both near maximum WILL reach
+    // the +-1 clamp and flat-top. That stays honest against the WYSIWYG
+    // anchor (the display draws the clamped curve, so it is visible rather
+    // than hidden) and it matches the standing project decision to favour
+    // waves true to the simulation over an enforced ceiling. Flutter
+    // defaults to 0, so nothing clamps unless both are dialled up.
+    // Note also that n = 512 reads 1.011 at Flutter 0, so the Force base-25
+    // calibration is itself marginal in that one precision mode.
+    sim_->shed_gain = 30.0 * flutter_->get();
     sim_->shed_freq_hz = flutter_hz_->get();
     bank_.set_smoothing(smoothing_->get());
     bank_.set_steady(steady_->get(), 0.25);

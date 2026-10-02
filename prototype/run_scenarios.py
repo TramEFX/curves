@@ -253,6 +253,14 @@ def scenario_shed():
     crossings = 0
     t_first, t_last = -1.0, 0.0
     coh = []
+    # Wave momentum flux, accumulated online (see src/scenarios_main.cpp):
+    # u_t IS the velocity array, so -sum(u_t * u_p) is positive when waves
+    # travel away from the pole. p is distance from the pole, so dp/di flips
+    # sign with the wind origin.
+    fnum = 0.0
+    fden_v = 0.0
+    fden_p = 0.0
+    dpdi = 1.0 if sim.wind_origin == 1 else -1.0
     for s in range(6000):
         sim.tick()
         t = s * sim.dt
@@ -269,12 +277,19 @@ def scenario_shed():
             prev = cur
             coh.append(abs(float(np.mean(sim._q)))
                        / max(float(np.mean(np.abs(sim._q))), 1e-9))
+            u_p = 0.5 * (sim.u[2:] - sim.u[:-2]) * dpdi
+            vv = sim.v[1:-1]
+            fnum -= float(np.sum(vv * u_p))
+            fden_v += float(np.sum(vv * vv))
+            fden_p += float(np.sum(u_p * u_p))
     save_frames("shed", frames)
     rate = (0.5 * (crossings - 1) / (t_last - t_first)
             if crossings > 2 and t_last > t_first else 0.0)
     finite = bool(np.all(np.isfinite(sim.u)))
     print(f"  late peak|u|      {peak:.6f}  (self-sustained with NO gust wind - the alive test)")
     print(f"  probe modulation  {rate:.6f} Hz  (shed_freq_hz = 3.0)")
+    flux = fnum / np.sqrt(fden_v * fden_p) if fden_v * fden_p > 0 else 0.0
+    print(f"  travel direction  {flux:.6f}  (POSITIVE = waves move AWAY from the anchor, with the wind)")
     print(f"  wake coherence    {float(np.mean(coh)):.3f}  (0 = vortex cells, 1 = one global breath)")
     print(f"  finite: {'yes' if finite else 'NO - BLEW UP'}")
 

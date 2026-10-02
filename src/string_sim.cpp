@@ -205,6 +205,34 @@ void StringSim::recompute_cloth() {
     m_inv_max_ = 1.0;
     for (int i = 0; i < n_; ++i)
         m_inv_max_ = std::max(m_inv_max_, m_inv_[i]);
+    // Geometry or origin changed, so re-impose the outward phase ramp.
+    seed_wake_phase(true);
+}
+
+void StringSim::seed_wake_phase(bool preserve_amplitude) {
+    if (static_cast<int>(q_.size()) != n_) {
+        q_.assign(n_, kShedSeed);
+        qd_.assign(n_, 0.0);
+    }
+    const double two_pi = 6.283185307179586;
+    const double w = two_pi * shed_freq_hz;
+    const bool low_pole = (wind_origin == 1);
+    const double span = std::max(1.0, (n_ - 1.0) * cloth_length_);
+    const double k = two_pi * shed_waves_per_cloth / span;
+    for (int i = 0; i < n_; ++i) {
+        const double p = low_pole ? static_cast<double>(i)
+                                  : static_cast<double>(n_ - 1 - i);
+        // amplitude of the current oscillator state, in q units
+        double r = kShedSeed;
+        if (preserve_amplitude) {
+            const double qv = q_[i], qdv = (w > 1e-9) ? qd_[i] / w : 0.0;
+            r = std::sqrt(qv * qv + qdv * qdv);
+            if (r < kShedSeed) r = kShedSeed;   // never seed below the seed
+        }
+        const double phi = -k * p;
+        q_[i] = r * std::cos(phi);
+        qd_[i] = -r * w * std::sin(phi);
+    }
 }
 void StringSim::update_wind_forces() {
     if (!is_wind_model())
@@ -244,8 +272,7 @@ void StringSim::update_wind_forces() {
     if (shed_gain != 0.0) {
         const double two_pi = 6.283185307179586;
         for (int i = 0; i < n_; ++i) {
-            const double wi = two_pi * shed_freq_hz *
-                              (1.0 + shed_spread * (cloth_d_[i] - 0.5));
+            const double wi = two_pi * shed_freq_hz;
             const double q = q_[i], qd = qd_[i];
             const double qdd = -shed_eps * wi * (q * q - 1.0) * qd
                                - wi * wi * q + shed_coupling * v_[i];

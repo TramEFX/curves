@@ -99,7 +99,13 @@ class StringSim:
         self.shed_freq_hz = 3.0
         self.shed_eps = 0.3
         self.shed_coupling = 0.02
-        self.shed_spread = 0.6
+        # Seeded wake wavelength, in wavelengths per cloth span. The wake is
+        # given an OUTWARD travelling phase ramp rather than a frequency
+        # gradient: van der Pol is neutral in phase, so identical autonomous
+        # oscillators keep whatever phase relationship they start with. A
+        # frequency gradient instead makes a ramp that steepens with time and
+        # ran INWARD (see src/string_sim.h for the full rationale).
+        self.shed_waves_per_cloth = 1.5
         # q = qd = 0 is an UNSTABLE FIXED POINT of the van der Pol
         # oscillator: with both exactly zero and the string at rest it never
         # departs, so a deterministic nonzero seed is required to start it.
@@ -242,11 +248,34 @@ class StringSim:
             cd[in_cloth] = d[in_cloth]
             cd[~in_cloth] = 1.0
         self._cloth_d = cd
+        # Geometry or origin changed, so re-impose the outward phase ramp.
+        self.seed_wake_phase(True)
         self._site_pos = np.array([0.08, 0.22, 0.38, 0.52, 0.66, 0.78, 0.88, 0.96]) * span_total * self._cloth_length
         self._w_field = np.zeros(self.n)
         # Heaviest inverse mass bounds how hard drag can push a node — what
         # the explicit-integration stability guard is sized against.
         self._m_inv_max = max(1.0, float(np.max(minv)))
+
+    def seed_wake_phase(self, preserve_amplitude):
+        """(Re)impose the outward travelling phase ramp on the wake bank.
+        Called whenever cloth geometry or wind origin changes, so flipping
+        Direction flips the travel direction. preserve_amplitude keeps each
+        oscillator's magnitude and only re-phases it, so dragging Length or
+        Direction does not restart the flutter from silence."""
+        w = 2 * np.pi * self.shed_freq_hz
+        p = (np.arange(self.n) if self.wind_origin == 1
+             else (self.n - 1 - np.arange(self.n))).astype(float)
+        span = max(1.0, (self.n - 1.0) * self._cloth_length)
+        k = 2 * np.pi * self.shed_waves_per_cloth / span
+        if preserve_amplitude:
+            qd_over_w = self._qd / w if w > 1e-9 else np.zeros(self.n)
+            r = np.sqrt(self._q * self._q + qd_over_w * qd_over_w)
+            r = np.maximum(r, self.SHED_SEED)   # never seed below the seed
+        else:
+            r = np.full(self.n, self.SHED_SEED)
+        phi = -k * p
+        self._q = r * np.cos(phi)
+        self._qd = -r * w * np.sin(phi)
 
     def _update_wind_forces(self):
         if not self.is_wind_model():
@@ -278,8 +307,7 @@ class StringSim:
         # force. Skipped at shed_gain 0 so the frozen scenarios are
         # bit-identical and the stage costs nothing.
         if self.shed_gain != 0.0:
-            wi = (2 * np.pi * self.shed_freq_hz
-                  * (1.0 + self.shed_spread * (self._cloth_d - 0.5)))
+            wi = 2 * np.pi * self.shed_freq_hz
             q, qd = self._q, self._qd
             qdd = (-self.shed_eps * wi * (q * q - 1.0) * qd
                    - wi * wi * q + self.shed_coupling * self.v)

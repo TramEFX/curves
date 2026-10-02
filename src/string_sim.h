@@ -163,10 +163,25 @@ public:
     // is driven and motion that is alive — and it is what lets the damping
     // knob behave, since a deposit no longer needs the wind to be re-excited.
     //
-    // w_i carries a GRADIENT along the cloth (shed_spread): a thinner,
-    // lighter element sheds faster, so neighbours detune and the wake breaks
-    // into vortex CELLS instead of one global in-phase breath (measured wake
-    // coherence 0.01 with spread 0.6, i.e. fully decorrelated).
+    // DIRECTION (user requirement, 2026-10-01): the waves must propagate AWAY
+    // from the anchor, with the wind. The first design decorrelated the wake
+    // with a FREQUENCY gradient (thinner elements shed faster), which was
+    // wrong: a frequency gradient makes a phase ramp that steepens linearly
+    // with time (dphi/dp = (dw/dp)*t), so its direction is locked by the sign
+    // of dw/dp and it ran INWARD (measured outward fraction 0.203). Adding
+    // convective coupling could not beat it, because the ramp keeps steepening.
+    //
+    // The fix exploits the fact that these oscillators are autonomous and
+    // IDENTICAL: van der Pol is an attractor in amplitude but NEUTRAL in
+    // phase, so whatever phase relationship they start with, they keep. So
+    // the bank is seeded with an outward travelling phase ramp,
+    //   q_i(t) = r * cos(w*t - 2*pi*p_i*waves_per_cloth/span)
+    // where p_i is distance from the pole. Constant phase then moves to
+    // larger p as t grows: away from the anchor, by construction, with the
+    // wavelength set explicitly rather than emerging from a coupling gain.
+    // Measured outward fraction 0.70-0.88, and the ramp survives 40 s runs.
+    // Staggered phases also give low wake coherence (0.003), so the cells
+    // survive without needing the frequency gradient at all.
     //
     // The coupling term is what produces LOCK-IN: structure velocity pulls
     // the wake's phase, so when shedding lands near a structural resonance
@@ -184,7 +199,10 @@ public:
     double shed_freq_hz = 3.0;   // shedding rate (audible modulation rate)
     double shed_eps = 0.3;       // van der Pol nonlinearity (limit-cycle)
     double shed_coupling = 0.02; // structure velocity -> wake (lock-in)
-    double shed_spread = 0.6;    // frequency gradient along the cloth
+    // Seeded wake wavelength, in wavelengths per cloth span. 1.5 measured
+    // most consistent across cloth lengths (shorter cloths are reflection-
+    // limited by the near-rigid tail, which is physics, not a bug).
+    double shed_waves_per_cloth = 1.5;
     // q = qd = 0 is an unstable fixed point of the van der Pol oscillator, so
     // a deterministic nonzero seed is required or it never starts.
     static constexpr double kShedSeed = 0.01;
@@ -270,6 +288,12 @@ private:
     std::vector<double> q_, qd_;    // wake-oscillator state per node
     std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)
     void recompute_cloth();
+    // (Re)impose the outward travelling phase ramp on the wake bank. Called
+    // whenever the cloth geometry or wind origin changes, so flipping
+    // Direction flips the travel direction. preserve_amplitude keeps each
+    // oscillator's current magnitude and only re-phases it, so dragging
+    // Length or Direction does not restart the flutter from silence.
+    void seed_wake_phase(bool preserve_amplitude);
 };
 
 }  // namespace curves

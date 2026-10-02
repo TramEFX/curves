@@ -333,6 +333,13 @@ void scenario_shed(const fs::path& out) {
     double prev_probe = 0.0;
     bool finite = true;
     const int probe = kNodes / 4;
+    // Wave momentum flux, accumulated online. u_t IS the velocity array, so
+    // no time differencing is needed: for u = f(p - c t), u_t = -c f' and
+    // u_p = f', so -sum(u_t * u_p) is positive when c > 0, i.e. when waves
+    // travel away from the pole. Normalized to [-1, 1]. p is distance from
+    // the pole, so dp/di flips sign with the wind origin.
+    double fnum = 0.0, fden_v = 0.0, fden_p = 0.0, fden = 0.0;
+    const double dpdi = (sim.wind_origin == 1) ? 1.0 : -1.0;
     double t_first = -1.0, t_last = 0.0;
     for (int s = 0; s < 6000; ++s) {
         sim.tick();
@@ -352,11 +359,22 @@ void scenario_shed(const fs::path& out) {
                 t_last = t;
             }
             prev_probe = cur;
+            const auto& v = sim.velocities();
+            for (int i = 1; i + 1 < kNodes; ++i) {
+                const double u_p = 0.5 * (u[i + 1] - u[i - 1]) * dpdi;
+                fnum -= v[i] * u_p;
+                fden_v += v[i] * v[i];
+                fden_p += u_p * u_p;
+            }
+            fden = fden_v * fden_p;
         }
     }
     save_frames(out, "cpp_shed", frames);
     const double rate = (crossings > 2 && t_last > t_first)
                             ? 0.5 * (crossings - 1) / (t_last - t_first) : 0.0;
+    const double flux = (fden > 0.0) ? fnum / std::sqrt(fden_v * fden_p) : 0.0;
+    std::cout << "  travel direction  " << flux
+              << "  (POSITIVE = waves move AWAY from the anchor)\n";
     std::cout << "  late peak|u|      " << peak
               << "  (self-sustained with NO gust wind - the alive test)\n";
     std::cout << "  probe modulation  " << rate << " Hz  (shed_freq_hz = 3.0)\n";
