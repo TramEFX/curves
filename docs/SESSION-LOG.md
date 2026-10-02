@@ -18,7 +18,7 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `9c2d042` |
+| Head | `86ca9d9` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 20, across 19 controls |
 | Validation | 10 scenarios, **73,856 cells, 0 mismatches** Python↔C++ |
@@ -320,6 +320,54 @@ work never enters `StringSim`.
   4× the oscillators at 512 nodes so each couples less. Measure spatial and
   temporal spectrum and the self-sustaining fraction before changing
   anything — three hypotheses have been wrong on this project already.
+
+### Tension vs amplitude
+
+Reported: "Tension compresses the waveform physics amplitude-wise a bit more
+than I would prefer." Real, and the compensation that was supposed to prevent
+it (`tension_norm = (c/300)^0.6`) under-corrected everywhere below 512 nodes.
+
+**The exponent is derivable.** At steady state drag balances tension,
+`ρCd·W² ≈ c²k²·u`, so `u` is Tension-free only when wind speed scales
+**linearly** with wave speed — exponent **1.0**. Measurement lands just under
+it, which the relative-velocity term explains (a faster-moving string sees
+less `v_rel`). Swept at 128 nodes: 0.6 → 3.15× spread, **0.9 → 1.56×**,
+1.2 → 4.55×, 1.5 → 17.5×.
+
+**It has to be per-precision**, and that was the non-obvious part: peak
+against Tension is a **hump**, not a slope. The hump sits near a fixed
+`f0 = c/span` — Tension ≈100 at 128 nodes, ≈450 at 512, both giving
+`f0 ≈ 0.8 Hz` — so no single exponent flattens the whole dial, and raising it
+to 0.9 made **512 nodes worse** (2.60× → 7.85×). Shipped
+`kTensionP = {0.85, 0.80, 0.60}`, tuned on the upper half where the complaint
+lives; 512 left alone because it was not broken.
+
+`(c/300)^p = 1` at Tension 300 for any `p`, so the Motion calibration at the
+default Tension survives untouched — no re-fit needed.
+
+**Two findings this turned up, both deferred:**
+
+- **The Motion budget under-delivers ~37% at the default operating point.**
+  At Motion 0.45 / Character 0 / 128 nodes / Tension 300 the budget predicts
+  peak **0.371**; measured **0.234**. The mapping replication is identical to
+  the plugin's, so the power law `0.8720·dial^1.679` is likely stale — fitted
+  before the Waves range extension (density at the default went 1.5 → 2.3,
+  and the spec's own table says peak falls with density) and before the walls
+  windowed the DC/tilt blockers. Needs a re-fit.
+- **The shedding path has no Tension compensation at all.** At Character 1,
+  peak falls **80.7×** across the dial. `shed_gain` carries only the Flutter
+  rate compensation, which is peak-*normalized* and therefore blind to the
+  string stiffening as `c` rises. An impedance term `(c/300)²` only reaches
+  2.95×, with an unexplained dip at Tension 300. Belongs with the Character
+  work.
+
+> **Method note that paid for itself.** `tension_test` self-validates against
+> `scenario_aero`'s recorded `0.722754` before printing anything. The first
+> version of that check read **0.1185** — it scored only the last 8 ms and
+> caught a quiet moment. Had I not built the check, that 6× error would have
+> looked like catastrophic dt-dependence and invalidated every number here.
+> Corrected: the sim is dt-converged to **0.3%** from 1 kHz to 24 kHz. Note
+> also that the frozen scenarios run at **1 kHz**, not the plugin's 12/24 kHz.
 
 ---
 

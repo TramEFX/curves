@@ -569,7 +569,7 @@ prime candidate for rescaling.
 | Assigns | Used by |
 |---|---|
 | `sim_->c2_ = min(c, 1/dt)²` | **F2** wave term |
-| `tension_norm = (c/300)^0.6` | wind speed |
+| `tension_norm = (c/300)^kTensionP[prec]` | wind speed |
 | `f0 = c / span` | Flutter Hz compensation |
 | `c_tip = c·2^(taper/2)` | Wrinkle resonance (**F3b**) |
 | `v_i / Tension` | Velocity coupling (**F7**) |
@@ -577,6 +577,42 @@ prime candidate for rescaling.
 **What it does.** Wave speed. Sets how fast disturbances travel along the
 spectrum and how strongly the string resists curvature. Clamped to the CFL
 limit `1/dt`.
+
+**Amplitude compensation, fixed 2026-10-02** (user: "Tension compresses the
+waveform physics amplitude-wise a bit more than I would prefer"). The
+`tension_norm` term exists so a given Motion means the same amplitude at any
+Tension. It was a flat `^0.6` and under-corrected badly below 512 nodes —
+measured peak, Tension 300 → 600, Motion 0.45, Character 0:
+
+| nodes | before | after | exponent |
+|---|---|---|---|
+| 128 | 0.56× | **0.79×** | 0.85 |
+| 256 | 0.61× | **0.79×** | 0.80 |
+| 512 | 0.94× | 0.94× | 0.60 (unchanged — was not broken) |
+
+Whole-dial spread at 128 nodes: **3.15× → 1.46×**.
+
+The exponent is derivable: at steady state drag balances tension,
+`ρCd·W² ≈ c²k²·u`, so `u` is Tension-free only when `W ∝ c` — exponent 1.0.
+Measurement lands just under it because a faster-moving string sees less
+relative velocity.
+
+**Why per-precision.** Peak against Tension is a **hump**, not a slope: it
+maxes near a fixed `f0 = c/span`, so the hump sits at a different Tension in
+each mode and no single exponent flattens the whole dial. The shipped values
+flatten the **upper half**, where "turning Tension up makes it quieter" is
+felt. A complete fix would be a measured response table in `f_gust/f0`,
+exactly as **Flutter Hz** already does — noted, not built.
+
+`(c/300)^p = 1` at Tension 300 for any `p`, so the Motion calibration at the
+default Tension is untouched by this.
+
+**Still uncompensated: the shedding path.** At Character 1 peak falls
+**80.7×** across the Tension dial (0.92 at 50 → 0.011 at 600). `shed_gain`
+carries only the Flutter rate compensation, which is peak-*normalized* and so
+carries no information about the string stiffening as `c` rises; adding an
+impedance term `(c/300)^2` only gets it to 2.95×, with an unexplained dip at
+Tension 300. Deferred to the Character work.
 
 **Interactions.** **The most entangled knob in the plugin** — it reaches
 five separate places. Each is deliberately normalized against it (the wind
@@ -975,4 +1011,5 @@ python prototype/run_scenarios.py        # Python spec
 build/Release/scenarios.exe prototype    # C++ engine
 build/Release/bench.exe 48000            # per-core cost
 build/Release/gain_test.exe              # Range invariance, dB symmetry, Steady
+build/Release/tension_test.exe 0.85 0 9  # Tension vs amplitude (self-validating)
 ```
