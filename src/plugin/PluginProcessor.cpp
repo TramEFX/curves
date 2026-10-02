@@ -178,18 +178,21 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // compressive and monotonic across the whole dial with no ceiling to
     // tune, no dead zone, and no limiter gain that can latch.
     //
-    // Calibration (measured, ORCHESTRATION §14): peak |u| reaches ~0.95 at
-    // force = 1.0, i.e. just under the ±1 clamp the bank and the display
-    // share — so the EQ curve stays round instead of flat-topping, which is
-    // what keeps the on-screen shape a faithful picture of the EQ.
-    //   wind_speed = 37 * force * (tension/300)^0.6 * (128/n)^0.25
+    // Calibration (measured, ORCHESTRATION §14) against a LONG observation
+    // window: the gusts are quasi-periodic, so a short run under-reports the
+    // peak — the first pass calibrated on 3.5 s and read 0.995 where the
+    // 30 s peak was 1.41. Re-tuned so peak |u| stays under the ±1 clamp the
+    // bank and the display share, in every precision mode and at the knob
+    // extremes, which is what keeps the on-screen shape a faithful picture
+    // of the EQ rather than a flat-topped one.
+    //   wind_speed = 25 * force * (tension/300)^0.6 * (128/n)^0.25
     // The tension term makes the dial mean the same thing at any Tension
     // (spread 4.7x -> 1.4x); the node term holds it across precision modes.
     // No node-count scaling of a FORCE any more: wind_speed is a velocity in
     // the same units as the node velocities it is compared against.
     const double tension_norm = std::pow(std::max(1.0f, tension_->get()) / 300.0, 0.6);
     const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
-    sim_->wind_speed = 37.0 * force_->get() * tension_norm * node_norm;
+    sim_->wind_speed = 25.0 * force_->get() * tension_norm * node_norm;
     // Flap limiter retired in the aero path: drag IS the amplitude
     // mechanism. Left off rather than removed so the kFlagpoleWind model and
     // the six original validation scenarios keep their exact behavior.

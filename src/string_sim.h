@@ -152,6 +152,21 @@ public:
     void set_density_taper(double octaves);
     double density_taper_octaves() const { return density_taper_; }
 
+    // Tilt blocker (project decision, 2026-10-01). The DC blocker removes
+    // mode 0 (uniform displacement) because tension is blind to it. Mode 1 —
+    // a linear TILT across the spectrum — has the same pathology: the
+    // Laplacian of a linear ramp is zero in the interior, so tension cannot
+    // act on it either and only the artificial `stiffness` spring and the
+    // two Neumann end nodes restore it. The result is a slow global rocking
+    // (~0.6-0.9 Hz, barely tunable by stiffness) that outlives every real
+    // wave and, under wind, is continuously re-excited until it consumes
+    // most of the +-1 range. Removing the least-squares linear trend every
+    // tick kills it. Semantic consequence, mirroring the DC decision: a
+    // tilted curve is not a string state — spectral tilt belongs to a
+    // dedicated control applied in the gain mapping, where it is static and
+    // cannot ring.
+    bool remove_tilt = true;
+
     // ---- integration ----
     void tick();
     // Advance and capture snapshots (time, positions).
@@ -214,6 +229,7 @@ private:
     static constexpr double kSiteK_[8] = {1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6};
     double wind_phase_ = 0.0;
     double flap_gain_ = 1.0;  // smoothed limiter gain (fast attack, slow release)
+    double tilt_sxx_ = 1.0;   // sum of centered x^2, for the tilt projection
     void recompute_cloth();
 };
 

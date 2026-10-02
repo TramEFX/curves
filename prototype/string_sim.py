@@ -84,6 +84,15 @@ class StringSim:
         self._damping_mult = np.ones(self.n)
         self._cloth_length = 1.0
         self._wind_exponent = 1.8
+        # Tilt blocker (see src/string_sim.h): the DC blocker removes mode 0
+        # because tension is blind to uniform displacement; mode 1 (a linear
+        # TILT) has the same pathology — the Laplacian of a linear ramp is
+        # zero in the interior — so it rings as a slow global rocking that
+        # outlives every real wave and, under wind, eats most of the +-1
+        # range. Removing the least-squares linear trend every tick kills it.
+        self.remove_tilt = True
+        # sum of (i - (n-1)/2)^2 = n(n^2-1)/12, the tilt projection denominator
+        self._tilt_sxx = self.n * (self.n * self.n - 1.0) / 12.0
 
     # ---- writer interfaces (everything is a writer to the same nodes) ----
 
@@ -316,6 +325,15 @@ class StringSim:
         # mean position and mean velocity every tick.
         self.u -= self.u.mean()
         self.v -= self.v.mean()
+
+        # Tilt blocker: remove the least-squares linear trend (mode 1), same
+        # reasoning as the mean. The centered basis is orthogonal to the
+        # mean, so this composes cleanly with the DC removal above.
+        if self.remove_tilt:
+            xi = np.arange(self.n) - 0.5 * (self.n - 1)
+            self.u -= (float(np.sum(xi * self.u)) / self._tilt_sxx) * xi
+            self.v -= (float(np.sum(xi * self.v)) / self._tilt_sxx) * xi
+
         self._enforce_anchors()
 
     def run(self, seconds, capture_every=0.0):

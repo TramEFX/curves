@@ -37,6 +37,8 @@ def scenario_pluck():
     print("scenario: pluck (draw, release, ring, settle)")
     sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
                     wave_speed=300.0, damping=1.5, stiffness=4.0)
+    # Pre-tilt-blocker baseline: frozen regression tripwire.
+    sim.remove_tilt = False
     sim.anchor_low = True
     sim.anchor_high = True
     sim.pluck(node=64, amount=1.0, sigma=5.0)
@@ -51,6 +53,8 @@ def scenario_flagpole():
     print("scenario: flagpole (anchor high end, wind blows leftward, then stops)")
     sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
                     wave_speed=300.0, damping=1.2, stiffness=2.0)
+    # Pre-tilt-blocker baseline: frozen regression tripwire.
+    sim.remove_tilt = False
     sim.anchor_high = True  # the flagpole: highest frequency pinned
 
     idx = np.arange(N)
@@ -73,6 +77,8 @@ def scenario_travel():
     print("scenario: travel (localized bump -> genuine wave propagation)")
     sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
                     wave_speed=300.0, damping=0.8, stiffness=0.0)
+    # Pre-tilt-blocker baseline: frozen regression tripwire.
+    sim.remove_tilt = False
     sim.anchor_low = True
     sim.anchor_high = True
     sim.pluck(node=24, amount=1.0, sigma=3.0)
@@ -85,6 +91,8 @@ def scenario_recover():
     print("scenario: recover (loose+undamped string, then tension back up)")
     sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
                     wave_speed=40.0, damping=0.05, stiffness=4.0)
+    # Pre-tilt-blocker baseline: frozen regression tripwire.
+    sim.remove_tilt = False
     sim.anchor_low = True
     sim.anchor_high = True
     sim.pluck(node=64, amount=1.0, sigma=8.0)
@@ -102,6 +110,8 @@ def scenario_cloth():
     print("scenario: cloth (pole anchored, free whip end, length 1.0, dir high->low)")
     sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
                     wave_speed=300.0, damping=1.2, stiffness=2.0)
+    # Pre-tilt-blocker baseline: frozen regression tripwire.
+    sim.remove_tilt = False
     sim.anchor_high = True
     sim.set_flagpole_wind(phase_velocity_nodes_s=192.0, wavelength_nodes=128.0,
                           envelope_exponent=1.5)
@@ -130,6 +140,8 @@ def scenario_cloth_rev():
     print("scenario: cloth reversed (same, wind runs low->high, length 0.8)")
     sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
                     wave_speed=300.0, damping=1.2, stiffness=2.0)
+    # Pre-tilt-blocker baseline: frozen regression tripwire.
+    sim.remove_tilt = False
     sim.anchor_high = True
     sim.set_flagpole_wind(phase_velocity_nodes_s=192.0, wavelength_nodes=128.0,
                           envelope_exponent=1.5)
@@ -157,11 +169,14 @@ def scenario_aero():
     print("scenario: aero (relative-velocity drag, no flap limiter)")
     sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
                     wave_speed=300.0, damping=1.2, stiffness=2.0)
+    # Pre-tilt-blocker baseline: frozen regression tripwire.
+    sim.remove_tilt = False
     sim.anchor_high = True
     sim.set_cloth_aero(phase_velocity_nodes_s=192.0, wavelength_nodes=128.0,
                        envelope_exponent=1.5)
-    # Calibrated Force = 1.0 at this node count (see ORCHESTRATION section 14):
-    # wind_speed = 37 * force * (tension/300)**0.6 * (128/n)**0.25
+    # A deliberately hot wind that exercises the drag model; this is a
+    # frozen baseline value, NOT the shipping dial top (the plugin maps
+    # Force = 1.0 to 25 * (tension/300)**0.6 * (128/n)**0.25).
     sim.wind_speed = 37.0
     sim.aero_rho_cd = 0.6
     sim.set_density_taper(2.0)
@@ -188,6 +203,34 @@ def scenario_aero():
     print(f"  finite: {'yes' if finite else 'NO - BLEW UP'}")
 
 
+def scenario_tilt():
+    """Tilt blocker: an asymmetric deposit dumps most of its energy into
+    mode 1 (a linear tilt), which tension cannot restore. Without the
+    blocker that mode rings as a slow global rocking that outlives every
+    real wave. With it, the tilt stays at zero and only real waves remain."""
+    print("scenario: tilt (mode-1 blocker; asymmetric deposit)")
+    sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
+                    wave_speed=300.0, damping=0.4, stiffness=4.0)
+    # remove_tilt defaults to True - this scenario exercises the blocker.
+    sim.displace(0.6 * np.tanh(np.linspace(-2.5, 2.5, N)))
+    mid = 0.5 * (N - 1)
+    xi = np.arange(N) - mid
+    sxx = float(np.sum(xi * xi))
+    frames = []
+    late_tilt = 0.0
+    late_peak = 0.0
+    for s in range(8000):
+        sim.tick()
+        if s % 200 == 0:
+            frames.append((s * sim.dt, sim.u.copy()))
+        if s * sim.dt >= 3.0:
+            late_tilt = max(late_tilt, abs(float(np.sum(xi * sim.u)) / sxx) * mid)
+            late_peak = max(late_peak, float(np.max(np.abs(sim.u))))
+    save_frames("tilt", frames)
+    print(f"  late tilt displacement {late_tilt:.6f}  (blocker holds it at ~0 - no slow rocking)")
+    print(f"  late peak|u|           {late_peak:.6f}  (only genuine waves remain)")
+
+
 if __name__ == "__main__":
     scenario_pluck()
     scenario_flagpole()
@@ -196,4 +239,5 @@ if __name__ == "__main__":
     scenario_cloth()
     scenario_cloth_rev()
     scenario_aero()
+    scenario_tilt()
     print("done.")

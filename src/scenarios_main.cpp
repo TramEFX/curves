@@ -50,6 +50,9 @@ void scenario_pluck(const fs::path& out) {
     p.damping = 1.5;
     p.stiffness = 4.0;
     StringSim sim(kNodes, p);
+    // Pre-tilt-blocker baseline: these scenarios are the frozen
+    // regression tripwire, so they opt out of the mode-1 removal.
+    sim.remove_tilt = false;
     sim.anchor_low = true;
     sim.anchor_high = true;
     sim.pluck(64, 1.0, 5.0);
@@ -68,6 +71,9 @@ void scenario_flagpole(const fs::path& out) {
     p.damping = 1.2;
     p.stiffness = 2.0;
     StringSim sim(kNodes, p);
+    // Pre-tilt-blocker baseline: these scenarios are the frozen
+    // regression tripwire, so they opt out of the mode-1 removal.
+    sim.remove_tilt = false;
     sim.anchor_high = true;
     // Zero-mean constraint (DC blocker) centers the sag; amplitude raised
     // to compensate.
@@ -94,6 +100,9 @@ void scenario_travel(const fs::path& out) {
     p.damping = 0.8;
     p.stiffness = 0.0;
     StringSim sim(kNodes, p);
+    // Pre-tilt-blocker baseline: these scenarios are the frozen
+    // regression tripwire, so they opt out of the mode-1 removal.
+    sim.remove_tilt = false;
     sim.anchor_low = true;
     sim.anchor_high = true;
     sim.pluck(24, 1.0, 3.0);
@@ -110,6 +119,9 @@ void scenario_recover(const fs::path& out) {
     p.damping = 0.05;
     p.stiffness = 4.0;
     StringSim sim(kNodes, p);
+    // Pre-tilt-blocker baseline: these scenarios are the frozen
+    // regression tripwire, so they opt out of the mode-1 removal.
+    sim.remove_tilt = false;
     sim.anchor_low = true;
     sim.anchor_high = true;
     sim.pluck(64, 1.0, 8.0);
@@ -141,6 +153,9 @@ void scenario_cloth(const fs::path& out, bool reversed) {
     p.damping = 1.2;
     p.stiffness = 2.0;
     StringSim sim(kNodes, p);
+    // Pre-tilt-blocker baseline: these scenarios are the frozen
+    // regression tripwire, so they opt out of the mode-1 removal.
+    sim.remove_tilt = false;
     sim.anchor_high = true;  // the pole; the left end is FREE (whips)
     sim.set_flagpole_wind(192.0, 128.0, 1.5);
     sim.wind_strength = 400.0;
@@ -202,10 +217,14 @@ void scenario_aero(const fs::path& out) {
     p.damping = 1.2;
     p.stiffness = 2.0;
     StringSim sim(kNodes, p);
+    // Pre-tilt-blocker baseline: these scenarios are the frozen
+    // regression tripwire, so they opt out of the mode-1 removal.
+    sim.remove_tilt = false;
     sim.anchor_high = true;  // the pole; the left end is FREE (whips)
     sim.set_cloth_aero(192.0, 128.0, 1.5);
-    // Calibrated Force = 1.0 at this node count (see ORCHESTRATION section 14):
-    // wind_speed = 37 * force * (tension/300)^0.6 * (128/n)^0.25
+    // A deliberately hot wind that exercises the drag model; this is a
+    // frozen baseline value, NOT the shipping dial top (the plugin maps
+    // Force = 1.0 to 25 * (tension/300)^0.6 * (128/n)^0.25).
     sim.wind_speed = 37.0;
     sim.aero_rho_cd = 0.6;
     sim.set_density_taper(2.0);
@@ -247,6 +266,49 @@ void scenario_aero(const fs::path& out) {
     std::cout << "  finite: " << (finite ? "yes" : "NO - BLEW UP") << "\n";
 }
 
+// Tilt blocker: an asymmetric deposit dumps most of its energy into mode 1
+// (a linear tilt), which tension cannot restore. Without the blocker that
+// mode rings as a slow global rocking that outlives every real wave. With
+// it, the tilt stays at zero and only genuine waves remain.
+void scenario_tilt(const fs::path& out) {
+    std::cout << "scenario: tilt (mode-1 blocker; asymmetric deposit)\n";
+    StringParams p;
+    p.tick_rate = kTickRate;
+    p.wave_speed = 300.0;
+    p.damping = 0.4;   // low damping: where the rocking was worst
+    p.stiffness = 4.0;
+    StringSim sim(kNodes, p);   // remove_tilt defaults to true
+    std::vector<double> shape(kNodes);
+    for (int i = 0; i < kNodes; ++i)
+        shape[i] = 0.6 * std::tanh(-2.5 + 5.0 * i / (kNodes - 1.0));
+    sim.displace(shape);
+    const double mid = 0.5 * (kNodes - 1.0);
+    double sxx = 0.0;
+    for (int i = 0; i < kNodes; ++i) sxx += (i - mid) * (i - mid);
+    std::vector<std::pair<double, std::vector<double>>> frames;
+    double late_tilt = 0.0, late_peak = 0.0;
+    for (int s = 0; s < 8000; ++s) {
+        sim.tick();
+        if (s % 200 == 0) frames.emplace_back(s / kTickRate, sim.positions());
+        const double t = s / kTickRate;
+        if (t >= 3.0) {
+            const auto& u = sim.positions();
+            double sxu = 0.0, pk = 0.0;
+            for (int i = 0; i < kNodes; ++i) {
+                sxu += (i - mid) * u[i];
+                pk = std::max(pk, std::abs(u[i]));
+            }
+            late_tilt = std::max(late_tilt, std::abs(sxu / sxx) * mid);
+            late_peak = std::max(late_peak, pk);
+        }
+    }
+    save_frames(out, "cpp_tilt", frames);
+    std::cout << "  late tilt displacement " << late_tilt
+              << "  (blocker holds it at ~0 - no slow rocking)\n";
+    std::cout << "  late peak|u|           " << late_peak
+              << "  (only genuine waves remain)\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -260,6 +322,7 @@ int main(int argc, char** argv) {
     scenario_cloth(out, false);
     scenario_cloth(out, true);
     scenario_aero(out);
+    scenario_tilt(out);
     std::cout << "done.\n";
     return 0;
 }

@@ -19,6 +19,9 @@ StringSim::StringSim(int n_nodes, const StringParams& params)
     f_.assign(n_, 0.0);
     m_inv_.assign(n_, 1.0);      // uniform mass until a taper is configured
     damping_mult_.assign(n_, 1.0);  // uniform damping until cloth length is set
+    // sum of (i - (n-1)/2)^2 = n(n^2-1)/12, the tilt projection denominator
+    tilt_sxx_ = static_cast<double>(n_) *
+                (static_cast<double>(n_) * n_ - 1.0) / 12.0;
 }
 
 void StringSim::displace(const std::vector<double>& values) {
@@ -281,6 +284,27 @@ void StringSim::tick() {
     for (int i = 0; i < n_; ++i) {
         u_[i] -= mean_u;
         v_[i] -= mean_v;
+    }
+
+    // Tilt blocker: remove the least-squares linear trend (mode 1) for the
+    // same reason the mean is removed — tension is blind to a linear ramp,
+    // so it rings as a slow global rocking that outlives every real wave.
+    // The centered basis is orthogonal to the mean, so this composes cleanly
+    // with the DC removal above. See the header for the full rationale.
+    if (remove_tilt) {
+        const double mid = 0.5 * (static_cast<double>(n_) - 1.0);
+        double sxu = 0.0, sxv = 0.0;
+        for (int i = 0; i < n_; ++i) {
+            const double xi = static_cast<double>(i) - mid;
+            sxu += xi * u_[i];
+            sxv += xi * v_[i];
+        }
+        const double au = sxu / tilt_sxx_, av = sxv / tilt_sxx_;
+        for (int i = 0; i < n_; ++i) {
+            const double xi = static_cast<double>(i) - mid;
+            u_[i] -= au * xi;
+            v_[i] -= av * xi;
+        }
     }
 
     enforce_anchors();
