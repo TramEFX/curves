@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <functional>
 #include <vector>
@@ -24,8 +25,12 @@ static double seconds(const std::function<void()>& fn, int reps) {
     return std::chrono::duration<double>(clk::now() - t0).count();
 }
 
-int main() {
-    const double fs = 48000.0;
+int main(int argc, char** argv) {
+    // Sample rate matters a lot: the sim ticks at fs/divisor and the bank
+    // runs per sample, so BOTH scale linearly with fs. Pass it to check
+    // headroom at 96 k before trusting a 48 k measurement.
+    const double fs = (argc > 1) ? std::atof(argv[1]) : 48000.0;
+    std::printf("sample rate: %.0f Hz\n", fs);
     std::printf("stage                              ns/call   calls/s     %% of one core\n");
     std::printf("-------------------------------------------------------------------------\n");
 
