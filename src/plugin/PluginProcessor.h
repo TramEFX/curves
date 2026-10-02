@@ -66,6 +66,12 @@ public:
     int active_nodes() const { return n_nodes_; }
     int physics_mode() const { return last_physics_; }
 
+    // UI colour theme index. Not an automatable parameter (it is pure
+    // appearance), but it rides along in the state tree so a session
+    // reopens looking the way it was left.
+    int ui_theme() const { return ui_theme_; }
+    void set_ui_theme(int t) { ui_theme_ = t; }
+
 private:
     // Physics presets (the "physics" parameter).
     enum PhysicsMode { kFree = 0, kFlagpole = 1, kGust = 2, kElastic = 3 };
@@ -84,6 +90,7 @@ private:
     curves::FilterBank bank_;
     curves::OutputLeveler leveler_;
     int display_accum_ = 0;          // samples since the last display publish
+    int ui_theme_ = 0;               // editor colour theme (appearance only)
     double fs_ = 48000.0;
     int sim_counter_ = 0;
     int sim_divisor_ = 4;

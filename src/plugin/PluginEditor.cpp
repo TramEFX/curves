@@ -3,25 +3,115 @@
 #include <algorithm>
 #include <cmath>
 
+// ---- themes ---------------------------------------------------------------
+// Aqua first: neon aqua / electric blue. The rest keep the same value
+// structure (dark ground, one saturated accent) so the layout reads
+// identically whichever is picked.
+static const CurvesTheme kThemes[] = {
+    // Fields, in order (all 15 must be present - an aggregate initializer
+    // that is one short silently shifts every later field and leaves the
+    // last one zero, i.e. TRANSPARENT; that is exactly how every text_dim
+    // label in this editor went invisible once):
+    //   bg, plot_top, plot_bot, panel, panel_edge,
+    //   grid, grid_key, curve, glow, fill,
+    //   sim_ref, draw, anchor, text, text_dim
+    {"AQUA",    0xff070a0f, 0xff0d1620, 0xff070a0f, 0xff111823, 0xff1d2b3a,
+                0xff1b2735, 0xff2c4a63, 0xff5bf7ff, 0xff00c8ff, 0xff00c8ff,
+                0xff2e7d96, 0xffffb347, 0xffffd166, 0xffdff6ff, 0xff8fa8bd},
+    {"MAGENTA", 0xff0b060d, 0xff1a0c1d, 0xff0b060d, 0xff1b0f20, 0xff3a1d3d,
+                0xff2b1730, 0xff5e2a63, 0xffff6bf0, 0xffe000c8, 0xffe000c8,
+                0xff8f3a86, 0xff7ce0ff, 0xffffd166, 0xffffe3fb, 0xffc296ba},
+    {"AMBER",   0xff0c0905, 0xff1d1508, 0xff0c0905, 0xff1d1709, 0xff3d2f14,
+                0xff2f2411, 0xff63491f, 0xffffc94d, 0xffff8a00, 0xffff8a00,
+                0xff8f6a2e, 0xff6bdcff, 0xff6bdcff, 0xfffff0d6, 0xffc2aa85},
+    {"LIME",    0xff070c06, 0xff0e1a0b, 0xff070c06, 0xff111d0f, 0xff213d1c,
+                0xff1b2f18, 0xff3f6330, 0xffb6ff57, 0xff63d400, 0xff63d400,
+                0xff5c8f3a, 0xffffa8f0, 0xffffd166, 0xffeaffd9, 0xffa3c290},
+    {"VIOLET",  0xff08070f, 0xff120f22, 0xff08070f, 0xff14122a, 0xff2a2555,
+                0xff201c40, 0xff443a7d, 0xffb49cff, 0xff6a3dff, 0xff6a3dff,
+                0xff5a4f99, 0xff7cffd4, 0xffffd166, 0xffe8e2ff, 0xffa49ec2},
+};
+
+const CurvesTheme& curves_theme(int index) {
+    const int n = (int)(sizeof(kThemes) / sizeof(kThemes[0]));
+    const CurvesTheme& t = kThemes[juce::jlimit(0, n - 1, index)];
+    // Guard the short-initializer trap described above: a missing field
+    // leaves the tail zeroed, and a zero colour is fully transparent rather
+    // than black, so it fails silently and invisibly.
+    jassert(t.text_dim != 0 && t.text != 0 && t.draw != 0);
+    return t;
+}
+int curves_theme_count() { return (int)(sizeof(kThemes) / sizeof(kThemes[0])); }
+
+// ---- rotary look ----------------------------------------------------------
+
+void CurvesKnobLook::drawRotarySlider(juce::Graphics& g, int x, int y, int w,
+                                      int h, float pos, float start, float end,
+                                      juce::Slider& s) {
+    const CurvesTheme& t = theme_ ? *theme_ : curves_theme(0);
+    auto area = juce::Rectangle<int>(x, y, w, h).toFloat().reduced(3.0f);
+    const float radius = std::min(area.getWidth(), area.getHeight()) * 0.5f;
+    const auto centre = area.getCentre();
+    const float thick = juce::jmax(3.0f, radius * 0.30f);
+    const float angle = start + pos * (end - start);
+    const float enabled = s.isEnabled() ? 1.0f : 0.35f;
+
+    juce::Path track;
+    track.addCentredArc(centre.x, centre.y, radius - thick * 0.5f,
+                        radius - thick * 0.5f, 0.0f, start, end, true);
+    g.setColour(juce::Colour(t.panel_edge).withMultipliedAlpha(enabled));
+    g.strokePath(track, juce::PathStrokeType(thick, juce::PathStrokeType::curved,
+                                             juce::PathStrokeType::rounded));
+
+    if (pos > 0.0005f) {
+        juce::Path value;
+        value.addCentredArc(centre.x, centre.y, radius - thick * 0.5f,
+                            radius - thick * 0.5f, 0.0f, start, angle, true);
+        // glow pass, then the bright core
+        g.setColour(juce::Colour(t.glow).withAlpha(0.30f * enabled));
+        g.strokePath(value, juce::PathStrokeType(thick * 2.0f,
+                                                 juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+        g.setColour(juce::Colour(t.curve).withMultipliedAlpha(enabled));
+        g.strokePath(value, juce::PathStrokeType(thick,
+                                                 juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
+    }
+
+    const float inner = radius - thick - 1.0f;
+    const juce::Point<float> tip(centre.x + std::sin(angle) * inner,
+                                 centre.y - std::cos(angle) * inner);
+    const juce::Point<float> base(centre.x + std::sin(angle) * inner * 0.35f,
+                                  centre.y - std::cos(angle) * inner * 0.35f);
+    g.setColour(juce::Colour(t.text).withMultipliedAlpha(enabled));
+    g.drawLine({base, tip}, juce::jmax(1.5f, radius * 0.09f));
+}
+
+// ---- construction ---------------------------------------------------------
+
 CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     : AudioProcessorEditor(p), processor_(p) {
-    setSize(760, 560);
+    theme_index_ = processor_.ui_theme();
+    setSize(1000, 700);
     active_count_ = processor_.active_nodes();
     startTimerHz(30);
 
-    // Control strip: one rotary per parameter, bound to the raw params.
-    const struct { const char* id; const char* name; } defs[] = {
-        {"damping", "Damping"},    {"stiffness", "Stiffness"},
-        {"tension", "Tension"},    {"smoothing", "Smoothing"},
-        {"drive", "Range Â±dB"},    {"steady", "Steady"},
-        {"leveler", "Leveler"},    {"physics", "Physics"},
-        {"precision", "Precision"}, {"velocity", "Velocity"},
-        {"wind", "Wind"},          {"waves", "Waves"},
-        {"force", "Force"},
-        {"direction", "Direction"}, {"length", "Length"},
-        {"flutter", "Flutter"},    {"flutter_hz", "Flutter Hz"},
-        {"wrinkle", "Wrinkle"},
-        {"test", "Test noise"},
+    // Controls, grouped by SCOPE. GLOBAL is always in effect; STRING is the
+    // physics that always applies; CLOTH & WIND is Flagpole-only.
+    const struct { const char* id; const char* name; int group; } defs[] = {
+        // GLOBAL
+        {"physics", "Physics", kGlobal},    {"precision", "Precision", kGlobal},
+        {"drive", "Range dB", kGlobal},     {"smoothing", "Smoothing", kGlobal},
+        {"steady", "Steady", kGlobal},      {"leveler", "Leveler", kGlobal},
+        {"test", "Test Noise", kGlobal},
+        // STRING
+        {"damping", "Damping", kString},    {"stiffness", "Stiffness", kString},
+        {"tension", "Tension", kString},    {"velocity", "Velocity", kString},
+        // CLOTH & WIND
+        {"force", "Force", kCloth},         {"wind", "Wind", kCloth},
+        {"waves", "Waves", kCloth},         {"wrinkle", "Wrinkle", kCloth},
+        {"direction", "Direction", kCloth}, {"length", "Length", kCloth},
+        {"flutter", "Flutter", kCloth},     {"flutter_hz", "Flutter Hz", kCloth},
     };
     for (const auto& d : defs) {
         for (auto* p2 : processor_.getParameters()) {
@@ -30,8 +120,8 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
                 continue;
             auto knob = std::make_unique<Knob>();
             const auto& range = rp->getNormalisableRange();
-            // Range object: parameter ranges with interval 0 must stay
-            // continuous; discrete params (Physics/Precision) carry interval 1.
+            // Discrete params (Physics/Precision/Direction) carry interval 1;
+            // continuous ones must stay continuous.
             if (range.interval > 0.0f)
                 knob->slider.setRange(range.start, range.end, range.interval);
             else
@@ -41,30 +131,35 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
                                   juce::dontSendNotification);
             knob->slider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
             knob->slider.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
-            knob->slider.setColour(juce::Slider::rotarySliderFillColourId,
-                                   juce::Colour(0xff54d6ff));
-            knob->slider.setColour(juce::Slider::thumbColourId,
-                                   juce::Colour(0xffe8e6e0));
-            knob->slider.setColour(juce::Slider::backgroundColourId,
-                                   juce::Colour(0xff2a2e35));
+            knob->slider.setLookAndFeel(&knob_look_);
             knob->slider.addListener(this);
             knob->label.setText(d.name, juce::dontSendNotification);
             knob->label.setJustificationType(juce::Justification::centred);
-            knob->label.setFont(juce::Font(juce::FontOptions(12.0f)));
-            knob->label.setColour(juce::Label::textColourId, juce::Colour(0xffa8b0b8));
+            knob->label.setFont(juce::Font(12.0f));
+            knob->label.setInterceptsMouseClicks(false, false);
             knob->param = rp;
+            knob->group = d.group;
             addAndMakeVisible(knob->slider);
             addAndMakeVisible(knob->label);
             knobs_.push_back(std::move(knob));
             break;
         }
     }
-    scale_button_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2a2e35));
-    scale_button_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff54d6ff));
-    addAndMakeVisible(scale_button_);
-    scale_button_.onClick = [this] { cycle_display_scale(); };
 
-    resized();  // lay out the knobs now — setSize above ran before they existed
+    for (auto* b : {&scale_button_, &theme_button_})
+        addAndMakeVisible(*b);
+    scale_button_.onClick = [this] { cycle_display_scale(); };
+    theme_button_.onClick = [this] { cycle_theme(); };
+
+    apply_theme();
+    resized();  // setSize() above ran before the knobs existed
+}
+
+CurvesAudioProcessorEditor::~CurvesAudioProcessorEditor() {
+    stopTimer();
+    // Sliders must not outlive the LookAndFeel they point at.
+    for (auto& k : knobs_)
+        k->slider.setLookAndFeel(nullptr);
 }
 
 void CurvesAudioProcessorEditor::cycle_display_scale() {
@@ -74,29 +169,96 @@ void CurvesAudioProcessorEditor::cycle_display_scale() {
     const int idx = (it == std::end(kScales) - 1) ? 0 : int(it - std::begin(kScales)) + 1;
     display_scale_ = kScales[idx];
     scale_button_.setButtonText(kLabels[idx]);
+    repaint();
 }
 
-CurvesAudioProcessorEditor::~CurvesAudioProcessorEditor() { stopTimer(); }
+void CurvesAudioProcessorEditor::cycle_theme() {
+    theme_index_ = (theme_index_ + 1) % curves_theme_count();
+    processor_.set_ui_theme(theme_index_);
+    apply_theme();
+}
+
+void CurvesAudioProcessorEditor::apply_theme() {
+    const auto& t = theme();
+    knob_look_.set_theme(&t);
+    theme_button_.setButtonText(t.name);
+    for (auto* b : {&scale_button_, &theme_button_}) {
+        b->setColour(juce::TextButton::buttonColourId, juce::Colour(t.panel));
+        b->setColour(juce::TextButton::textColourOffId, juce::Colour(t.curve));
+    }
+    for (auto& k : knobs_)
+        k->label.setColour(juce::Label::textColourId, juce::Colour(t.text_dim));
+    repaint();
+}
+
+// ---- layout ---------------------------------------------------------------
+// Panel heights live here as named constants because plot_bounds() has to
+// subtract exactly the same amounts; keeping them in one place stops the
+// canvas and the panels from overlapping when one of them changes.
+namespace {
+constexpr int kHeaderH = 34;
+constexpr int kHintH = 24;
+constexpr int kGlobalH = 104;
+constexpr int kPhysicsH = 188;
+constexpr int kPanelGap = 10;
+}  // namespace
 
 void CurvesAudioProcessorEditor::resized() {
-    scale_button_.setBounds(getWidth() - 84, 36, 76, 22);
+    scale_button_.setBounds(getWidth() - 86, 12, 74, 24);
+    theme_button_.setBounds(getWidth() - 172, 12, 78, 24);
     if (knobs_.empty())
         return;  // setSize() runs before the knobs are created in the ctor
-    auto strip = getLocalBounds().removeFromBottom(110).reduced(8, 6);
-    const int cell_w = strip.getWidth() / (int)knobs_.size();
-    for (auto& k : knobs_) {
-        auto cell = strip.removeFromLeft(cell_w);
-        const int side = std::min(58, cell.getWidth() - 4);
-        k->slider.setBounds(cell.getX() + (cell.getWidth() - side) / 2,
-                            cell.getY() + 2, side, side);
-        k->label.setBounds(cell.getX(), cell.getY() + side + 4, cell.getWidth(), 18);
-    }
+
+    auto area = getLocalBounds().reduced(14, 12);
+    area.removeFromTop(kHeaderH);
+
+    // Bottom-up: GLOBAL gets its own full-width row (the "one obvious
+    // spot"), with STRING and CLOTH & WIND sharing the row above it.
+    panel_[kGlobal] = area.removeFromBottom(kGlobalH);
+    area.removeFromBottom(kPanelGap);
+    auto physics_row = area.removeFromBottom(kPhysicsH);
+
+    // STRING holds 4 controls, CLOTH holds 8, so split 1:2.
+    const int string_w = (physics_row.getWidth() - kPanelGap) / 3;
+    panel_[kString] = physics_row.removeFromLeft(string_w);
+    physics_row.removeFromLeft(kPanelGap);
+    panel_[kCloth] = physics_row;
+
+    auto place = [this](int group, juce::Rectangle<int> box, int cols) {
+        std::vector<Knob*> in_group;
+        for (auto& k : knobs_)
+            if (k->group == group)
+                in_group.push_back(k.get());
+        if (in_group.empty())
+            return;
+        box = box.reduced(10, 8);
+        box.removeFromTop(16);  // panel title
+        const int rows = (int)((in_group.size() + cols - 1) / cols);
+        const int cell_h = box.getHeight() / juce::jmax(1, rows);
+        const int cell_w = box.getWidth() / juce::jmax(1, cols);
+        for (size_t i = 0; i < in_group.size(); ++i) {
+            const int r = (int)i / cols, c = (int)i % cols;
+            juce::Rectangle<int> cell(box.getX() + c * cell_w,
+                                      box.getY() + r * cell_h, cell_w, cell_h);
+            const int side = juce::jmax(20, juce::jmin(cell.getWidth() - 10, cell_h - 20));
+            in_group[i]->slider.setBounds(
+                cell.getCentreX() - side / 2, cell.getY() + 2, side, side);
+            in_group[i]->label.setBounds(cell.getX(), cell.getY() + side + 2,
+                                         cell.getWidth(), 16);
+        }
+    };
+    place(kGlobal, panel_[kGlobal], 7);
+    place(kString, panel_[kString], 2);
+    place(kCloth, panel_[kCloth], 4);
 }
 
-// ---- geometry ------------------------------------------------------------
+// ---- geometry -------------------------------------------------------------
 
 juce::Rectangle<float> CurvesAudioProcessorEditor::plot_bounds() const {
-    return getLocalBounds().toFloat().reduced(30.0f).withTrimmedBottom(144.0f);
+    auto area = getLocalBounds().reduced(14, 12);
+    area.removeFromTop(kHeaderH);
+    area.removeFromBottom(kGlobalH + kPanelGap + kPhysicsH + kHintH);
+    return area.toFloat();
 }
 
 float CurvesAudioProcessorEditor::node_to_x(float node) const {
@@ -153,14 +315,10 @@ void CurvesAudioProcessorEditor::mouseDrag(const juce::MouseEvent& e) {
 }
 
 void CurvesAudioProcessorEditor::mouseUp(const juce::MouseEvent&) {
-    // Release: stop calling displace(); the string rings from the held shape.
-    drawing_ = false;
+    drawing_ = false;  // release: the string rings from the held shape
 }
 
 void CurvesAudioProcessorEditor::deposit_stroke(float n0, float v0, float n1, float v1) {
-    // Linear interpolation between the previous and current drag points,
-    // deposited onto nodes in the swept range. (Line-law shaping beyond
-    // linear is an M3 generator feature, not a canvas feature.)
     const int lo = std::max(0, int(std::floor(std::min(n0, n1))));
     const int hi = std::min(active_nodes() - 1, int(std::ceil(std::max(n0, n1))));
     for (int i = lo; i <= hi; ++i) {
@@ -214,10 +372,20 @@ void CurvesAudioProcessorEditor::apply_physics_preset(int mode) {
 void CurvesAudioProcessorEditor::timerCallback() {
     processor_.pull_display(display_nodes_, display_eq_, active_count_);
     if (!drawing_) {
-        // While not drawing, the sim owns the curve; keep the local draw
-        // buffer in sync so the next stroke deposits onto the live shape.
         draw_nodes_ = display_nodes_;
         dirty_ = false;
+    }
+    // Cloth & Wind only does anything in Flagpole, so grey it out elsewhere
+    // rather than leaving nineteen live-looking knobs on screen.
+    const int mode = processor_.physics_mode();
+    if (mode != last_mode_) {
+        last_mode_ = mode;
+        const bool cloth_live = (mode == 1);
+        for (auto& k : knobs_)
+            if (k->group == kCloth) {
+                k->slider.setEnabled(cloth_live);
+                k->label.setAlpha(cloth_live ? 1.0f : 0.4f);
+            }
     }
     repaint();
 }
@@ -236,73 +404,153 @@ void CurvesAudioProcessorEditor::sliderValueChanged(juce::Slider* s) {
     }
 }
 
+// ---- painting -------------------------------------------------------------
+
+void CurvesAudioProcessorEditor::draw_panel(juce::Graphics& g,
+                                            juce::Rectangle<int> box,
+                                            const char* title,
+                                            bool active) const {
+    const auto& t = theme();
+    const auto r = box.toFloat();
+    g.setColour(juce::Colour(t.panel).withMultipliedAlpha(active ? 1.0f : 0.55f));
+    g.fillRoundedRectangle(r, 8.0f);
+    g.setColour(juce::Colour(t.panel_edge).withMultipliedAlpha(active ? 1.0f : 0.5f));
+    g.drawRoundedRectangle(r.reduced(0.5f), 8.0f, 1.0f);
+    // accent bar so each group reads as its own region at a glance
+    g.setColour(juce::Colour(t.glow).withAlpha(active ? 0.55f : 0.18f));
+    g.fillRoundedRectangle(r.getX() + 10.0f, r.getY() + 9.0f, 26.0f, 2.5f, 1.25f);
+    // NOTE: use Graphics::setFont(float). Small text set via
+    // Font(FontOptions(h)) did not render at all in this JUCE build, which
+    // cost a debug round-trip - the panel titles, knob labels and hint line
+    // were all invisible while the geometry was correct the whole time.
+    g.setColour(juce::Colour(t.text).withMultipliedAlpha(active ? 0.92f : 0.5f));
+    g.setFont(12.0f);
+    g.drawText(title, box.getX() + 44, box.getY() + 5, box.getWidth() - 54, 15,
+               juce::Justification::centredLeft);
+}
+
 void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
-    g.fillAll(juce::Colour(0xff14161a));
+    const auto& t = theme();
+    g.fillAll(juce::Colour(t.bg));
     const auto b = plot_bounds();
-
-    // grid: zero line + log-frequency reference lines
-    g.setColour(juce::Colour(0xff2a2e35));
-    g.drawLine(b.getX(), b.getCentreY(), b.getRight(), b.getCentreY(), 1.0f);
-    for (int f : {100, 1000, 10000}) {
-        const double t = std::log(double(f) / 30.0) / std::log(18000.0 / 30.0);
-        const float x = float(b.getX() + t * b.getWidth());
-        g.drawLine(x, b.getY(), x, b.getBottom(), 0.5f);
-    }
-
-    // anchor pin: only the pole (high end) is anchored in Flagpole mode —
-    // the left end is the free termination of the cloth and whips freely
     const int mode = processor_.physics_mode();
-    if (mode == 1 /* Flagpole */) {
-        g.setColour(juce::Colour(0xffffb347));
-        g.fillEllipse(b.getRight() - 5.0f, b.getCentreY() - 5.0f, 10.0f, 10.0f);
+
+    // ---- header ----
+    g.setColour(juce::Colour(t.curve));
+    g.setFont(22.0f);
+    g.drawText("CURVES", 16, 10, 220, 26, juce::Justification::centredLeft);
+    g.setColour(juce::Colour(t.text_dim));
+    g.setFont(12.0f);
+    const char* mode_name[] = {"Free", "Flagpole", "Gust", "Elastic"};
+    g.drawText(juce::String("physics: ") + mode_name[std::clamp(mode, 0, 3)]
+                   + "   |   " + juce::String(active_nodes()) + " nodes",
+               116, 10, 420, 26, juce::Justification::centredLeft);
+
+    // ---- plot ground ----
+    g.setGradientFill(juce::ColourGradient(juce::Colour(t.plot_top), b.getCentreX(),
+                                           b.getY(), juce::Colour(t.plot_bot),
+                                           b.getCentreX(), b.getBottom(), false));
+    g.fillRoundedRectangle(b, 8.0f);
+    g.setColour(juce::Colour(t.panel_edge));
+    g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.0f);
+
+    // horizontal divisions at fractions of the current scale
+    g.setColour(juce::Colour(t.grid));
+    for (float frac : {0.25f, 0.5f, 0.75f}) {
+        const float dy = b.getHeight() * 0.5f * frac;
+        g.drawLine(b.getX(), b.getCentreY() - dy, b.getRight(), b.getCentreY() - dy, 0.6f);
+        g.drawLine(b.getX(), b.getCentreY() + dy, b.getRight(), b.getCentreY() + dy, 0.6f);
+    }
+    // log-frequency grid, labelled
+    g.setFont(10.0f);
+    const struct { int hz; const char* name; } kMarks[] = {
+        {50, "50"}, {100, "100"}, {500, "500"},
+        {1000, "1k"}, {5000, "5k"}, {10000, "10k"}};
+    for (const auto& m : kMarks) {
+        const double frac = std::log(double(m.hz) / 30.0) / std::log(18000.0 / 30.0);
+        const float x = float(b.getX() + frac * b.getWidth());
+        g.setColour(juce::Colour(t.grid));
+        g.drawLine(x, b.getY() + 2.0f, x, b.getBottom() - 12.0f, 0.6f);
+        g.setColour(juce::Colour(t.text_dim));
+        g.drawText(m.name, int(x) - 16, int(b.getBottom()) - 13, 32, 11,
+                   juce::Justification::centred);
+    }
+    // zero line, brighter
+    g.setColour(juce::Colour(t.grid_key));
+    g.drawLine(b.getX(), b.getCentreY(), b.getRight(), b.getCentreY(), 1.0f);
+
+    // anchor pin: in Flagpole only the pole (high end) is anchored; the low
+    // end is the free cloth termination and whips.
+    if (mode == 1) {
+        const float px = b.getRight() - 4.0f, py = b.getCentreY();
+        g.setColour(juce::Colour(t.anchor).withAlpha(0.25f));
+        g.fillEllipse(px - 9.0f, py - 9.0f, 18.0f, 18.0f);
+        g.setColour(juce::Colour(t.anchor));
+        g.fillEllipse(px - 4.0f, py - 4.0f, 8.0f, 8.0f);
     }
 
-    // reference: the live string the wind/physics move (faint)
+    // ---- faint reference: the raw sim string ----
     if (!drawing_) {
         juce::Path sim_curve;
         for (int i = 0; i < active_nodes(); ++i) {
             const float x = node_to_x(float(i));
             const float y = value_to_y(display_nodes_[i]);
-            if (i == 0)
-                sim_curve.startNewSubPath(x, y);
-            else
-                sim_curve.lineTo(x, y);
+            if (i == 0) sim_curve.startNewSubPath(x, y);
+            else        sim_curve.lineTo(x, y);
         }
-        g.setColour(juce::Colour(0x4054d6ff));
-        g.strokePath(sim_curve, juce::PathStrokeType(1.4f));
+        g.setColour(juce::Colour(t.sim_ref).withAlpha(0.55f));
+        g.strokePath(sim_curve, juce::PathStrokeType(1.2f));
     }
 
-    // the main curve = the ACTUAL EQ (bank's smoothed + Steady-modulated
-    // gains): what you see is what the filter bank is doing. While drawing,
-    // show the deposit preview instead.
+    // ---- THE EQ CURVE ----
+    // HARD ANCHOR: this comes from the filter bank's smoothed gains, so the
+    // shape on screen is exactly the EQ being applied. While drawing, the
+    // deposit preview is shown instead, in the accent colour so it is never
+    // mistaken for the applied curve.
     const auto& nodes = drawing_ ? draw_nodes_ : display_eq_;
     juce::Path curve;
     for (int i = 0; i < active_nodes(); ++i) {
         const float x = node_to_x(float(i));
         const float y = value_to_y(nodes[i]);
-        if (i == 0)
-            curve.startNewSubPath(x, y);
-        else
-            curve.lineTo(x, y);
+        if (i == 0) curve.startNewSubPath(x, y);
+        else        curve.lineTo(x, y);
     }
 
-    if (drawing_) {
-        g.setColour(juce::Colour(0x60ffb347));
-        g.strokePath(curve, juce::PathStrokeType(5.0f));
-        g.setColour(juce::Colour(0xffffb347));
-        g.strokePath(curve, juce::PathStrokeType(2.0f));
-    } else {
-        g.setColour(juce::Colour(0xff54d6ff));
-        g.strokePath(curve, juce::PathStrokeType(2.2f));
+    // area fill between the curve and the zero line
+    {
+        juce::Path area = curve;
+        area.lineTo(b.getRight(), b.getCentreY());
+        area.lineTo(b.getX(), b.getCentreY());
+        area.closeSubPath();
+        const juce::Colour fill(drawing_ ? t.draw : t.fill);
+        g.setGradientFill(juce::ColourGradient(
+            fill.withAlpha(0.26f), b.getCentreX(), b.getY(),
+            fill.withAlpha(0.02f), b.getCentreX(), b.getCentreY(), false));
+        g.fillPath(area);
     }
 
-    g.setColour(juce::Colour(0xff707880));
-    g.setFont(13.0f);
-    const char* mode_name[] = {"Free", "Flagpole", "Gust", "Elastic"};
-    g.drawText(juce::String("bright curve = actual EQ  |  faint curve = the string  |  draw: hold + drag  |  right-click: flatten  |  physics: ")
-                   + mode_name[std::clamp(mode, 0, 3)],
-               getLocalBounds().toFloat().reduced(30.0f)
-                   .withTrimmedTop(plot_bounds().getBottom())
-                   .withTrimmedBottom(116.0f),
+    // three-pass glow, then the bright core
+    const juce::Colour core(drawing_ ? t.draw : t.curve);
+    const juce::Colour glow(drawing_ ? t.draw : t.glow);
+    g.setColour(glow.withAlpha(0.10f));
+    g.strokePath(curve, juce::PathStrokeType(9.0f));
+    g.setColour(glow.withAlpha(0.22f));
+    g.strokePath(curve, juce::PathStrokeType(5.0f));
+    g.setColour(core.withAlpha(0.85f));
+    g.strokePath(curve, juce::PathStrokeType(2.6f));
+    g.setColour(juce::Colours::white.withAlpha(drawing_ ? 0.25f : 0.45f));
+    g.strokePath(curve, juce::PathStrokeType(1.0f));
+
+    // ---- hint line ----
+    g.setColour(juce::Colour(t.text_dim));
+    g.setFont(12.0f);
+    g.drawText("bright = the EQ being applied   |   faint = the string   |   "
+               "drag to draw   |   right-click to flatten",
+               int(b.getX()), int(b.getBottom()) + 4, int(b.getWidth()), 18,
                juce::Justification::centred);
+
+    // ---- panels ----
+    draw_panel(g, panel_[kString], "STRING", true);
+    draw_panel(g, panel_[kCloth], "CLOTH & WIND   (Flagpole)", mode == 1);
+    draw_panel(g, panel_[kGlobal], "GLOBAL", true);
 }

@@ -363,17 +363,21 @@ void CurvesAudioProcessor::getStateInformation(juce::MemoryBlock& dest) {
     for (auto* p : getParameters())
         if (auto* v = dynamic_cast<juce::RangedAudioParameter*>(p))
             tree.setProperty(juce::Identifier(v->paramID), v->getValue(), nullptr);
+    tree.setProperty("uiTheme", ui_theme_, nullptr);
     if (auto xml = tree.createXml())
         copyXmlToBinary(*xml, dest);
 }
 
 void CurvesAudioProcessor::setStateInformation(const void* data, int size) {
     if (auto xml = getXmlFromBinary(data, size))
-        if (auto tree = juce::ValueTree::fromXml(*xml); tree.isValid())
+        if (auto tree = juce::ValueTree::fromXml(*xml); tree.isValid()) {
+            if (tree.hasProperty("uiTheme"))
+                ui_theme_ = (int)tree.getProperty("uiTheme");
             for (auto* p : getParameters())
                 if (auto* v = dynamic_cast<juce::RangedAudioParameter*>(p))
                     if (tree.hasProperty(juce::Identifier(v->paramID)))
                         v->setValueNotifyingHost(tree.getProperty(juce::Identifier(v->paramID)));
+        }
 }
 
 juce::AudioProcessorEditor* CurvesAudioProcessor::createEditor() {

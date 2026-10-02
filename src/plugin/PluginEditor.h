@@ -1,9 +1,18 @@
-// Curves — M2 editor: the drawable string canvas + control strip.
+// Curves — editor: the drawable string canvas + grouped control panels.
 //
 // Left-drag draws (deposits displacement into nodes, string is "held");
-// release lets it ring. Right-click flattens. The displayed curve is the
-// live sim state, published by the audio thread. Anchored ends get a pin
+// release lets it ring. Right-click flattens. Anchored ends get a pin
 // marker. Physics preset selection also sets Damping/Stiffness/Tension.
+//
+// THE HARD ANCHOR (project decision, never negotiable): the bright curve is
+// drawn from the FILTER BANK'S smoothed gains, never from the sim, and uses
+// the same ±1 clamp the audio path uses. What you see is exactly the EQ
+// being applied. The sim is shown separately as a faint reference line and
+// is labelled as such.
+//
+// Controls are grouped by scope rather than listed in one strip: GLOBAL
+// (always in effect), STRING (the physics that always applies), and CLOTH &
+// WIND (only meaningful in the Flagpole preset, so it dims when it is not).
 
 #pragma once
 
@@ -12,6 +21,44 @@
 #include <array>
 #include <memory>
 #include <vector>
+
+// ---- colour themes -------------------------------------------------------
+// Five schemes. Aqua is the default: neon aqua / electric blue.
+struct CurvesTheme {
+    const char* name;
+    juce::uint32 bg;          // window background
+    juce::uint32 plot_top;    // plot gradient, top
+    juce::uint32 plot_bot;    // plot gradient, bottom
+    juce::uint32 panel;       // group panel fill
+    juce::uint32 panel_edge;  // group panel border
+    juce::uint32 grid;        // minor grid
+    juce::uint32 grid_key;    // zero line / key frequencies
+    juce::uint32 curve;       // THE EQ CURVE (bright core)
+    juce::uint32 glow;        // curve glow + knob arcs
+    juce::uint32 fill;        // area fill under the curve
+    juce::uint32 sim_ref;     // faint sim reference line
+    juce::uint32 draw;        // deposit preview while dragging
+    juce::uint32 anchor;      // anchor pin
+    juce::uint32 text;        // titles
+    juce::uint32 text_dim;    // labels / hints
+};
+
+const CurvesTheme& curves_theme(int index);
+int curves_theme_count();
+
+// Rotary look: a dark track arc, a glowing value arc in the theme colour,
+// and a short pointer. Replaces the stock JUCE rotary so the panels read as
+// one designed surface rather than default widgets.
+class CurvesKnobLook : public juce::LookAndFeel_V4 {
+public:
+    void set_theme(const CurvesTheme* t) { theme_ = t; }
+    void drawRotarySlider(juce::Graphics&, int x, int y, int w, int h,
+                          float pos, float start, float end,
+                          juce::Slider&) override;
+
+private:
+    const CurvesTheme* theme_ = nullptr;
+};
 
 class CurvesAudioProcessorEditor : public juce::AudioProcessorEditor,
                                    private juce::Timer,
@@ -28,23 +75,29 @@ public:
     void mouseUp(const juce::MouseEvent&) override;
 
 private:
-    // One rotary control bound to a raw AudioParameterFloat (no APVTS —
-    // M1 keeps parameter plumbing minimal; APVTS refactor can come later).
+    // Which panel a control belongs to. GLOBAL is always in effect; STRING
+    // is the physics that always applies; CLOTH is Flagpole-only and dims
+    // outside it.
+    enum Group { kGlobal = 0, kString = 1, kCloth = 2, kNumGroups = 3 };
+
     struct Knob {
         juce::Slider slider;
         juce::Label label;
         juce::RangedAudioParameter* param = nullptr;
+        int group = kGlobal;
     };
 
     int active_nodes() const { return active_count_; }
 
-    // Canvas amplitude scale (scope-style +-div): the string may flap past
-    // +-1; switching the display scale gives it headroom instead of hard
-    // visual caps. Drawing resolution scales with it.
     void cycle_display_scale();
-    float display_scale() const { return display_scale_; }
+    void cycle_theme();
+    const CurvesTheme& theme() const { return curves_theme(theme_index_); }
+    void apply_theme();
 
-    // Pixel <-> node/value mapping (log frequency axis, ±1 amplitude).
+    // Panel rectangles, computed in resized() and reused by paint() so the
+    // frames and the controls inside them cannot drift apart.
+    juce::Rectangle<int> panel_[kNumGroups];
+
     juce::Rectangle<float> plot_bounds() const;
     float node_to_x(float node) const;
     float x_to_node(float x) const;
@@ -52,6 +105,8 @@ private:
     float y_to_value(float y) const;
     void deposit_stroke(float node_from, float val_from, float node_to, float val_to);
     void apply_physics_preset(int mode);
+    void draw_panel(juce::Graphics&, juce::Rectangle<int>, const char* title,
+                    bool active) const;
 
     void timerCallback() override;
     void sliderValueChanged(juce::Slider*) override;
@@ -59,15 +114,18 @@ private:
 
     CurvesAudioProcessor& processor_;
 
-    // Draw/display buffers: fixed max size, first active_count_ entries used.
     std::array<float, CurvesAudioProcessor::kMaxNodes> draw_nodes_{};
     std::array<float, CurvesAudioProcessor::kMaxNodes> display_nodes_{};
     std::array<float, CurvesAudioProcessor::kMaxNodes> display_eq_{};
     juce::TextButton scale_button_{"+-1"};
+    juce::TextButton theme_button_{"AQUA"};
+    CurvesKnobLook knob_look_;
+    int theme_index_ = 0;
     float display_scale_ = 1.0f;
     int active_count_ = 128;
     bool drawing_ = false;
-    bool dirty_ = false;  // draw buffer changed since last display refresh
+    bool dirty_ = false;
+    int last_mode_ = -1;  // physics mode the cloth panel was last styled for
     float last_node_ = 0.f, last_val_ = 0.f;
 
     std::vector<std::unique_ptr<Knob>> knobs_;
