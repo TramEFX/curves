@@ -426,7 +426,7 @@ labels its dB axis from the *effective* Range (post magnitude modifier).
 ---
 
 #### 4 · Smoothing  `smoothing`
-**2…100 ms · default 30 · Global**
+**2…100 ms · default 15 · Global**
 
 | Assigns | `smooth_alpha_ = 1 − exp(−1/(τ·tick_rate))`, `τ = ms/1000` |
 |---|---|
@@ -446,9 +446,19 @@ time** (30 ms behaved as 15 ms) and did not match a mono one. It also read
 the raw parameter in `processBlock` and therefore ignored its own magnitude
 modifier.
 
-**Consequence for tuning: the default now feels about 2× slower than it used
-to in stereo.** The default is deliberately left at 30 ms — where it should
-sit is an ear call, not a measurement.
+**Default 30 → 15 ms (2026-10-02).** Fixing the double-step doubled the real
+smoothing at any setting, so 30 ms lagged twice as far as that number used to;
+15 ms restores the previous stereo feel.
+
+**This lag is the only thing separating the two drawn lines.** Measured
+max |sim − drawn| over 14 s at 512 nodes:
+
+| Smoothing | 2 ms | 10 ms | 30 ms |
+|---|---|---|---|
+| max divergence | **0.019** | 0.050 | 0.119 |
+
+At the minimum the faint and bright lines coincide (rms 0.0024), which is the
+check that the display path itself is sound.
 
 **Interactions.** The only lag between string and displayed curve, accepted
 by design. Highest-leverage under-the-hood control in the plugin.
@@ -733,19 +743,47 @@ knowledge behind it.
 ---
 
 #### 14 · Wind  `wind`
-**0…1 · default 0.37 · Cloth**
+**0…1 · default 0.50 · Cloth**
 
-| Assigns | `sim_->wind_phase_speed = (10 + 490·Wind)·(N/128)` nodes/s |
+| Assigns | `sim_->wind_phase_speed = 0.12·25^Wind · Tension` nodes/s |
 |---|---|
 
 **What it does.** Gust **phase velocity** — how fast the flapping pattern
-travels along the cloth. *Not* how hard it blows.
+travels along the cloth — expressed as a **multiple of the wave speed**, so
+the dial means `f_gust/f0 = 0.12 … 3.0`. Default 0.50 gives ratio 0.60.
 
 **Functions.** → **F3a**, advancing `site_phase_s` each tick.
 
-**Interactions.** The `N/128` term keeps a setting meaning the same thing in
-every precision mode; without it the pattern crossed a 512-node string 4×
-slower than a 128-node one.
+**Re-ranged 2026-10-02** (user: "wind is not really affecting the string
+anymore … no difference at high levels or low levels"). It was not inert, it
+was mis-ranged. What you see depends on whether the string can **follow** the
+gust, which is a question about `f_gust/f0` — and the old
+`(10+490·Wind)·(N/128)` held `f_gust` constant across precision while
+`f0 = c/span` falls as `1/N`:
+
+| | 128 nodes | 512 nodes |
+|---|---|---|
+| `f_gust/f0` at the old default | 0.64 | **2.54** |
+| `f_gust/f0` at the dial top | 1.65 | **6.67** |
+
+At 512 nodes the whole upper dial sat beyond the string's ability to respond.
+Measured peak across the dial, before: **0.21 / 0.45 / 0.28 / 0.24 / 0.18** —
+both *ends* land in the same place. After: **0.14 / 0.40 / 0.44 / 0.51 /
+0.32**.
+
+Normalizing to the wave speed makes the knob precision- **and**
+Tension-independent by construction, exactly as **Flutter Hz** is normalized
+by `f0`.
+
+**Damping is not a lever here** — a 10× damping change moves the observed
+motion frequency by 4%, because drag dominates dissipation (ruled out by
+measurement before the re-range).
+
+**Honest limitation.** Amplitude across the dial is still *non-monotonic*, and
+the per-node motion frequency does not rise cleanly with the knob at 512
+nodes — the string rings in its own modes rather than tracking the gust. The
+spectral-centroid metric used for "motion frequency" is **not validated** and
+should not be trusted for fine judgements; the peak figures are solid.
 
 ---
 
@@ -936,7 +974,7 @@ knobs can fight.
 | `c2_` | Tension | — |
 | `damping_` | Damping | — |
 | `stiffness_` | Stiffness | — |
-| `wind_phase_speed` | Wind, Precision | — |
+| `wind_phase_speed` | Wind, **Tension** | normalized: the dial is a multiple of `c` |
 | `wave_density` | Waves | — |
 | `shed_freq_hz` | Flutter Hz | — |
 | `wall_lo` / `wall_hi` | Walls (canvas) | hard; blockers windowed to match |
@@ -1012,4 +1050,6 @@ build/Release/scenarios.exe prototype    # C++ engine
 build/Release/bench.exe 48000            # per-core cost
 build/Release/gain_test.exe              # Range invariance, dB symmetry, Steady
 build/Release/tension_test.exe 0.85 0 9  # Tension vs amplitude (self-validating)
+build/Release/display_test.exe           # does the drawn curve track the string
+build/Release/wind_test.exe              # Wind sweeps, old vs shipped mapping
 ```

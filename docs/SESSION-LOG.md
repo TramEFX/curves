@@ -18,7 +18,7 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `86ca9d9` |
+| Head | `7a8cad4` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 20, across 19 controls |
 | Validation | 10 scenarios, **73,856 cells, 0 mismatches** Python↔C++ |
@@ -368,6 +368,49 @@ default Tension survives untouched — no re-fit needed.
 > looked like catastrophic dt-dependence and invalidated every number here.
 > Corrected: the sim is dt-converged to **0.3%** from 1 kHz to 24 kHz. Note
 > also that the frozen scenarios run at **1 kHz**, not the plugin's 12/24 kHz.
+
+### Wind, and the two drawn lines
+
+Reported: Wind "not really affecting the string anymore — no difference at
+high levels or low levels", plus the faint sim line visibly disagreeing with
+the bright EQ line even at low Smoothing.
+
+**Wind was mis-ranged, not inert.** What the eye sees depends on whether the
+string can *follow* the gust — a question about `f_gust/f0`. The old mapping
+held `f_gust` constant across precision while `f0 = c/span` falls as `1/N`, so
+the same setting landed in completely different places:
+
+| | 128 nodes | 512 nodes |
+|---|---|---|
+| `f_gust/f0`, old default | 0.64 | **2.54** |
+| `f_gust/f0`, dial top | 1.65 | **6.67** |
+
+At 512 the whole upper dial was past the string's ability to respond; measured
+peak across the dial was 0.21 / 0.45 / 0.28 / 0.24 / 0.18 — **both ends land
+in the same place**, which is precisely the complaint. Now a multiple of the
+wave speed (`0.12*25^Wind`), mirroring the `f0` normalization Flutter Hz
+already uses. After: 0.14 / 0.40 / 0.44 / 0.51 / 0.32.
+
+**Damping ruled out by measurement** before any change: 10x damping moves the
+observed motion frequency by 4%, because drag dominates dissipation.
+
+**The two lines were the smoothing lag, nothing else.** Max |sim - drawn| over
+14 s at 512 nodes: **0.019 / 0.050 / 0.119** at Smoothing 2 / 10 / 30 ms. At
+the minimum they coincide (rms 0.0024), which clears the display path. Fixing
+the once-per-channel double-step had doubled the real smoothing at any
+setting, so the default moved 30 -> 15 ms to restore the prior feel. Both
+reported symptoms trace back to that one change of mine.
+
+> **Unvalidated metric, flagged.** The "motion frequency" column is a spectral
+> centroid on one probe node. It is **not** validated against a known signal
+> and behaves erratically at 512 nodes; a cross-correlation travel-speed metric
+> tried alongside it returned negative and wildly varying lags and was
+> discarded — the same failure mode as the 2026-10-01 direction metric. The
+> peak figures are solid; do not build on the Hz column without validating it.
+
+**Still open on Wind:** amplitude across the dial remains non-monotonic, and at
+512 nodes the string rings in its own modes rather than tracking the gust.
+Whether the re-range is enough is an ear call.
 
 ---
 
