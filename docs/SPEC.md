@@ -427,9 +427,19 @@ wave_density = 0.5 + 2.5 · Waves          (0.5 = stretched, 3.0 = packed)
 
 Also scales Wrinkle's wavenumbers, so the two stay coherent.
 
-**Tuning note:** at the stretched end the pattern pushes more coherently
-along the string and amplitude rises; this used to drive a large overshoot
-(peak 1.7) which the tilt blocker has since resolved (now 0.77).
+**Tuning note — measured 2026-10-02, needs no compensation.** Amplitude
+across the whole dial varies only **1.50×**, and non-monotonically (peak at
+density 1.0):
+
+| Waves | 0.00 | 0.20 | 0.40 | 0.60 | 0.80 | 1.00 |
+|---|---|---|---|---|---|---|
+| peak \|u\| | 0.803 | 1.011 | 0.854 | 0.881 | 0.675 | 0.704 |
+
+This was previously listed as a compensation target on the strength of an
+older 1.7 overshoot at the stretched end, but the tilt blocker already
+resolved that. A 1.5× hump is smaller than the gap between Force 0.75 and
+1.0, and is arguably characterful — denser waves genuinely carry less energy
+per wave. **Left alone deliberately.**
 
 #### Wrinkle — 0…1 · default 0
 
