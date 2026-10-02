@@ -125,6 +125,22 @@ W_i += wind_speed · wrinkle · (1/4) Σ_j [ sin(φ_j)·WC_j,i − cos(φ_j)·WS
 φ_j += wrinkle_k_j · c_tip · dt,     c_tip = c · 2^(taper/2)
 ```
 
+**(d) Mid-band ripples.** Four more components filling the gap between the
+gust sites (1.7–6 waves across the cloth) and wrinkle (25–64):
+
+```
+W_i += wind_speed · mid_ripple · (1/4) Σ_j [ sin(μ_j)·MC_j,i − cos(μ_j)·MS_j,i ]
+μ_j += mid_k_j · c_mid · dt,     c_mid = c · 2^(taper/4)
+mid_k_j = 2π · mid_waves · kMidK_j / span,   kMidK = {0.72, 1.0, 1.37, 1.9}
+```
+
+Tables bake in a **raised-cosine bump** envelope `0.5(1 − cos 2πd)`, centred
+at `d = 0.5` — which is exactly where the `c·2^(taper/4)` phase lock is
+resonant. Wrinkle sits at the tip, this sits in the middle, the gust spans
+the lot. `mid_waves` is an **absolute** wave count, deliberately *not* scaled
+by `wave_density`, so Waves keeps owning the gust pattern alone. Skipped
+entirely when `mid_ripple == 0`.
+
 **(c) Shedding.** A van der Pol wake oscillator per node:
 
 ```
@@ -779,6 +795,12 @@ by `f0`.
 motion frequency by 4%, because drag dominates dissipation (ruled out by
 measurement before the re-range).
 
+**Mid-band ripples ride this knob (added 2026-10-02).** Wind also sets the
+**size** of a mid-wavenumber ripple set, 6 → 20 waves across the cloth
+(`sim_->mid_waves = 6·(20/6)^Wind`); the amount follows Motion through
+`wind_speed`, and Wind's power LED gates it because these are gusts. See
+**F3d**.
+
 **Honest limitation.** Amplitude across the dial is still *non-monotonic*, and
 the per-node motion frequency does not rise cleanly with the knob at 512
 nodes — the string rings in its own modes rather than tracking the gust. The
@@ -976,6 +998,7 @@ knobs can fight.
 | `stiffness_` | Stiffness | — |
 | `wind_phase_speed` | Wind, **Tension** | normalized: the dial is a multiple of `c` |
 | `wave_density` | Waves | — |
+| `mid_waves`, `mid_ripple` | Wind, Motion | size from Wind, amount from Motion |
 | `shed_freq_hz` | Flutter Hz | — |
 | `wall_lo` / `wall_hi` | Walls (canvas) | hard; blockers windowed to match |
 | `wind_origin` | Direction | — |
@@ -1040,7 +1063,7 @@ feature to be built deliberately, not something that should fall out of
 per-channel followers by accident.
 
 **Bit-exact cross-validation.** The C++ engine is validated against the
-Python spec cell by cell: **10 scenarios, 73,856 cells, 0 mismatches**. Every
+Python spec cell by cell: **11 scenarios, 104,576 cells, 0 mismatches**. Every
 physics change must land in both with identical arithmetic order, and the
 pre-existing scenario CSVs must stay byte-identical.
 
@@ -1052,4 +1075,5 @@ build/Release/gain_test.exe              # Range invariance, dB symmetry, Steady
 build/Release/tension_test.exe 0.85 0 9  # Tension vs amplitude (self-validating)
 build/Release/display_test.exe           # does the drawn curve track the string
 build/Release/wind_test.exe              # Wind sweeps, old vs shipped mapping
+build/Release/spatial_test.exe           # spatial spectrum by wavenumber band
 ```

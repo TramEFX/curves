@@ -18,11 +18,11 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `7a8cad4` |
+| Head | `79e02fe` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 20, across 19 controls |
-| Validation | 10 scenarios, **73,856 cells, 0 mismatches** Python↔C++ |
-| Cost @48 kHz | ~7% / ~22% / ~45% of one core at 128 / 256 / 512 nodes |
+| Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
+| Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
 
 **Three invariants that constrain everything:**
@@ -411,6 +411,63 @@ reported symptoms trace back to that one change of mine.
 **Still open on Wind:** amplitude across the dial remains non-monotonic, and at
 512 nodes the string rings in its own modes rather than tracking the gust.
 Whether the re-range is enough is an ear call.
+
+### Mid-band ripples
+
+Reported: "there's big slow waves, and there's very small ripples when I turn
+wind up really high … we need some mid to mid small sized ripples that wind
+affects. Not sure if this will end up being a tuning thing or an additive
+thing."
+
+**Measurement answered it: additive.** New `spatial_test` bins |FFT across
+nodes| of the string shape by waves-across-the-string:
+
+| | 1–2 | 2–6 | 6–12 | 12–25 | 25–64 |
+|---|---|---|---|---|---|
+| Wind 0.0 | 0.01733 | 0.00631 | 0.00175 | 0.00105 | 0.00076 |
+| Wind 1.0 | 0.02665 | 0.01289 | 0.00556 | 0.00322 | 0.00233 |
+| Waves 0.25 | 0.05252 | 0.01595 | 0.00825 | 0.00560 | 0.00413 |
+| Waves 1.00 | 0.01171 | 0.00518 | 0.00292 | 0.00154 | 0.00111 |
+
+Three facts, each of which kills a cheaper option:
+
+1. The **1–2 wave band carries 5–15×** everything above it, at every setting.
+2. **Raising Waves does not move energy up the spectrum** — it makes every band
+   smaller. Tuning cannot do this.
+3. **Wrinkle is not targeted** — it lifts every band roughly proportionally,
+   including 1–2 by 2.9×.
+
+Structurally the gust sites cover 1.7–6 waves and wrinkle 25–64, with nothing
+between. And the reason it must be *built* rather than tuned is the same wall
+wrinkle hit: at those wavenumbers `c²k²` dwarfs stiffness, so the modes are
+**only reachable on resonance**.
+
+Four components, locked to the **mid-cloth** wave speed `c·2^(taper/4)`, with a
+raised-cosine bump envelope centred at `d = 0.5` — exactly where that lock is
+resonant. Wrinkle at the tip, this in the middle, gust across the lot.
+
+**Owner chose: no new knob.** Wind sets the size (6 → 20 waves), amount follows
+Motion.
+
+| amount | 6–12 band | peak vs off |
+|---|---|---|
+| 0.0 | 0.00400 | 1.00× |
+| 1.0 | 0.01297 | 1.01× |
+| **1.5** | **0.02086** | **1.06×** |
+| 2.0 | 0.02952 | 1.12× |
+
+Shipped at 1.5: **5.2× the mid-band content for 1.06× peak**. Compare wrinkle's
+1.57×, a recorded defect — resonance-locking plus mid-localization adds
+structure rather than bulk, which is why it is nearly free in the budget.
+
+Cost: **+4.05% of one core** at 512 nodes (sim tick 29.47 → 33.52), +0.26% at
+128. Total still under 50% at the highest precision.
+
+**Validation extended.** The frozen baselines could not test this — `mid_ripple`
+defaults to 0 so they stay byte-identical by construction, which proves
+nothing about the new code. Added a `mid` scenario to *both* engines; they
+report mid-third curvature **948.902818** and peak **0.602248** to the digit.
+Validation is now **11 scenarios, 104,576 cells, 0 mismatches**.
 
 ---
 
