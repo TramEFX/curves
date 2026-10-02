@@ -513,13 +513,29 @@ curvature response, wrinkle tuning and settling together. Tune it early.
 | Assigns | `vel_amt` in **F7** |
 |---|---|
 
-**What it does.** Mixes string velocity into the gain mapping:
-`disp_i = u_i + Velocity·(v_i/Tension)`. At 0 the EQ follows shape; up, it
-reacts to how fast the string is moving — sharper and more "plucked" rather
-than a gentle sway. Division by Tension makes it tension-independent.
+**What it does.** Blends the gain mapping between the string's *position*
+and its *velocity*:
 
-**Interactions.** **The least-explored control in the plugin** — left at 0
-through essentially all testing.
+```
+disp_i = (1 − Velocity)·u_i + Velocity·(30 · v_i / Tension)
+```
+
+At 0 the EQ follows shape; at 1 it follows how fast the string is moving —
+plucked rather than swaying.
+
+**Fixed 2026-10-02** (user: "not noticing velocity doing much"). It was
+additive and scaled by `1/Tension` alone, which made it nearly inert:
+measured, it contributed only **3.4%** of the rms displacement at full.
+Cause — `|v|/|u|` is about **10** at Tension 300, so the divisor was ~30×
+too large. Dividing by Tension is still right in principle (v/u scales with
+wave speed, which is what keeps the knob tension-independent); only the
+constant was wrong.
+
+Made a **blend** rather than a sum, which is self-normalising: measured rms
+stays within **0.074–0.107** and peak within **0.54–0.85** across the whole
+dial, with **0.00% clamping at every setting**. An additive form at this
+scale would have gone straight through the ±1 clamp. The mild dip at
+Velocity 0.5 is `u` and `v` being roughly 90° out of phase.
 
 ---
 
@@ -660,20 +676,32 @@ boost clamp binding, which is honest — very fast flutter genuinely is subtle.
 #### 16 · Waves  `waves`
 **0…1 · default 0.4 · Cloth**
 
-| Assigns | `sim_->wave_density = 0.5 + 2.5·Waves` |
+| Assigns | `sim_->wave_density = 0.5 + 4.5·Waves` |
 |---|---|
 
 **What it does.** Spatial **density** of the gust pattern — how many waves
-fit along the cloth. 0.5 = stretched, 3.0 = packed. Scales all eight gust
+fit along the cloth. 0.5 = stretched, 5.0 = packed. Scales all eight gust
 wavenumbers together, and the four wrinkle wavenumbers too, so the two stay
 coherent.
 
 **Functions.** → **F6** (triggers a table rebuild on change) → **F3a**, **F3b**.
 
-**Measured — needs no compensation.** Amplitude varies only **1.50×** across
-the whole dial, non-monotonically (peak at density 1.0). Smaller than the
-gap between Motion 0.75 and 1.0, and denser waves carrying less energy per
-wave is characterful. **Left alone deliberately.**
+**Range extended 2026-10-02** (user: "not noticing waves doing much"):
+**0.5–3.0 → 0.5–5.0**. Measured spatial centroid against density:
+
+| density | 0.5 | 1.5 | 3.0 | 5.0 | 8.0 | 12.0 |
+|---|---|---|---|---|---|---|
+| spatial centroid | 1.03 | 1.21 | 1.38 | 1.50 | 1.63 | 1.38 |
+| peak | 0.70 | 0.74 | 0.60 | 0.41 | 0.30 | 0.21 |
+
+The old top of 3.0 sat well short of the usable range, which reverses past
+~8. Medium now reaches 5.0, High magnitude about 9.5.
+
+**Honest limitation:** Waves is inherently a *modest* control — the string's
+own dynamics dominate its spatial content, so the centroid spans only ~1.6×
+over any usable range. Finer forcing also couples less efficiently, so peak
+falls ~1.7× across the new range. That amplitude side-effect is **not
+compensated**: Motion is the amplitude control and absorbs it.
 
 ---
 
@@ -707,6 +735,10 @@ essentially nothing for exactly this reason.
 **with the pole end unchanged** (0.83 → 0.87).
 
 **Interactions.**
+- **No longer silenced by Wind.** Wrinkle was scaled by `wind_speed`, so
+  gating the gust field off killed the wrinkles too. It now has its own
+  amplitude reference (`sim_->wrinkle_speed`, fed the *ungated* gust speed) —
+  it is a separate mechanism with its own power switch.
 - **Still outside the excitation budget.** Unlike Motion and Character it
   adds on top: at Motion 1 it multiplies peak by **1.57×** at Character 0
   and 1.12× at Character 0.5, so near maximum it can push the EQ into the
@@ -795,7 +827,8 @@ though each consumer normalizes against it deliberately.
    hot; set it before tuning physics.
 3. **Stiffness is weaker than its range** now that DC and tilt are blocked.
    Needs rescaling or a redefined job.
-4. **Velocity is unexplored** — 0 through essentially all testing.
+4. ~~**Velocity is unexplored**~~ — **fixed 2026-10-02.** Was contributing
+   3.4% at full; now a position/velocity blend with the constant corrected.
 5. **Physics modes 2 and 3 are thin** — knob values plus, for Gust, a static
    field. Candidates for becoming presets, freeing Physics to be a real mode
    switch.
