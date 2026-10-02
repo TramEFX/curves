@@ -143,6 +143,12 @@ public:
     // wrinkle = 0 (default) skips the stage entirely, so it costs nothing
     // and the frozen scenarios are untouched.
     double wrinkle = 0.0;
+    // Amplitude reference for the wrinkle components. NEGATIVE means "follow
+    // wind_speed", which is the original behaviour and what the frozen
+    // scenarios rely on. The plugin sets it explicitly so that silencing the
+    // gust field does not also silence the wrinkles - they are a separate
+    // mechanism and were only ever scaled by wind_speed out of convenience.
+    double wrinkle_speed = -1.0;
     static constexpr double kWrinkleK_[4] = {12.0, 17.0, 23.0, 31.0};
     // Tip-envelope exponent (user request 2026-10-02: +30% reach). The
     // envelope is d^kWrinkleEnv_; lowering the exponent widens the affected

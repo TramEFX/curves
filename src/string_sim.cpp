@@ -346,7 +346,9 @@ void StringSim::update_wind_forces() {
                 double ww = 0.0;
                 for (int j = 0; j < 4; ++j)
                     ww += wsp[j] * wc[j] - wcp[j] * ws[j];
-                w_field_[i] += wind_speed * wrinkle * (ww / 4.0);
+                const double wr_amp =
+                    (wrinkle_speed >= 0.0) ? wrinkle_speed : wind_speed;
+                w_field_[i] += wr_amp * wrinkle * (ww / 4.0);
             }
         } else {
             f_[i] = wind_strength * wind_env_[i] * (w / 8.0);

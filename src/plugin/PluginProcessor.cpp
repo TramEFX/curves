@@ -62,6 +62,10 @@ constexpr double kRateCompMin = 0.25, kRateCompMax = 8.0;
 constexpr double kWindA = 0.8720, kWindP = 1.679;
 constexpr double kShedA = 1.2756, kShedP = 0.707;
 constexpr double kMotionPeak = 0.85;
+// Velocity blend scale: |v| / |u| measures about 10 at Tension 300, so
+// 30/Tension brings the velocity term to roughly the same rms and peak as
+// the displacement term.
+constexpr double kVelScale = 30.0;
 
 // Second-order correction. Linear addition gets most of the way, but two
 // INCOHERENT sources do not add their peaks exactly - the peaks rarely
@@ -281,7 +285,14 @@ void CurvesAudioProcessor::apply_physics(int mode) {
                              static_cast<double>(n_nodes_), 1.5);
         sim_->aero_rho_cd = 0.6;
         sim_->set_density_taper(2.0);
-        sim_->set_cloth_length(length_->get());
+        // Do NOT set cloth length here: apply_physics sees the raw knob,
+        // while the per-block path tracks the magnitude-modified value, and
+        // the two desynced - last_length_ could hold a value the sim did not
+        // have, so the per-block guard saw "no change" and never corrected
+        // it. A wrong cloth_length puts a near-rigid, 25x-damped tail at the
+        // far end, which looks exactly like an anchor, intermittently.
+        // Forcing a re-apply below keeps one owner of this value.
+        last_length_ = -1.0;
     } else if (mode == kGust) {
         // No anchors; smooth zero-mean static force field across the spectrum.
         const double w = 8.0 * (static_cast<double>(n_nodes_) / 128.0);
@@ -347,7 +358,16 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     sim_->wind_phase_speed = (10.0 + 490.0 * knob(kWind, wind_->get()))
                              * (static_cast<double>(n_nodes_) / 128.0);
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
-    sim_->wave_density = 0.5 + 2.5 * knob(kWaves, waves_->get());
+    // Waves range extended 0.5-3.0 -> 0.5-5.0 (user: "not noticing waves
+    // doing much"). Measured spatial centroid vs density: 1.03 / 1.21 /
+    // 1.38 / 1.50 / 1.63 at 0.5 / 1.5 / 3 / 5 / 8, so the old top of 3 sat
+    // well short of the usable range. It reverses past ~8, so 5 at Medium
+    // (and ~9.5 at High magnitude) covers it.
+    //
+    // Side effect, deliberately not compensated: finer forcing couples into
+    // the string less efficiently, so peak falls ~1.7x across the new range.
+    // Motion is the amplitude control and absorbs it.
+    sim_->wave_density = 0.5 + 4.5 * knob(kWaves, waves_->get());
     sim_->set_wind_origin(direction_->get() > 0.5f ? 1 : 0);
     const double length_v = knob(kLength, length_->get());
     if (std::abs(length_v - last_length_) > 1e-4) {
@@ -380,10 +400,13 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // Wind's power LED gates the gust MECHANISM: off means no gust forcing
     // at all, which is what "turn the wind off" has to mean. Previously
     // only its rate dropped to minimum and the gusts kept blowing slowly.
-    sim_->wind_speed = mechanism_on(kWind)
-                           ? 25.0 * wind_dial * tension_norm * node_norm
-                                 * kNodeWindGain[prec_idx]
-                           : 0.0;
+    const double gust_speed = 25.0 * wind_dial * tension_norm * node_norm
+                              * kNodeWindGain[prec_idx];
+    sim_->wind_speed = mechanism_on(kWind) ? gust_speed : 0.0;
+    // Wrinkle keeps its own amplitude reference, so turning the gust field
+    // off does not silence it as well - it is a separate mechanism with its
+    // own power switch.
+    sim_->wrinkle_speed = gust_speed;
     // Flap limiter permanently off: aerodynamic drag IS the amplitude
     // mechanism now. Kept in the engine rather than deleted so the legacy
     // kFlagpoleWind model and the frozen validation scenarios still behave
@@ -414,14 +437,28 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     leveler_.set_amount(knob(kLeveler, leveler_amt_->get()));
     max_gain_db_ = knob(kRangeDb, drive_->get());
 
-    // 3. Per-block gain targets: position + optional velocity coupling.
-    //    Velocity is normalized by tension so coupling is tension-independent.
+    // 3. Per-block gain targets: a BLEND of position and velocity.
+    //
+    //    Velocity was additive and divided by Tension alone, which made it
+    //    nearly inert: measured, it contributed only 3.4% of the rms
+    //    displacement at full. |v|/|u| is about 10 at Tension 300, so the
+    //    divisor was ~30x too large. Dividing by Tension is still right in
+    //    principle - v/u scales with wave speed, so this keeps the knob
+    //    tension-independent - only the constant was wrong.
+    //
+    //    It is now a blend rather than a sum. At 0 the EQ follows the
+    //    string's shape; at 1 it follows how fast the string is moving,
+    //    which reads as plucked rather than swaying. A blend is
+    //    self-normalising: measured rms and peak of the velocity term with
+    //    kVelScale = 30 are close to those of u, so neither extreme pushes
+    //    the +-1 clamp the way an additive form would.
     const double vel_amt = knob(kVelocity, velocity_->get());
     const double ws = std::max(1.0, tension_v);
     const auto& u = sim_->positions();
     const auto& v = sim_->velocities();
     for (int i = 0; i < n_nodes_; ++i) {
-        const double disp = u[i] + vel_amt * (v[i] / ws);
+        const double disp = (1.0 - vel_amt) * u[i]
+                            + vel_amt * (kVelScale * v[i] / ws);
         const double db = std::clamp(disp, -1.0, 1.0) * max_gain_db_;
         // 10^(db/20) == 2^(db/6.0206). exp2 is markedly cheaper than pow and
         // this runs once per node per block (512 calls at high precision).

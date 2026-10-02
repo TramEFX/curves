@@ -82,6 +82,9 @@ class StringSim:
         # waves are suppressed ~1000x and can only be excited on resonance.
         # wrinkle = 0 (default) skips the stage entirely.
         self.wrinkle = 0.0
+        # Negative = follow wind_speed (original behaviour, relied on by the
+        # frozen scenarios). See src/string_sim.h.
+        self.wrinkle_speed = -1.0
         self.WRINKLE_K = np.array([12.0, 17.0, 23.0, 31.0])
         # Tip-envelope exponent (see src/string_sim.h): lowering it widens
         # the affected region toward the pole. 4.0 -> 2.8 is +28% reach.
@@ -371,7 +374,9 @@ class StringSim:
                 for j in range(4):
                     ww += (wsp[j] * self._wrinkle_cos[:, j]
                            - wcp[j] * self._wrinkle_sin[:, j])
-                self._w_field = self._w_field + self.wind_speed * self.wrinkle * (ww / 4.0)
+                wr_amp = (self.wrinkle_speed if self.wrinkle_speed >= 0.0
+                          else self.wind_speed)
+                self._w_field = self._w_field + wr_amp * self.wrinkle * (ww / 4.0)
             self.force[:] = 0.0
         else:
             self.force[:] = self.wind_strength * self._wind_env * (w / 8.0)
