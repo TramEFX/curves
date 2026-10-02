@@ -157,6 +157,37 @@ public:
     // starts at d = 0.441 (55.9%) - a 1.28x wider region.
     static constexpr double kWrinkleEnv_ = 2.8;
 
+    // ---- MID-BAND RIPPLES -------------------------------------------------
+    // The gust sites cover 1.7-6 waves across the cloth and wrinkle covers
+    // 25-64. Measured spatial spectra showed a structural hole between them,
+    // and the 1-2 wave band carrying 5-15x the energy of everything above it
+    // at every setting (user: "there's big slow waves, and there's very small
+    // ripples ... we need some mid-sized ripples and waves").
+    //
+    // Tuning cannot fill it: raising wave_density does not move energy up the
+    // spectrum, it just makes every band smaller (measured, Waves 0.25 -> 1.0
+    // drops all five bands). Wrinkle cannot either - it lifts every band
+    // roughly proportionally, including 1-2 by 2.9x, so it is not targeted.
+    //
+    // So this is a separate set, built like wrinkle and for the same reason:
+    // at these wavenumbers the tension term c^2*k^2 dwarfs stiffness, so the
+    // modes are only reachable ON RESONANCE. The phase velocity is locked to
+    // the wave speed at MID-cloth, c * 2^(taper/4), and the envelope is a
+    // raised-cosine bump centred at d = 0.5 - which is exactly where that
+    // lock is resonant. Wrinkle sits at the tip, this sits in the middle, the
+    // gust spans the lot.
+    //
+    // Deliberately NOT scaled by wave_density: mid_waves is an absolute count
+    // of waves across the span, set by the Wind knob (6 -> 20), so Wind
+    // chooses the ripple SIZE and Waves keeps owning the gust pattern alone.
+    //
+    // mid_ripple = 0 (default) skips the stage entirely, so it costs nothing
+    // and the frozen scenarios are untouched.
+    double mid_ripple = 0.0;
+    double mid_waves = 10.0;
+    // Relative spread of the four components about mid_waves.
+    static constexpr double kMidK_[4] = {0.72, 1.0, 1.37, 1.9};
+
     // Wind origin (Direction knob, project decision): which side the wind
     // blows FROM — 0 = pole at the high end (whip at lows), 1 = pole at the
     // low end (whip at HIGHS). Mirrors the entire cloth geometry. Pure
@@ -356,7 +387,12 @@ private:
     // Wavenumbers actually used, after the anti-alias clamp. Stored so the
     // table build and the per-tick phase advance cannot disagree.
     double wrinkle_k_[4] = {};
+    // Mid-band tables, [node*4 + component], with the mid-cloth bump baked in.
+    std::vector<double> mid_cos_, mid_sin_;
+    double mid_phase_[4] = {};
+    double mid_k_[4] = {};
     double tables_density_ = -1.0;   // wave_density the tables were built for
+    double tables_mid_ = -1.0;       // mid_waves the tables were built for
     std::vector<double> q_, qd_;    // wake-oscillator state per node
     std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)
     void recompute_cloth();

@@ -105,6 +105,10 @@ constexpr double kNodeWindGain[3] = {1.590, 1.031, 0.913};
 // Note (c/300)^p == 1 at Tension 300 for ANY p, so the Motion calibration at
 // the default Tension is untouched by this and needs no re-fit.
 constexpr double kTensionP[3] = {0.85, 0.80, 0.60};
+// Mid-band ripple amount, as a multiple of wind_speed. Calibrated against
+// the measured spatial spectrum: see the Wind entry in SPEC-0.0.2.
+constexpr double kMidAmp = 1.5;   // measured: mid band 0.0040 -> 0.0209 rms
+                                  // while peak costs only 1.06x
 constexpr double kNodeShedGain[3] = {2.796, 0.978, 1.099};
 
 constexpr double kMixC[] = {0.0, 0.33, 0.66, 1.0};
@@ -407,9 +411,16 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // the band where the string actually tracks the gust at every precision.
     // Wind 0.5 gives 0.60, the ratio the 128-node calibration was tuned at.
     {
-        const double ratio = 0.12 * std::pow(25.0, knob(kWind, wind_->get()));
+        const double wind_knob = knob(kWind, wind_->get());
+        const double ratio = 0.12 * std::pow(25.0, wind_knob);
         const double c = std::max(1.0, knob(kTension, tension_->get()));
         sim_->wind_phase_speed = ratio * c;
+        // Mid-band ripples ride the same knob: Wind picks their SIZE, 6 -> 20
+        // waves across the cloth. Amount follows Motion (via wind_speed), so
+        // there is no extra control -- measured, the gust sites cover only
+        // 1.7-6 waves and wrinkle 25-64, and nothing reached the middle.
+        sim_->mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
+        sim_->mid_ripple = mechanism_on(kWind) ? kMidAmp : 0.0;
     }
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
     // Waves range extended 0.5-3.0 -> 0.5-5.0 (user: "not noticing waves

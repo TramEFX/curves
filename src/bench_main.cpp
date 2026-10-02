@@ -74,6 +74,20 @@ int main(int argc, char** argv) {
             std::printf("sim tick  n=%-4d wind + flutter    %8.0f  %8.0f   %8.2f\n",
                         n, ns, tick_rate, ns * 1e-9 * tick_rate * 100.0);
         }
+        // --- sim tick, wind + flutter + MID BAND ---
+        {
+            StringParams p; p.tick_rate = tick_rate; p.wave_speed = 300.0;
+            StringSim sim(n, p);
+            sim.set_cloth_aero(192.0 * n / 128.0, (double)n, 1.5);
+            sim.wind_speed = 25.0; sim.aero_rho_cd = 0.6; sim.shed_gain = 30.0;
+            sim.set_density_taper(2.0); sim.set_cloth_length(1.0);
+            sim.mid_ripple = 1.5; sim.mid_waves = 10.0;
+            const int reps = 20000;
+            const double t = seconds([&] { sim.tick(); }, reps);
+            const double ns = t / reps * 1e9;
+            std::printf("sim tick  n=%-4d + mid band       %8.0f  %8.0f   %8.2f\n",
+                        n, ns, tick_rate, ns * 1e-9 * tick_rate * 100.0);
+        }
         // --- control smoother: the one-pole on disp, at the TICK rate ---
         // This is the smoothing system now. It moved off the linear gain
         // (where Range dB leaked into it) onto the string control signal.

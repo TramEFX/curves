@@ -85,6 +85,7 @@ class StringSim:
         # Negative = follow wind_speed (original behaviour, relied on by the
         # frozen scenarios). See src/string_sim.h.
         self.wrinkle_speed = -1.0
+        self.MID_K = np.array([0.72, 1.0, 1.37, 1.9])
         self.WRINKLE_K = np.array([12.0, 17.0, 23.0, 31.0])
         # Tip-envelope exponent (see src/string_sim.h): lowering it widens
         # the affected region toward the pole. 4.0 -> 2.8 is +28% reach.
@@ -92,6 +93,21 @@ class StringSim:
         self._wrinkle_cos = None
         self._wrinkle_sin = None
         self._wrinkle_phase = np.zeros(4)
+        # ---- mid-band ripples (see src/string_sim.h for the rationale) ----
+        # The gust sites cover 1.7-6 waves across the cloth and wrinkle 25-64;
+        # measured spectra showed nothing in between. Built like wrinkle and
+        # for the same reason (these wavenumbers are only reachable ON
+        # RESONANCE), but locked to the MID-cloth wave speed c*2^(taper/4)
+        # with a raised-cosine bump centred where that lock is resonant.
+        # Deliberately NOT scaled by wave_density: mid_waves is an absolute
+        # count of waves across the span, set by the Wind knob.
+        # mid_ripple = 0 (default) skips the stage entirely.
+        self.mid_ripple = 0.0
+        self.mid_waves = 10.0
+        self._mid_cos = None
+        self._mid_sin = None
+        self._mid_phase = np.zeros(4)
+        self._tables_mid = -1.0
         self.flap_limit = 1e9  # Force semantics: flap peak ceiling; 1e9 = off
         self._flap_gain = 1.0
         self._wind_k = 0.1
@@ -330,7 +346,17 @@ class StringSim:
         warg = p[:, None] * self._wrinkle_k[None, :]
         self._wrinkle_cos = tip[:, None] * np.cos(warg)
         self._wrinkle_sin = tip[:, None] * np.sin(warg)
+        # Mid-band tables. Absolute wavenumber (mid_waves * MID_K waves across
+        # the span), with a raised-cosine bump centred at mid-cloth baked in.
+        mid_limit = 2 * np.pi / 8.0
+        mk = 2 * np.pi * self.mid_waves * self.MID_K / span
+        self._mid_k = np.minimum(mk, mid_limit)
+        bump = 0.5 * (1.0 - np.cos(2 * np.pi * d))
+        marg = p[:, None] * self._mid_k[None, :]
+        self._mid_cos = bump[:, None] * np.cos(marg)
+        self._mid_sin = bump[:, None] * np.sin(marg)
         self._tables_density = self.wave_density
+        self._tables_mid = self.mid_waves
 
     def seed_wake_phase(self, preserve_amplitude):
         """(Re)impose the outward travelling phase ramp on the wake bank.
@@ -366,6 +392,7 @@ class StringSim:
         # wave_density is live (the Waves knob), so the tables follow it -
         # but only on change, never per tick.
         if (self._site_cos is None or self._tables_density != self.wave_density
+                or self._tables_mid != self.mid_waves
                 or self._site_cos.shape[0] != self.n):
             self.rebuild_gust_tables()
         self._site_phase += (self._wind_k * self.wind_phase_speed
@@ -400,6 +427,20 @@ class StringSim:
                 wr_amp = (self.wrinkle_speed if self.wrinkle_speed >= 0.0
                           else self.wind_speed)
                 self._w_field = self._w_field + wr_amp * self.wrinkle * (ww / 4.0)
+            if self.mid_ripple != 0.0:
+                # Phase velocity locked to the MID-cloth wave speed, the same
+                # resonance trick wrinkle uses at the tip.
+                c_mid = np.sqrt(self.c2) * 2.0 ** (0.25 * self._density_taper)
+                self._mid_phase = (self._mid_phase
+                                   + self._mid_k * c_mid * self.dt)
+                msp = np.sin(self._mid_phase)
+                mcp = np.cos(self._mid_phase)
+                mm = np.zeros(self.n)
+                for j in range(4):
+                    mm += (msp[j] * self._mid_cos[:, j]
+                           - mcp[j] * self._mid_sin[:, j])
+                self._w_field = (self._w_field
+                                 + self.wind_speed * self.mid_ripple * (mm / 4.0))
             self.force[:] = 0.0
         else:
             self.force[:] = self.wind_strength * self._wind_env * (w / 8.0)

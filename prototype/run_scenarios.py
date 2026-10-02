@@ -341,6 +341,47 @@ def scenario_wrinkle():
     print(f"  late peak|u| {peak:.6f}   finite: {'yes' if np.all(np.isfinite(sim.u)) else 'NO - BLEW UP'}")
 
 
+def scenario_mid():
+    """Mid-band ripples: the wavenumbers between the gust (1.7-6 waves across
+    the cloth) and wrinkle (25-64). Resonance-locked to the MID-cloth wave
+    speed with a raised-cosine bump envelope, so the extra detail lands in
+    the middle third. Curvature is the density proxy, as in the wrinkle
+    scenario - cheap and deterministic in both languages."""
+    print("scenario: mid (mid-band ripples, resonance-locked mid-cloth)")
+    MN = 512
+    sim = StringSim(n_nodes=MN, tick_rate=TICK_RATE,
+                    wave_speed=300.0, damping=1.2, stiffness=2.0)
+    sim.set_cloth_aero(phase_velocity_nodes_s=192.0 * MN / 128.0,
+                       wavelength_nodes=float(MN), envelope_exponent=1.5)
+    sim.wind_speed = 25.0 * (128.0 / MN) ** 0.25
+    sim.aero_rho_cd = 0.6
+    sim.set_density_taper(2.0)
+    sim.set_cloth_length(1.0)
+    sim.mid_ripple = 1.5
+    sim.mid_waves = 10.0
+    frames = []
+    mid_c = end_c = 0.0
+    peak = 0.0
+    for s in range(6000):
+        sim.tick()
+        t = s * sim.dt
+        if s % 100 == 0:
+            frames.append((t, sim.u.copy()))
+        if t < 2.0:
+            continue
+        curv = np.abs(sim.u[:-2] - 2.0 * sim.u[1:-1] + sim.u[2:])
+        idx = np.arange(1, MN - 1)
+        peak = max(peak, float(np.max(np.abs(sim.u))))
+        # integer bounds chosen to match the C++ loop exactly
+        m = (idx >= MN // 3) & (idx < 2 * MN // 3)
+        mid_c += float(np.sum(curv[m]))
+        end_c += float(np.sum(curv[~m]))
+    save_frames("mid", frames)
+    print(f"  mid-third curvature {mid_c:.6f}  outer {end_c:.6f}"
+          f"  (ratio {mid_c / max(end_c, 1e-9):.2f}x)")
+    print(f"  late peak|u| {peak:.6f}   finite: {'yes' if np.all(np.isfinite(sim.u)) else 'NO - BLEW UP'}")
+
+
 if __name__ == "__main__":
     scenario_pluck()
     scenario_flagpole()
@@ -352,4 +393,5 @@ if __name__ == "__main__":
     scenario_tilt()
     scenario_shed()
     scenario_wrinkle()
+    scenario_mid()
     print("done.")

@@ -441,6 +441,50 @@ void scenario_wrinkle(const fs::path& out) {
 
 }  // namespace
 
+void scenario_mid(const fs::path& out) {
+    std::cout << "scenario: mid (mid-band ripples, resonance-locked mid-cloth)" << "\n";
+    StringParams p;
+    p.tick_rate = kTickRate;
+    p.wave_speed = 300.0;
+    p.damping = 1.2;
+    p.stiffness = 2.0;
+    const int kMNodes = 512;
+    StringSim sim(kMNodes, p);
+    sim.set_cloth_aero(192.0 * kMNodes / 128.0, (double)kMNodes, 1.5);
+    sim.wind_speed = 25.0 * std::pow(128.0 / kMNodes, 0.25);
+    sim.aero_rho_cd = 0.6;
+    sim.set_density_taper(2.0);
+    sim.set_cloth_length(1.0);
+    sim.mid_ripple = 1.5;
+    sim.mid_waves = 10.0;
+    std::vector<std::pair<double, std::vector<double>>> frames;
+    double mid_c = 0.0, end_c = 0.0, peak = 0.0;
+    bool finite = true;
+    for (int s = 0; s < 6000; ++s) {
+        sim.tick();
+        if (s % 100 == 0) frames.emplace_back(s / kTickRate, sim.positions());
+        if (s / kTickRate < 2.0) continue;
+        const auto& u = sim.positions();
+        for (int i = 0; i < kMNodes; ++i) {
+            if (!std::isfinite(u[i])) finite = false;
+            peak = std::max(peak, std::abs(u[i]));
+        }
+        // curvature in the middle third vs the two outer thirds: the bump
+        // envelope should put the extra detail in the middle
+        for (int i = 1; i + 1 < kMNodes; ++i) {
+            const double curv = std::abs(u[i - 1] - 2.0 * u[i] + u[i + 1]);
+            if (i >= kMNodes / 3 && i < 2 * kMNodes / 3) mid_c += curv;
+            else end_c += curv;
+        }
+    }
+    save_frames(out, "cpp_mid", frames);
+    std::cout << "  mid-third curvature " << mid_c
+              << "  outer " << end_c
+              << "  (ratio " << mid_c / std::max(end_c, 1e-9) << "x)" << "\n";
+    std::cout << "  late peak|u| " << peak
+              << "   finite: " << (finite ? "yes" : "NO - BLEW UP") << "\n";
+}
+
 int main(int argc, char** argv) {
     fs::path out = (argc > 1) ? fs::path(argv[1]) : fs::path("..") / "prototype";
     fs::create_directories(out);
@@ -455,6 +499,7 @@ int main(int argc, char** argv) {
     scenario_tilt(out);
     scenario_shed(out);
     scenario_wrinkle(out);
+    scenario_mid(out);
     std::cout << "done.\n";
     return 0;
 }

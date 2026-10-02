@@ -282,7 +282,31 @@ void StringSim::rebuild_gust_tables() {
                 tip * std::sin(wrinkle_k_[j] * p_i);
         }
     }
+    // Mid-band tables. Absolute wavenumber: mid_waves * kMidK_[j] waves
+    // across the span, independent of wave_density (the Wind knob owns the
+    // size). Envelope is a raised-cosine bump centred at mid-cloth, which is
+    // where the c*2^(taper/4) phase lock is on resonance.
+    mid_cos_.assign(static_cast<std::size_t>(n_) * 4, 0.0);
+    mid_sin_.assign(static_cast<std::size_t>(n_) * 4, 0.0);
+    const double mid_limit = 6.283185307179586 / 8.0;   // 8 nodes per cycle
+    for (int j = 0; j < 4; ++j) {
+        const double k = 6.283185307179586 * mid_waves * kMidK_[j] / span;
+        mid_k_[j] = (k > mid_limit) ? mid_limit : k;
+    }
+    for (int i = 0; i < n_; ++i) {
+        const double p_i = low_pole ? static_cast<double>(i)
+                                    : static_cast<double>(n_ - 1 - i);
+        const double d = std::clamp(p_i / span, 0.0, 1.0);
+        const double bump = 0.5 * (1.0 - std::cos(6.283185307179586 * d));
+        for (int j = 0; j < 4; ++j) {
+            mid_cos_[static_cast<std::size_t>(i) * 4 + j] =
+                bump * std::cos(mid_k_[j] * p_i);
+            mid_sin_[static_cast<std::size_t>(i) * 4 + j] =
+                bump * std::sin(mid_k_[j] * p_i);
+        }
+    }
     tables_density_ = wave_density;
+    tables_mid_ = mid_waves;
 }
 
 void StringSim::seed_wake_phase(bool preserve_amplitude) {
@@ -325,7 +349,7 @@ void StringSim::update_wind_forces() {
     }
     // wave_density is live (the Waves knob), so the tables follow it - but
     // only on change, never per tick.
-    if (tables_density_ != wave_density ||
+    if (tables_density_ != wave_density || tables_mid_ != mid_waves ||
         site_cos_.size() != static_cast<std::size_t>(n_) * 8)
         rebuild_gust_tables();
 
@@ -353,6 +377,17 @@ void StringSim::update_wind_forces() {
             wcp[j] = std::cos(wrinkle_phase_[j]);
         }
     }
+    // Mid-band components: phase velocity locked to the MID-cloth wave speed
+    // c*2^(taper/4), the same resonance trick wrinkle uses at the tip.
+    double msp[4] = {}, mcp[4] = {};
+    if (mid_ripple != 0.0) {
+        const double c_mid = std::sqrt(c2_) * std::pow(2.0, 0.25 * density_taper_);
+        for (int j = 0; j < 4; ++j) {
+            mid_phase_[j] += mid_k_[j] * c_mid * dt_;
+            msp[j] = std::sin(mid_phase_[j]);
+            mcp[j] = std::cos(mid_phase_[j]);
+        }
+    }
     for (int i = 0; i < n_; ++i) {
         const double* crow = &site_cos_[static_cast<std::size_t>(i) * 8];
         const double* srow = &site_sin_[static_cast<std::size_t>(i) * 8];
@@ -372,6 +407,14 @@ void StringSim::update_wind_forces() {
                 const double wr_amp =
                     (wrinkle_speed >= 0.0) ? wrinkle_speed : wind_speed;
                 w_field_[i] += wr_amp * wrinkle * (ww / 4.0);
+            }
+            if (mid_ripple != 0.0) {
+                const double* mc = &mid_cos_[static_cast<std::size_t>(i) * 4];
+                const double* ms = &mid_sin_[static_cast<std::size_t>(i) * 4];
+                double mm = 0.0;
+                for (int j = 0; j < 4; ++j)
+                    mm += msp[j] * mc[j] - mcp[j] * ms[j];
+                w_field_[i] += wind_speed * mid_ripple * (mm / 4.0);
             }
         } else {
             f_[i] = wind_strength * wind_env_[i] * (w / 8.0);

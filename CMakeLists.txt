@@ -32,6 +32,9 @@ target_link_libraries(wind_test PRIVATE curves_string)
 add_executable(display_test src/display_test_main.cpp)
 target_link_libraries(display_test PRIVATE curves_string)
 
+add_executable(spatial_test src/spatial_test_main.cpp)
+target_link_libraries(spatial_test PRIVATE curves_string)
+
 # ---- JUCE / CLAP plugin shell (M0 second half) ----
 # enable via -DCURVES_BUILD_PLUGIN=ON; FetchContent pulls JUCE so the repo
 # stays light. CLAP comes from clap-juce-extensions (JUCE has no native CLAP).
