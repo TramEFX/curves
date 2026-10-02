@@ -64,6 +64,12 @@ public:
                       int& count) const;
     // Display helpers.
     int active_nodes() const { return n_nodes_; }
+    // Effective Range dB: the knob AFTER its magnitude modifier, which is
+    // what the audio path actually uses. The canvas labels its dB axis from
+    // this, so the marks stay truthful at any magnitude setting.
+    double range_db() const {
+        return max_gain_db_.load(std::memory_order_relaxed);
+    }
     int physics_mode() const { return last_physics_; }
 
     // ---- per-knob modifiers (on/off + magnitude) ------------------------
@@ -163,7 +169,9 @@ private:
     // band center frequencies + per-block gain targets
     std::vector<double> band_fc_;
     std::vector<double> gain_targets_{};
-    double max_gain_db_ = 18.0;
+    // Read by the GUI thread for the dB axis; relaxed atomic because a
+    // torn double would print a nonsense label.
+    std::atomic<double> max_gain_db_{18.0};
 
     // draw mailbox (GUI -> audio); fixed max size, first n_nodes_ active
     juce::SpinLock draw_lock_;

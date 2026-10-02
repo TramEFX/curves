@@ -586,12 +586,37 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour(t.panel_edge));
     g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.0f);
 
-    // horizontal divisions at fractions of the current scale
-    g.setColour(juce::Colour(t.grid));
-    for (float frac : {0.25f, 0.5f, 0.75f}) {
-        const float dy = b.getHeight() * 0.5f * frac;
-        g.drawLine(b.getX(), b.getCentreY() - dy, b.getRight(), b.getCentreY() - dy, 0.6f);
-        g.drawLine(b.getX(), b.getCentreY() + dy, b.getRight(), b.getCentreY() + dy, 0.6f);
+    // ---- dB axis -------------------------------------------------------
+    // Gridlines sit at ROUND dB values, not round fractions of the canvas,
+    // so the marks read +6/+12/+18 rather than 0.25/0.5/0.75. They are drawn
+    // from the EFFECTIVE Range (knob after its magnitude modifier) times the
+    // zoom, so the axis stays truthful whatever magnitude is selected: at
+    // High on an 18 dB knob the canvas really is +-36 dB and says so.
+    const double range_db = processor_.range_db();
+    const double full_db = range_db * double(display_scale_);
+    // smallest step giving at most 4 lines per side
+    static constexpr double kSteps[] = {1, 2, 3, 6, 12, 24, 48};
+    double step = kSteps[0];
+    for (double cand : kSteps) {
+        step = cand;
+        if (full_db / cand <= 4.0 + 1e-9)
+            break;
+    }
+    g.setFont(9.5f);
+    for (double d = step; d <= full_db + 1e-9; d += step) {
+        const float v = float(d / std::max(1.0, range_db));
+        for (int sign = -1; sign <= 1; sign += 2) {
+            const float y = value_to_y(sign * v);
+            g.setColour(juce::Colour(t.grid));
+            g.drawLine(b.getX() + 26.0f, y, b.getRight(), y, 0.6f);
+            g.setColour(juce::Colour(t.text_dim));
+            const juce::String lbl =
+                (sign > 0 ? "+" : "-")
+                + (d < 10.0 && d != std::floor(d) ? juce::String(d, 1)
+                                                  : juce::String(int(d)));
+            g.drawText(lbl, int(b.getX()) + 2, int(y) - 6, 22, 12,
+                       juce::Justification::centredRight);
+        }
     }
     // log-frequency grid, labelled
     g.setFont(10.0f);
@@ -609,7 +634,18 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     }
     // zero line, brighter
     g.setColour(juce::Colour(t.grid_key));
-    g.drawLine(b.getX(), b.getCentreY(), b.getRight(), b.getCentreY(), 1.0f);
+    g.drawLine(b.getX() + 26.0f, b.getCentreY(), b.getRight(), b.getCentreY(), 1.0f);
+    g.setColour(juce::Colour(t.text_dim));
+    g.setFont(9.5f);
+    g.drawText("0", int(b.getX()) + 2, int(b.getCentreY()) - 6, 22, 12,
+               juce::Justification::centredRight);
+    // full-scale readout, so the canvas states its own magnitude
+    g.setFont(10.0f);
+    g.setColour(juce::Colour(t.text));
+    g.drawText(juce::String::formatted(
+                   "+/-%.3g dB", full_db),
+               int(b.getRight()) - 92, int(b.getY()) + 4, 86, 13,
+               juce::Justification::centredRight);
 
     // ---- walls: shade the dead zones, then draw the posts ----
     {

@@ -441,7 +441,7 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     bank_.set_smoothing(smoothing_->get());
     bank_.set_steady(steady_->get(), 0.25);
     leveler_.set_amount(knob(kLeveler, leveler_amt_->get()));
-    max_gain_db_ = knob(kRangeDb, drive_->get());
+    max_gain_db_.store(knob(kRangeDb, drive_->get()), std::memory_order_relaxed);
 
     // 3. Per-block gain targets: a BLEND of position and velocity.
     //
@@ -460,12 +460,13 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //    the +-1 clamp the way an additive form would.
     const double vel_amt = knob(kVelocity, velocity_->get());
     const double ws = std::max(1.0, tension_v);
+    const double range_db = max_gain_db_.load(std::memory_order_relaxed);
     const auto& u = sim_->positions();
     const auto& v = sim_->velocities();
     for (int i = 0; i < n_nodes_; ++i) {
         const double disp = (1.0 - vel_amt) * u[i]
                             + vel_amt * (kVelScale * v[i] / ws);
-        const double db = std::clamp(disp, -1.0, 1.0) * max_gain_db_;
+        const double db = std::clamp(disp, -1.0, 1.0) * range_db;
         // 10^(db/20) == 2^(db/6.0206). exp2 is markedly cheaper than pow and
         // this runs once per node per block (512 calls at high precision).
         gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
@@ -531,10 +532,11 @@ void CurvesAudioProcessor::publish_display() {
     // The EQ curve of truth: the bank's smoothed per-band gains (post
     // smoothing, post Steady), normalized so +1 = Max gain dB.
     const auto& g = bank_.gains();
+    const double range_db = max_gain_db_.load(std::memory_order_relaxed);
     for (int i = 0; i < n_nodes_; ++i) {
         const double db = 20.0 * std::log10(std::max(g[i], 1e-6));
         display_eq_buffer_[i] =
-            static_cast<float>(std::clamp(db / std::max(1.0, max_gain_db_), -1.0, 1.0));
+            static_cast<float>(std::clamp(db / std::max(1.0, range_db), -1.0, 1.0));
     }
     display_count_ = n_nodes_;
     display_version_.fetch_add(1, std::memory_order_release);
