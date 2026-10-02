@@ -85,7 +85,15 @@ private:
         juce::Label label;
         juce::RangedAudioParameter* param = nullptr;
         int group = kGlobal;
+        int mod = -1;                    // ModKnob index, or -1 if not modifiable
+        juce::Rectangle<int> power;      // on/off LED hit area
+        juce::Rectangle<int> magnitude;  // low/med/high LED hit area
     };
+
+    // LED: dark glass bead with a radial highlight, lit by a colour with a
+    // bloom behind it. `lit` false renders the same bead unlit (black).
+    void draw_led(juce::Graphics&, juce::Rectangle<int>, juce::Colour,
+                  bool lit) const;
 
     int active_nodes() const { return active_count_; }
 
@@ -118,6 +126,7 @@ private:
     std::array<float, CurvesAudioProcessor::kMaxNodes> display_nodes_{};
     std::array<float, CurvesAudioProcessor::kMaxNodes> display_eq_{};
     juce::TextButton scale_button_{"+-1"};
+    juce::TextButton reset_button_{"RESET"};
     juce::TextButton theme_button_{"AQUA"};
     CurvesKnobLook knob_look_;
     int theme_index_ = 0;

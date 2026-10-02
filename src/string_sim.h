@@ -144,6 +144,12 @@ public:
     // and the frozen scenarios are untouched.
     double wrinkle = 0.0;
     static constexpr double kWrinkleK_[4] = {12.0, 17.0, 23.0, 31.0};
+    // Tip-envelope exponent (user request 2026-10-02: +30% reach). The
+    // envelope is d^kWrinkleEnv_; lowering the exponent widens the affected
+    // region toward the pole. Reach measured as the span where the envelope
+    // exceeds 0.1: d^4 starts at d = 0.562 (43.8% of the cloth), d^2.8
+    // starts at d = 0.441 (55.9%) - a 1.28x wider region.
+    static constexpr double kWrinkleEnv_ = 2.8;
 
     // Wind origin (Direction knob, project decision): which side the wind
     // blows FROM — 0 = pole at the high end (whip at lows), 1 = pole at the

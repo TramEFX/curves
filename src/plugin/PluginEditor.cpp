@@ -139,6 +139,11 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
             knob->label.setInterceptsMouseClicks(false, false);
             knob->param = rp;
             knob->group = d.group;
+            for (int k = 0; k < CurvesAudioProcessor::kNumModKnobs; ++k)
+                if (juce::String(CurvesAudioProcessor::mod_knob_id(k)) == rp->paramID) {
+                    knob->mod = k;
+                    break;
+                }
             addAndMakeVisible(knob->slider);
             addAndMakeVisible(knob->label);
             knobs_.push_back(std::move(knob));
@@ -146,8 +151,11 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         }
     }
 
-    for (auto* b : {&scale_button_, &theme_button_})
+    for (auto* b : {&scale_button_, &theme_button_, &reset_button_})
         addAndMakeVisible(*b);
+    // Flattens the string and leaves every modifier running, so the cloth
+    // restarts from rest. Replaces winding Damping up to kill energy.
+    reset_button_.onClick = [this] { processor_.request_reset(); };
     scale_button_.onClick = [this] { cycle_display_scale(); };
     theme_button_.onClick = [this] { cycle_theme(); };
 
@@ -182,7 +190,7 @@ void CurvesAudioProcessorEditor::apply_theme() {
     const auto& t = theme();
     knob_look_.set_theme(&t);
     theme_button_.setButtonText(t.name);
-    for (auto* b : {&scale_button_, &theme_button_}) {
+    for (auto* b : {&scale_button_, &theme_button_, &reset_button_}) {
         b->setColour(juce::TextButton::buttonColourId, juce::Colour(t.panel));
         b->setColour(juce::TextButton::textColourOffId, juce::Colour(t.curve));
     }
@@ -206,6 +214,7 @@ constexpr int kPanelGap = 10;
 void CurvesAudioProcessorEditor::resized() {
     scale_button_.setBounds(getWidth() - 86, 12, 74, 24);
     theme_button_.setBounds(getWidth() - 172, 12, 78, 24);
+    reset_button_.setBounds(getWidth() - 256, 12, 76, 24);
     if (knobs_.empty())
         return;  // setSize() runs before the knobs are created in the ctor
 
@@ -245,6 +254,18 @@ void CurvesAudioProcessorEditor::resized() {
                 cell.getCentreX() - side / 2, cell.getY() + 2, side, side);
             in_group[i]->label.setBounds(cell.getX(), cell.getY() + side + 2,
                                          cell.getWidth(), 16);
+            // LEDs sit on the LABEL row, hard left and hard right of the
+            // cell: clear of the rotary arc (which they overlapped when
+            // placed on the knob) and as far apart as the cell allows, so
+            // magnitude-orange is not mistaken for power-yellow.
+            // Inset well away from the cell edges: flush to the edge, the
+            // power LED of one knob sat against the next knob's magnitude
+            // LED and the pair read as one control.
+            const int led = 10;
+            const int ly = cell.getY() + side + 5;
+            const int inset = juce::jmax(12, cell_w / 7);
+            in_group[i]->magnitude = {cell.getX() + inset, ly, led, led};
+            in_group[i]->power = {cell.getRight() - inset - led, ly, led, led};
         }
     };
     place(kGlobal, panel_[kGlobal], 7);
@@ -286,6 +307,29 @@ float CurvesAudioProcessorEditor::y_to_value(float y) const {
 // ---- drawing (the user holds the string) ---------------------------------
 
 void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
+    // LEDs first: they sit over the knob cells, and the sliders are separate
+    // child components so these hit areas never overlap a live slider.
+    if (!e.mods.isRightButtonDown()) {
+        // getEventRelativeTo(this): e.getPosition() is relative to the
+        // component the event originated on, which is ambiguous when a click
+        // passes through a non-intercepting child (the labels do).
+        const auto pt = e.getEventRelativeTo(this).getPosition();
+        for (auto& k : knobs_) {
+            if (k->mod < 0 || !k->slider.isEnabled())
+                continue;
+            if (k->power.expanded(4).contains(pt)) {
+                processor_.set_knob_on(k->mod, !processor_.knob_on(k->mod));
+                repaint();
+                return;
+            }
+            if (k->magnitude.expanded(4).contains(pt)) {
+                processor_.set_knob_mag(k->mod,
+                                        (processor_.knob_mag(k->mod) + 1) % 3);
+                repaint();
+                return;
+            }
+        }
+    }
     if (e.mods.isRightButtonDown()) {
         draw_nodes_.fill(0.0f);
         push_current();
@@ -429,6 +473,35 @@ void CurvesAudioProcessorEditor::draw_panel(juce::Graphics& g,
                juce::Justification::centredLeft);
 }
 
+void CurvesAudioProcessorEditor::draw_led(juce::Graphics& g,
+                                          juce::Rectangle<int> box,
+                                          juce::Colour colour,
+                                          bool lit) const {
+    const auto r = box.toFloat();
+    const auto c = r.getCentre();
+    const float rad = r.getWidth() * 0.5f;
+
+    // bloom behind the bead, only when lit
+    if (lit) {
+        g.setColour(colour.withAlpha(0.14f));
+        g.fillEllipse(r.expanded(rad * 1.5f));
+        g.setColour(colour.withAlpha(0.30f));
+        g.fillEllipse(r.expanded(rad * 0.75f));
+    }
+    // glass bead: lit colour, or near-black when off
+    const juce::Colour body = lit ? colour : juce::Colour(0xff0d0f12);
+    g.setGradientFill(juce::ColourGradient(
+        body.brighter(lit ? 0.45f : 0.10f), c.x - rad * 0.35f, c.y - rad * 0.45f,
+        body.darker(lit ? 0.35f : 0.20f), c.x + rad * 0.4f, c.y + rad * 0.5f, false));
+    g.fillEllipse(r);
+    // rim
+    g.setColour(juce::Colours::black.withAlpha(0.55f));
+    g.drawEllipse(r.reduced(0.4f), 0.9f);
+    // specular highlight — what reads as "glass"
+    g.setColour(juce::Colours::white.withAlpha(lit ? 0.70f : 0.18f));
+    g.fillEllipse(c.x - rad * 0.42f, c.y - rad * 0.58f, rad * 0.62f, rad * 0.46f);
+}
+
 void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     const auto& t = theme();
     g.fillAll(juce::Colour(t.bg));
@@ -553,4 +626,21 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     draw_panel(g, panel_[kString], "STRING", true);
     draw_panel(g, panel_[kCloth], "CLOTH & WIND   (Flagpole)", mode == 1);
     draw_panel(g, panel_[kGlobal], "GLOBAL", true);
+
+    // Per-knob modifier LEDs. Power: yellow lit / black off. Magnitude:
+    // green / orange / red for low / medium / high. Both are buttons.
+    static const juce::Colour kMagCol[3] = {
+        juce::Colour(0xff35e06a), juce::Colour(0xffff9a1f), juce::Colour(0xffff3b30)};
+    for (auto& k : knobs_) {
+        if (k->mod < 0)
+            continue;   // modes and switches carry no modifiers
+        const bool live = k->slider.isEnabled();
+        const bool on = processor_.knob_on(k->mod);
+        const int mag = processor_.knob_mag(k->mod);
+        juce::Graphics::ScopedSaveState ss(g);
+        if (!live)
+            g.setOpacity(0.35f);
+        draw_led(g, k->magnitude, kMagCol[juce::jlimit(0, 2, mag)], on);
+        draw_led(g, k->power, juce::Colour(0xffffd21f), on);
+    }
 }

@@ -83,6 +83,9 @@ class StringSim:
         # wrinkle = 0 (default) skips the stage entirely.
         self.wrinkle = 0.0
         self.WRINKLE_K = np.array([12.0, 17.0, 23.0, 31.0])
+        # Tip-envelope exponent (see src/string_sim.h): lowering it widens
+        # the affected region toward the pole. 4.0 -> 2.8 is +28% reach.
+        self.WRINKLE_ENV = 2.8
         self._wrinkle_cos = None
         self._wrinkle_sin = None
         self._wrinkle_phase = np.zeros(4)
@@ -290,8 +293,7 @@ class StringSim:
         # work stays a plain multiply-add.
         span = max(1.0, (self.n - 1.0) * self._cloth_length)
         d = np.clip(p / span, 0.0, 1.0)
-        d2 = d * d
-        tip = d2 * d2          # grouping matched to the C++ (NOT d**4)
+        tip = np.power(d, self.WRINKLE_ENV)   # see header: +30% reach
         # Anti-alias clamp: the finest wrinkle must stay resolvable on the
         # node grid (>= 8 nodes per cycle), or the stencil aliases it
         # instead of carrying it. The set is scaled together.

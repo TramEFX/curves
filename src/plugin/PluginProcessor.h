@@ -66,6 +66,42 @@ public:
     int active_nodes() const { return n_nodes_; }
     int physics_mode() const { return last_physics_; }
 
+    // ---- per-knob modifiers (on/off + magnitude) ------------------------
+    // Deliberately NOT AudioParameters. Nineteen knobs x (bypass + range)
+    // would add 38 entries to the host's automation list for what is a
+    // tuning aid, so these ride in the state tree like the colour theme.
+    // Promote any that prove essential to real parameters later.
+    //
+    // Only continuous knobs are modifiable; Physics, Precision, Direction
+    // and Test Noise are modes or switches where "half range" is meaningless.
+    enum ModKnob {
+        kDamping = 0, kStiffness, kTension, kSmoothing, kRangeDb, kSteady,
+        kLeveler, kVelocity, kWind, kWaves, kMotion, kCharacter, kLength,
+        kFlutterHz, kWrinkle, kNumModKnobs
+    };
+    // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
+    // exceed the nominal maximum - that is the point of it.
+    static constexpr double kMagScale[3] = {0.5, 1.0, 2.0};
+    // "Off" is the knob's minimum, which is the neutral value for every
+    // modifiable knob: Motion 0, Steady 0, Smoothing 2 ms (no smoothing),
+    // Range 3 dB (minimal), Damping 0.05 (almost none), and so on.
+    struct KnobMod {
+        bool on = true;
+        int mag = 1;        // 0 = low, 1 = medium, 2 = high
+        double lo = 0.0;    // the parameter's minimum, captured at construction
+    };
+    bool knob_on(int k) const { return knob_mods_[k].on; }
+    int knob_mag(int k) const { return knob_mods_[k].mag; }
+    void set_knob_on(int k, bool v) { knob_mods_[k].on = v; }
+    void set_knob_mag(int k, int v) { knob_mods_[k].mag = juce::jlimit(0, 2, v); }
+    static const char* mod_knob_id(int k);
+
+    // Flatten the string without touching any modifier: zeroes displacement
+    // and velocity but leaves wind, flutter and every knob exactly as they
+    // are, so the cloth immediately starts moving again from rest. Replaces
+    // the workaround of winding Damping up to kill energy.
+    void request_reset() { reset_request_.store(true, std::memory_order_release); }
+
     // UI colour theme index. Not an automatable parameter (it is pure
     // appearance), but it rides along in the state tree so a session
     // reopens looking the way it was left.
@@ -91,6 +127,14 @@ private:
     curves::OutputLeveler leveler_;
     int display_accum_ = 0;          // samples since the last display publish
     int ui_theme_ = 0;               // editor colour theme (appearance only)
+    std::array<KnobMod, kNumModKnobs> knob_mods_{};
+    std::atomic<bool> reset_request_{false};
+    double knob(int k, double raw) const {
+        const auto& m = knob_mods_[k];
+        if (!m.on)
+            return m.lo;
+        return m.lo + (raw - m.lo) * kMagScale[juce::jlimit(0, 2, m.mag)];
+    }
     double fs_ = 48000.0;
     int sim_counter_ = 0;
     int sim_divisor_ = 4;
@@ -136,7 +180,7 @@ private:
     juce::AudioParameterFloat* length_ = nullptr;    // cloth termination 0.2..1.0
     juce::AudioParameterFloat* flutter_hz_ = nullptr;// shedding rate, Hz
     juce::AudioParameterFloat* wrinkle_ = nullptr;   // tip fine detail 0..1
-    float last_length_ = -1.0f;
+    double last_length_ = -1.0;   // double: Length now passes through knob()
 
     // Paul Kellet pink-noise filter state, per channel.
     std::array<float, 7> pink_[2]{};

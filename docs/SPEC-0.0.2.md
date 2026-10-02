@@ -113,7 +113,7 @@ site_phase_s += wind_k · wind_phase_speed · kSiteMult_s · dt
 `sin(a−b)` is what makes the per-tick cost **8 sin + 8 cos total**, rather
 than 8 transcendental calls *per node*.
 
-**(b) Wrinkle.** Four more components with high wavenumbers, a `d⁴` tip
+**(b) Wrinkle.** Four more components with high wavenumbers, a `d^2.8` tip
 envelope, and phase velocity locked to the tip wave speed:
 
 ```
@@ -168,7 +168,7 @@ restarting the flutter from silence.
 Precomputes the time-invariant spatial part of (a) and (b) above:
 `C_s,i = cos(k_s·p_i)`, `S_s,i = sin(k_s·p_i)`, laid out `[node·8 + site]`
 so one node's eight sites are contiguous. Wrinkle tables additionally bake
-in the `d⁴` tip envelope, and carry an **anti-alias clamp** holding the
+in the `d^2.8` tip envelope, and carry an **anti-alias clamp** holding the
 finest wrinkle to ≥ 8 nodes per cycle. Rebuilt only when geometry or
 `wave_density` changes — never per tick.
 
@@ -234,6 +234,53 @@ Also writes Damping / Stiffness / Tension knob values from the editor.
 
 Plugin-side mapping helpers; defined in full under the knobs that use them
 (Flutter Hz, Motion, Character).
+
+---
+
+## §2b — Per-Knob Modifiers and Reset
+
+### Modifiers (added 2026-10-02)
+
+Every **continuous** knob carries two extra controls, drawn as LEDs flanking
+its label and clickable:
+
+| LED | Position | States |
+|---|---|---|
+| **Magnitude** | left of the label | green = low, orange = medium, red = high |
+| **Power** | right of the label | yellow = on, black = off |
+
+```
+knob(k, raw) =  lo                                   if power is off
+             =  lo + (raw − lo) · {0.5, 1.0, 2.0}    for low / medium / high
+```
+
+- **Off resolves to the knob's minimum**, which is the neutral value for
+  every modifiable knob: Motion 0, Steady 0, Smoothing 2 ms (no smoothing),
+  Range 3 dB (minimal), Damping 0.05 (almost none).
+- **Magnitude scales travel above the minimum**, so **High can exceed the
+  nominal maximum** — that is the point. Medium is the calibrated setting.
+- When a knob is powered off, **both** its LEDs go dark.
+
+**Not AudioParameters.** 19 knobs × 2 would add 38 entries to the host's
+automation list for what is a tuning aid, so these ride in the state tree
+(`knobMods`) like the colour theme. Promote any that prove essential later.
+
+**Physics, Precision, Direction and Test Noise have no modifiers** — they are
+modes and switches where "half range" is meaningless.
+
+**Interaction with the Motion budget.** `dial_for_peak` clamps the solved
+source dial at **2.0**, not 1.0. At Medium the dial never exceeds 1 and the
+Motion calibration holds exactly; at High it deliberately over-drives past
+the calibrated peak and past the ±1 EQ clamp, visibly. Clamping at 1 made
+High a no-op at the top of the Motion dial.
+
+### Reset
+
+`RESET` in the header flattens the string — zeroes displacement and velocity
+— and **touches nothing else**. Wind, flutter and every knob keep running, so
+the cloth immediately starts moving again from rest. Serviced on the audio
+thread via an atomic flag, before the sim ticks. Replaces the workaround of
+winding Damping up to kill energy.
 
 ---
 
@@ -615,13 +662,19 @@ wave is characterful. **Left alone deliberately.**
 #### 17 · Wrinkle  `wrinkle`
 **0…1 · default 0 · Cloth**
 
-| Assigns | `sim_->wrinkle = 3.0 · Wrinkle` |
+| Assigns | `sim_->wrinkle = 3.9 · Wrinkle` |
 |---|---|
 
 **What it does.** Fine detail concentrated in the **last third** — how the
 cloth resolves. Four extra gust components with wavenumbers {12, 17, 23, 31},
-a `d⁴` tip envelope, and phase velocity locked to the **tip wave speed**
+a `d^2.8` tip envelope, and phase velocity locked to the **tip wave speed**
 `c·2^(taper/2)`.
+
+**Boosted 2026-10-02 (+30% requested).** Amplitude `3.0 → 3.9`, and the tip
+envelope exponent `4.0 → 2.8`, which widens the affected region: measured as
+the span where the envelope exceeds 0.1, reach goes from **43.8% → 56.1%** of
+the cloth, a **1.28×** increase. Measured tip/pole detail ratio in the
+validation scenario rose **4.27× → 6.20×**.
 
 **Why the resonance lock is essential.** At those wavenumbers the tension
 restoring term `c²k²` is ~1944 against a stiffness of ~2 — short waves are
@@ -709,6 +762,7 @@ knobs can fight.
 | `bank_.steady_amount_` | Steady | — |
 | `leveler_.amount_` | Leveler | — |
 | `n_nodes_`, `sim_divisor_` | Precision | — |
+| *(all of the above)* | the per-knob **power / magnitude** modifiers | §2b |
 
 **Tension reaches five places** and is the most entangled remaining control,
 though each consumer normalizes against it deliberately.

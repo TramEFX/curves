@@ -102,10 +102,15 @@ double mix_boost(double c, int prec) {
 }
 
 // Invert peak = A * dial^P for the dial that delivers `target`.
+// The ceiling is 2, not 1, so a High magnitude on Motion can genuinely
+// over-drive: at Medium the dial never exceeds 1 and the calibration holds
+// exactly, while High deliberately pushes past the calibrated peak (and
+// past the +-1 EQ clamp, visibly). Clamping at 1 made High a no-op at the
+// top of the dial, which defeated the point of the magnitude selector.
 double dial_for_peak(double target, double A, double P) {
     if (target <= 1e-9)
         return 0.0;
-    return std::clamp(std::pow(target / A, 1.0 / P), 0.0, 1.0);
+    return std::clamp(std::pow(target / A, 1.0 / P), 0.0, 2.0);
 }
 
 double flutter_rate_compensation(double ratio) {
@@ -123,6 +128,14 @@ double flutter_rate_compensation(double ratio) {
     return std::clamp(kRateRef / std::max(resp, 1e-9), kRateCompMin, kRateCompMax);
 }
 }  // namespace
+
+const char* CurvesAudioProcessor::mod_knob_id(int k) {
+    static const char* kIds[kNumModKnobs] = {
+        "damping", "stiffness", "tension", "smoothing", "drive", "steady",
+        "leveler", "velocity", "wind", "waves", "motion", "character",
+        "length", "flutter_hz", "wrinkle"};
+    return kIds[juce::jlimit(0, (int)kNumModKnobs - 1, k)];
+}
 
 CurvesAudioProcessor::CurvesAudioProcessor()
     : AudioProcessor(BusesProperties()
@@ -181,6 +194,15 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // Wrinkle: tip-localized fine detail - "how the last third resolves or
     // flaps". 0 = off, so the stage costs nothing until dialled in.
     addParameter(wrinkle_ = new APF("wrinkle", "Wrinkle", R{0.0f, 1.0f}, 0.0f));
+
+    // Capture each modifiable knob's minimum; "off" resolves to it.
+    for (int k = 0; k < kNumModKnobs; ++k) {
+        knob_mods_[k].lo = 0.0;
+        for (auto* p : getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+                if (rp->paramID == juce::String(mod_knob_id(k)))
+                    knob_mods_[k].lo = rp->getNormalisableRange().start;
+    }
 }
 
 void CurvesAudioProcessor::prepareToPlay(double sampleRate, int) {
@@ -212,8 +234,8 @@ void CurvesAudioProcessor::rebuild(int precision) {
     sim_counter_ = 0;
 
     bank_.prepare(n_nodes_, fs_, 2);
-    bank_.set_smoothing(smoothing_->get());
-    bank_.set_steady(steady_->get(), 0.25);
+    bank_.set_smoothing(knob(kSmoothing, smoothing_->get()));
+    bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
     rebuild_band_map();
     gain_targets_.assign(n_nodes_, 1.0);
     last_physics_ = -1;  // force re-apply on the current preset
@@ -301,26 +323,27 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 
     // 2. Live physics parameters (cheap, per block).
-    sim_->set_damping(damping_->get());
-    sim_->set_stiffness(stiffness_->get());
-    sim_->set_wave_speed(tension_->get());
+    sim_->set_damping(knob(kDamping, damping_->get()));
+    sim_->set_stiffness(knob(kStiffness, stiffness_->get()));
+    sim_->set_wave_speed(knob(kTension, tension_->get()));
     // Wind = gust PHASE VELOCITY: how fast the flapping pattern travels
     // along the cloth, not how hard it blows. The n/128 term keeps a given
     // setting meaning the same thing in every precision mode.
-    sim_->wind_phase_speed = (10.0 + 490.0 * wind_->get())
+    sim_->wind_phase_speed = (10.0 + 490.0 * knob(kWind, wind_->get()))
                              * (static_cast<double>(n_nodes_) / 128.0);
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
-    sim_->wave_density = 0.5 + 2.5 * waves_->get();
+    sim_->wave_density = 0.5 + 2.5 * knob(kWaves, waves_->get());
     sim_->set_wind_origin(direction_->get() > 0.5f ? 1 : 0);
-    if (std::abs(length_->get() - last_length_) > 1e-4f) {
-        sim_->set_cloth_length(length_->get());
-        last_length_ = length_->get();
+    const double length_v = knob(kLength, length_->get());
+    if (std::abs(length_v - last_length_) > 1e-4) {
+        sim_->set_cloth_length(length_v);
+        last_length_ = length_v;
     }
     // --- excitation budget --------------------------------------------
     // One amount control (Motion) and one balance control (Character); the
     // individual source dials are solved for, not set directly.
-    const double motion = motion_->get();
-    const double character = character_->get();
+    const double motion = knob(kMotion, motion_->get());
+    const double character = knob(kCharacter, character_->get());
     const int prec_idx = std::clamp(static_cast<int>(precision_->get()), 0, 2);
     const double target_peak =
         kMotionPeak * motion * mix_boost(character, prec_idx);
@@ -336,7 +359,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // (measured spread 4.7x -> 1.4x). The node term plus kNodeWindGain hold
     // it across precision modes - the two sources scale differently with
     // resolution, so each carries its own per-precision gain.
-    const double tension_norm = std::pow(std::max(1.0f, tension_->get()) / 300.0, 0.6);
+    const double tension_v = knob(kTension, tension_->get());
+    const double tension_norm = std::pow(std::max(1.0, tension_v) / 300.0, 0.6);
     const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
     sim_->wind_speed = 25.0 * wind_dial * tension_norm * node_norm
                        * kNodeWindGain[prec_idx];
@@ -350,27 +374,27 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // f0 is the string's fundamental and moves with Tension, node count and
     // cloth length, so it is computed live rather than baked in.
     {
-        const double span = std::max(1.0, (n_nodes_ - 1.0) *
-                                              static_cast<double>(length_->get()));
-        const double f0 = std::max(1e-6, static_cast<double>(tension_->get()) / span);
+        const double span = std::max(1.0, (n_nodes_ - 1.0) * length_v);
+        const double f0 = std::max(1e-6, tension_v / span);
         const double comp = flutter_rate_compensation(
-            static_cast<double>(flutter_hz_->get()) / f0);
+            knob(kFlutterHz, flutter_hz_->get()) / f0);
         sim_->shed_gain = 90.0 * shed_dial * comp * kNodeShedGain[prec_idx];
     }
     // Wrinkle 0..1 -> 0..3. Measured tip/pole detail ratio 1.11 (off) ->
     // 1.45 at 1.5 -> 1.82 at 3.0, with the POLE end unchanged (0.83 ->
     // 0.87), i.e. the effect stays where it was asked for.
-    sim_->wrinkle = 3.0 * wrinkle_->get();
-    sim_->shed_freq_hz = flutter_hz_->get();
+    // +30% amplitude on user request: 3.0 -> 3.9 at the top of the dial.
+    sim_->wrinkle = 3.9 * knob(kWrinkle, wrinkle_->get());
+    sim_->shed_freq_hz = knob(kFlutterHz, flutter_hz_->get());
     bank_.set_smoothing(smoothing_->get());
     bank_.set_steady(steady_->get(), 0.25);
-    leveler_.set_amount(leveler_amt_->get());
-    max_gain_db_ = drive_->get();
+    leveler_.set_amount(knob(kLeveler, leveler_amt_->get()));
+    max_gain_db_ = knob(kRangeDb, drive_->get());
 
     // 3. Per-block gain targets: position + optional velocity coupling.
     //    Velocity is normalized by tension so coupling is tension-independent.
-    const double vel_amt = velocity_->get();
-    const double ws = std::max(1.0, static_cast<double>(tension_->get()));
+    const double vel_amt = knob(kVelocity, velocity_->get());
+    const double ws = std::max(1.0, tension_v);
     const auto& u = sim_->positions();
     const auto& v = sim_->velocities();
     for (int i = 0; i < n_nodes_; ++i) {
@@ -381,6 +405,14 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
     }
     bank_.set_targets(gain_targets_.data());
+
+    // 3b. Reset request from the UI: flatten the string, touch nothing else.
+    //     Wind, flutter and every knob stay exactly as they are, so the
+    //     cloth starts moving again immediately from rest.
+    if (reset_request_.exchange(false, std::memory_order_acquire)) {
+        std::vector<double> flat(n_nodes_, 0.0);
+        sim_->displace(flat);
+    }
 
     // 4. Audio: tick the sim on its divisor grid, process per sample.
     //    When the internal test source is on, broadband pink noise replaces
@@ -473,6 +505,10 @@ void CurvesAudioProcessor::getStateInformation(juce::MemoryBlock& dest) {
         if (auto* v = dynamic_cast<juce::RangedAudioParameter*>(p))
             tree.setProperty(juce::Identifier(v->paramID), v->getValue(), nullptr);
     tree.setProperty("uiTheme", ui_theme_, nullptr);
+    juce::String mods;
+    for (int k = 0; k < kNumModKnobs; ++k)
+        mods << (knob_mods_[k].on ? "1" : "0") << juce::String(knob_mods_[k].mag);
+    tree.setProperty("knobMods", mods, nullptr);
     if (auto xml = tree.createXml())
         copyXmlToBinary(*xml, dest);
 }
@@ -482,6 +518,14 @@ void CurvesAudioProcessor::setStateInformation(const void* data, int size) {
         if (auto tree = juce::ValueTree::fromXml(*xml); tree.isValid()) {
             if (tree.hasProperty("uiTheme"))
                 ui_theme_ = (int)tree.getProperty("uiTheme");
+            if (tree.hasProperty("knobMods")) {
+                const juce::String m = tree.getProperty("knobMods").toString();
+                for (int k = 0; k < kNumModKnobs && 2 * k + 1 < m.length(); ++k) {
+                    knob_mods_[k].on = (m[2 * k] == '1');
+                    knob_mods_[k].mag =
+                        juce::jlimit(0, 2, static_cast<int>(m[2 * k + 1]) - '0');
+                }
+            }
             for (auto* p : getParameters())
                 if (auto* v = dynamic_cast<juce::RangedAudioParameter*>(p))
                     if (tree.hasProperty(juce::Identifier(v->paramID)))

@@ -251,8 +251,7 @@ void StringSim::rebuild_gust_tables() {
         const double p_i = low_pole ? static_cast<double>(i)
                                     : static_cast<double>(n_ - 1 - i);
         const double d = std::clamp(p_i / span, 0.0, 1.0);
-        const double d2 = d * d;
-        const double tip = d2 * d2;   // grouping matched in the Python spec
+        const double tip = std::pow(d, kWrinkleEnv_);   // see header: +30% reach
         for (int j = 0; j < 4; ++j) {
             wrinkle_cos_[static_cast<std::size_t>(i) * 4 + j] =
                 tip * std::cos(wrinkle_k_[j] * p_i);
