@@ -104,10 +104,20 @@ class StringSim:
         # mid_ripple = 0 (default) skips the stage entirely.
         self.mid_ripple = 0.0
         self.mid_waves = 10.0
+        # Where along the cloth the resonance lock is valid (0 pole, 1 tip);
+        # the envelope peak sits at the same place by construction.
+        self.mid_lock_d = 0.5
+        # Envelope is sin(pi*dd)^mid_env. Lower = wider toward the ends.
+        self.mid_env = 2.0
+        # Multiplier on the lock speed. 1.0 = exactly on resonance; anything
+        # else detunes, which is the price of a different travel speed.
+        self.mid_travel = 1.0
         self._mid_cos = None
         self._mid_sin = None
         self._mid_phase = np.zeros(4)
         self._tables_mid = -1.0
+        self._tables_mid_env = -1.0
+        self._tables_mid_lock = -1.0
         self.flap_limit = 1e9  # Force semantics: flap peak ceiling; 1e9 = off
         self._flap_gain = 1.0
         self._wind_k = 0.1
@@ -351,12 +361,18 @@ class StringSim:
         mid_limit = 2 * np.pi / 8.0
         mk = 2 * np.pi * self.mid_waves * self.MID_K / span
         self._mid_k = np.minimum(mk, mid_limit)
-        bump = 0.5 * (1.0 - np.cos(2 * np.pi * d))
+        dd = np.where(d <= self.mid_lock_d,
+                      0.5 * d / max(1e-6, self.mid_lock_d),
+                      0.5 + 0.5 * (d - self.mid_lock_d)
+                      / max(1e-6, 1.0 - self.mid_lock_d))
+        bump = np.power(np.sin(np.pi * dd), self.mid_env)
         marg = p[:, None] * self._mid_k[None, :]
         self._mid_cos = bump[:, None] * np.cos(marg)
         self._mid_sin = bump[:, None] * np.sin(marg)
         self._tables_density = self.wave_density
         self._tables_mid = self.mid_waves
+        self._tables_mid_env = self.mid_env
+        self._tables_mid_lock = self.mid_lock_d
 
     def seed_wake_phase(self, preserve_amplitude):
         """(Re)impose the outward travelling phase ramp on the wake bank.
@@ -393,6 +409,8 @@ class StringSim:
         # but only on change, never per tick.
         if (self._site_cos is None or self._tables_density != self.wave_density
                 or self._tables_mid != self.mid_waves
+                or self._tables_mid_env != self.mid_env
+                or self._tables_mid_lock != self.mid_lock_d
                 or self._site_cos.shape[0] != self.n):
             self.rebuild_gust_tables()
         self._site_phase += (self._wind_k * self.wind_phase_speed
@@ -430,7 +448,9 @@ class StringSim:
             if self.mid_ripple != 0.0:
                 # Phase velocity locked to the MID-cloth wave speed, the same
                 # resonance trick wrinkle uses at the tip.
-                c_mid = np.sqrt(self.c2) * 2.0 ** (0.25 * self._density_taper)
+                c_mid = (np.sqrt(self.c2)
+                         * 2.0 ** (0.5 * self.mid_lock_d * self._density_taper)
+                         * self.mid_travel)
                 self._mid_phase = (self._mid_phase
                                    + self._mid_k * c_mid * self.dt)
                 msp = np.sin(self._mid_phase)

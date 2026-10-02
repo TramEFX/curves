@@ -187,6 +187,17 @@ public:
     double mid_waves = 10.0;
     // Relative spread of the four components about mid_waves.
     static constexpr double kMidK_[4] = {0.72, 1.0, 1.37, 1.9};
+    // Where along the cloth the resonance lock is valid (0 = pole, 1 = tip).
+    // The lock speed is c * 2^(taper*mid_lock_d/2), so this also decides
+    // where the band is loudest.
+    double mid_lock_d = 0.5;
+    // Envelope is sin(pi*d)^mid_env. Lower = wider, i.e. more of the band
+    // survives toward the ends.
+    double mid_env = 2.0;
+    // Multiplier on the lock speed. 1.0 = exactly on resonance. Anything
+    // else detunes, which is the price of making the ripples travel at a
+    // speed other than the string's own.
+    double mid_travel = 1.0;
 
     // Wind origin (Direction knob, project decision): which side the wind
     // blows FROM — 0 = pole at the high end (whip at lows), 1 = pole at the
@@ -393,6 +404,8 @@ private:
     double mid_k_[4] = {};
     double tables_density_ = -1.0;   // wave_density the tables were built for
     double tables_mid_ = -1.0;       // mid_waves the tables were built for
+    double tables_mid_env_ = -1.0;
+    double tables_mid_lock_ = -1.0;
     std::vector<double> q_, qd_;    // wake-oscillator state per node
     std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)
     void recompute_cloth();

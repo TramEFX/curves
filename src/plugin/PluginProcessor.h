@@ -83,7 +83,7 @@ public:
     enum ModKnob {
         kDamping = 0, kStiffness, kTension, kSmoothing, kRangeDb, kSteady,
         kLeveler, kVelocity, kWind, kWaves, kMotion, kCharacter,
-        kFlutterHz, kWrinkle, kNumModKnobs
+        kFlutterHz, kWrinkle, kMix, kNumModKnobs
     };
     // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
     // exceed the nominal maximum - that is the point of it.
@@ -189,6 +189,7 @@ private:
     std::array<double, kMaxNodes> smoothed_disp_{};
     double smooth_alpha_ = 0.05;   // one-pole coefficient at the tick rate
     double vel_amt_ = 0.0;         // cached for the per-tick update
+    double mix_amount_ = 1.0;      // dry/wet, cached per block
     double vel_scale_ = 0.0;
     // Read by the GUI thread for the dB axis; relaxed atomic because a
     // torn double would print a nonsense label.
@@ -213,6 +214,7 @@ private:
     juce::AudioParameterFloat* tension_ = nullptr;
     juce::AudioParameterFloat* smoothing_ = nullptr;
     juce::AudioParameterFloat* drive_ = nullptr;     // max gain dB
+    juce::AudioParameterFloat* mix_ = nullptr;       // dry/wet
     juce::AudioParameterFloat* steady_ = nullptr;    // per-band dynamic EQ depth
     juce::AudioParameterFloat* leveler_amt_ = nullptr; // output RMS trim depth
     juce::AudioParameterFloat* test_src_ = nullptr;  // internal pink noise

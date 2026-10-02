@@ -103,13 +103,13 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"physics", "Physics", kGlobal},    {"precision", "Precision", kGlobal},
         {"drive", "Range dB", kGlobal},     {"smoothing", "Smoothing", kGlobal},
         {"steady", "Steady", kGlobal},      {"leveler", "Leveler", kGlobal},
-        {"test", "Test Noise", kGlobal},
+        {"mix", "Mix", kGlobal},            {"test", "Test Noise", kGlobal},
         // STRING
         {"damping", "Damping", kString},    {"stiffness", "Stiffness", kString},
         {"tension", "Tension", kString},    {"velocity", "Velocity", kString},
         // CLOTH & WIND
-        {"motion", "Motion", kCloth},       {"character", "Character", kCloth},
-        {"wind", "Wind", kCloth},           {"flutter_hz", "Flutter Hz", kCloth},
+        {"motion", "Motion", kCloth},       {"wind", "Wind", kCloth},
+        {"character", "Character", kCloth}, {"flutter_hz", "Flutter Hz", kCloth},
         {"waves", "Waves", kCloth},         {"wrinkle", "Wrinkle", kCloth},
         {"direction", "Direction", kCloth},
     };
@@ -268,7 +268,10 @@ void CurvesAudioProcessorEditor::resized() {
             in_group[i]->power = {cell.getRight() - inset - led, ly, led, led};
         }
     };
-    place(kGlobal, panel_[kGlobal], 7);
+    // GLOBAL holds 8 controls since Mix was added. Keep it ONE row -- it
+    // is the "one obvious spot", and a second row made Test Noise wrap
+    // out of the panel's height and clip.
+    place(kGlobal, panel_[kGlobal], 8);
     place(kString, panel_[kString], 2);
     place(kCloth, panel_[kCloth], 4);
 }
@@ -707,30 +710,12 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
         else        curve.lineTo(x, y);
     }
 
-    // area fill between the curve and the zero line
-    {
-        juce::Path area = curve;
-        area.lineTo(b.getRight(), b.getCentreY());
-        area.lineTo(b.getX(), b.getCentreY());
-        area.closeSubPath();
-        const juce::Colour fill(drawing_ ? t.draw : t.fill);
-        g.setGradientFill(juce::ColourGradient(
-            fill.withAlpha(0.26f), b.getCentreX(), b.getY(),
-            fill.withAlpha(0.02f), b.getCentreX(), b.getCentreY(), false));
-        g.fillPath(area);
-    }
-
-    // three-pass glow, then the bright core
+    // One clean bright line, no glow and no area fill (owner's call): the
+    // plot now reads as exactly two things -- bright = the EQ being applied,
+    // faint = where the string actually is.
     const juce::Colour core(drawing_ ? t.draw : t.curve);
-    const juce::Colour glow(drawing_ ? t.draw : t.glow);
-    g.setColour(glow.withAlpha(0.10f));
-    g.strokePath(curve, juce::PathStrokeType(9.0f));
-    g.setColour(glow.withAlpha(0.22f));
-    g.strokePath(curve, juce::PathStrokeType(5.0f));
-    g.setColour(core.withAlpha(0.85f));
-    g.strokePath(curve, juce::PathStrokeType(2.6f));
-    g.setColour(juce::Colours::white.withAlpha(drawing_ ? 0.25f : 0.45f));
-    g.strokePath(curve, juce::PathStrokeType(1.0f));
+    g.setColour(core);
+    g.strokePath(curve, juce::PathStrokeType(1.8f));
 
     // ---- hint line ----
     g.setColour(juce::Colour(t.text_dim));

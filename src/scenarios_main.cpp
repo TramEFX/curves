@@ -457,6 +457,10 @@ void scenario_mid(const fs::path& out) {
     sim.set_cloth_length(1.0);
     sim.mid_ripple = 1.5;
     sim.mid_waves = 10.0;
+    // the shipped shape, so this scenario covers what the plugin uses
+    sim.mid_lock_d = 0.65;
+    sim.mid_env = 1.4;
+    sim.mid_travel = 0.83;
     std::vector<std::pair<double, std::vector<double>>> frames;
     double mid_c = 0.0, end_c = 0.0, peak = 0.0;
     bool finite = true;

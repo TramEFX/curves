@@ -107,8 +107,55 @@ constexpr double kNodeWindGain[3] = {1.590, 1.031, 0.913};
 constexpr double kTensionP[3] = {0.85, 0.80, 0.60};
 // Mid-band ripple amount, as a multiple of wind_speed. Calibrated against
 // the measured spatial spectrum: see the Wind entry in SPEC-0.0.2.
-constexpr double kMidAmp = 1.5;   // measured: mid band 0.0040 -> 0.0209 rms
-                                  // while peak costs only 1.06x
+constexpr double kMidAmp = 1.2;
+// Mid-band shape. The envelope peak and the resonance lock sit at the SAME
+// place by construction, so moving the lock moves where the detail lands.
+// 0.5 put it mid-cloth and the ripples faded out over the last fifth
+// (user: "the mid-level waves dampen a bit too much toward the end").
+// Measured tip-fifth curvature at amount 1.2: 0.65 gives 11120 against
+// 6870 for the old 0.5/2.0 shape, for 1.15x peak against 1.06x.
+constexpr double kMidLockD = 0.65;
+constexpr double kMidEnv = 1.4;
+
+// --- mid-band travel speed -----------------------------------------------
+// The ripples are resonant, so their natural travel speed is the string's
+// own wave speed and nothing else. Detuning away from it is possible but
+// costs amplitude, and MEASURED the resonance is broad enough to be useful:
+// normalized response against the travel multiplier, at the shipped shape,
+//
+//   travel  0.35  0.50  0.65  0.80  1.00  1.20  1.45  1.80  2.40
+//   R       0.286 0.346 0.476 0.794 1.000 0.593 0.286 0.166 0.114
+//
+// It is asymmetric: a SLOWER forcing still pushes the string quasi
+// statically, while a faster one outruns it. Wind maps to 0.55 .. 1.25 (a
+// 2.3x travel range) and the response is compensated out of it, exactly as
+// Flutter Hz compensates its own rate, so Wind changes how fast the ripples
+// run down the string rather than how loud they are.
+constexpr double kMidTravelLo = 0.55, kMidTravelHi = 1.25;
+constexpr double kMidTv[] = {0.35, 0.50, 0.65, 0.80, 1.00, 1.20, 1.45, 1.80, 2.40};
+constexpr double kMidTr[] = {0.286, 0.346, 0.476, 0.794, 1.000, 0.593, 0.286, 0.166, 0.114};
+constexpr int kMidTN = 9;
+constexpr double kMidRef = 0.82;   // R at the default Wind, so 0.5 is a no-op
+// Clamped TIGHT, and the reason matters: this table measures DETAIL
+// (curvature), but a slow-travelling forcing makes large DISPLACEMENT while
+// making little detail. Compensating detail fully therefore inflates the
+// peak at the slow end -- measured 1.98x the no-mid baseline at Wind 0 with
+// a [0.5, 2.5] clamp. [0.80, 1.25] holds peak to <= 1.28x everywhere while
+// still roughly doubling the low-Wind detail against no compensation.
+constexpr double kMidCompMin = 0.80, kMidCompMax = 1.25;
+
+double mid_resonance_compensation(double travel) {
+    const double t = std::clamp(travel, kMidTv[0], kMidTv[kMidTN - 1]);
+    double resp = kMidTr[kMidTN - 1];
+    for (int i = 0; i + 1 < kMidTN; ++i) {
+        if (t > kMidTv[i + 1])
+            continue;
+        const double f = std::log(t / kMidTv[i]) / std::log(kMidTv[i + 1] / kMidTv[i]);
+        resp = std::exp(std::log(kMidTr[i]) + f * std::log(kMidTr[i + 1] / kMidTr[i]));
+        break;
+    }
+    return std::clamp(kMidRef / std::max(resp, 1e-9), kMidCompMin, kMidCompMax);
+}
 constexpr double kNodeShedGain[3] = {2.796, 0.978, 1.099};
 
 constexpr double kMixC[] = {0.0, 0.33, 0.66, 1.0};
@@ -164,7 +211,7 @@ const char* CurvesAudioProcessor::mod_knob_id(int k) {
     static const char* kIds[kNumModKnobs] = {
         "damping", "stiffness", "tension", "smoothing", "drive", "steady",
         "leveler", "velocity", "wind", "waves", "motion", "character",
-        "flutter_hz", "wrinkle"};
+        "flutter_hz", "wrinkle", "mix"};
     return kIds[juce::jlimit(0, (int)kNumModKnobs - 1, k)];
 }
 
@@ -199,6 +246,10 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // smoothing at any given setting; 15 ms restores the previous feel.
     addParameter(smoothing_ = new APF("smoothing", "Smoothing ms", R{2.0f, 100.0f}, 15.0f));
     addParameter(drive_ = new APF("drive", "Max gain dB", R{3.0f, 24.0f}, 18.0f));
+    // Dry/wet. 1 = fully processed, 0 = bypass (so power-off = its minimum
+    // is genuinely neutral). Applied after the bank and BEFORE the leveler,
+    // so the leveler trims what you actually hear.
+    addParameter(mix_ = new APF("mix", "Mix", R{0.0f, 1.0f}, 1.0f));
     addParameter(steady_ = new APF("steady", "Steady (per-band)", R{0.0f, 1.0f}, 0.35f));
     addParameter(leveler_amt_ = new APF("leveler", "Leveler (output)", R{0.0f, 1.0f}, 0.5f));
     addParameter(test_src_ = new APF("test", "Test noise", R{0.0f, 1.0f}, 0.0f));
@@ -420,7 +471,15 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         // there is no extra control -- measured, the gust sites cover only
         // 1.7-6 waves and wrinkle 25-64, and nothing reached the middle.
         sim_->mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
-        sim_->mid_ripple = mechanism_on(kWind) ? kMidAmp : 0.0;
+        sim_->mid_lock_d = kMidLockD;
+        sim_->mid_env = kMidEnv;
+        // Wind also sets how fast the ripples RUN DOWN the string, with the
+        // detuning loss compensated so it stays a speed control.
+        const double travel =
+            kMidTravelLo * std::pow(kMidTravelHi / kMidTravelLo, wind_knob);
+        sim_->mid_travel = travel;
+        sim_->mid_ripple =
+            mechanism_on(kWind) ? kMidAmp * mid_resonance_compensation(travel) : 0.0;
     }
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
     // Waves range extended 0.5-3.0 -> 0.5-5.0 (user: "not noticing waves
@@ -529,6 +588,7 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //    self-normalising: measured rms and peak of the velocity term with
     //    kVelScale = 30 are close to those of u, so neither extreme pushes
     //    the +-1 clamp the way an additive form would.
+    mix_amount_ = knob(kMix, mix_->get());
     vel_amt_ = knob(kVelocity, velocity_->get());
     vel_scale_ = kVelScale / std::max(1.0, tension_v);
     const double range_db = max_gain_db_.load(std::memory_order_relaxed);
@@ -578,9 +638,16 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             if (ch1)
                 ch1[s] = pink_noise(1);
         }
-        float l = ch0[s];
-        float r = stereo ? ch1[s] : l;
+        const float dry_l = ch0[s];
+        const float dry_r = stereo ? ch1[s] : dry_l;
+        float l = dry_l;
+        float r = dry_r;
         bank_.process_frame(l, r, stereo);
+        if (mix_amount_ < 1.0) {
+            const float m = static_cast<float>(mix_amount_);
+            l = dry_l + m * (l - dry_l);
+            r = dry_r + m * (r - dry_r);
+        }
         leveler_.process(l, r);
         ch0[s] = l;
         if (ch1)

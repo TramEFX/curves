@@ -297,7 +297,13 @@ void StringSim::rebuild_gust_tables() {
         const double p_i = low_pole ? static_cast<double>(i)
                                     : static_cast<double>(n_ - 1 - i);
         const double d = std::clamp(p_i / span, 0.0, 1.0);
-        const double bump = 0.5 * (1.0 - std::cos(6.283185307179586 * d));
+        // sin(pi*d)^mid_env, peak shifted so the maximum sits at
+        // mid_lock_d -- which is where the phase lock is resonant.
+        const double dd = (d <= mid_lock_d)
+                              ? 0.5 * d / std::max(1e-6, mid_lock_d)
+                              : 0.5 + 0.5 * (d - mid_lock_d)
+                                          / std::max(1e-6, 1.0 - mid_lock_d);
+        const double bump = std::pow(std::sin(3.141592653589793 * dd), mid_env);
         for (int j = 0; j < 4; ++j) {
             mid_cos_[static_cast<std::size_t>(i) * 4 + j] =
                 bump * std::cos(mid_k_[j] * p_i);
@@ -307,6 +313,8 @@ void StringSim::rebuild_gust_tables() {
     }
     tables_density_ = wave_density;
     tables_mid_ = mid_waves;
+    tables_mid_env_ = mid_env;
+    tables_mid_lock_ = mid_lock_d;
 }
 
 void StringSim::seed_wake_phase(bool preserve_amplitude) {
@@ -350,6 +358,7 @@ void StringSim::update_wind_forces() {
     // wave_density is live (the Waves knob), so the tables follow it - but
     // only on change, never per tick.
     if (tables_density_ != wave_density || tables_mid_ != mid_waves ||
+        tables_mid_env_ != mid_env || tables_mid_lock_ != mid_lock_d ||
         site_cos_.size() != static_cast<std::size_t>(n_) * 8)
         rebuild_gust_tables();
 
@@ -381,7 +390,9 @@ void StringSim::update_wind_forces() {
     // c*2^(taper/4), the same resonance trick wrinkle uses at the tip.
     double msp[4] = {}, mcp[4] = {};
     if (mid_ripple != 0.0) {
-        const double c_mid = std::sqrt(c2_) * std::pow(2.0, 0.25 * density_taper_);
+        const double c_mid = std::sqrt(c2_)
+                             * std::pow(2.0, 0.5 * mid_lock_d * density_taper_)
+                             * mid_travel;
         for (int j = 0; j < 4; ++j) {
             mid_phase_[j] += mid_k_[j] * c_mid * dt_;
             msp[j] = std::sin(mid_phase_[j]);
