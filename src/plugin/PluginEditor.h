@@ -135,6 +135,11 @@ private:
     bool drawing_ = false;
     bool dirty_ = false;
     int last_mode_ = -1;  // physics mode the cloth panel was last styled for
+    // Wall being dragged on the canvas: -1 none, 0 low edge, 1 high edge.
+    int dragging_wall_ = -1;
+    float wall_x(int which) const;
+    int wall_at(juce::Point<int> p) const;
+    void set_wall(int which, float x_px);
     float last_node_ = 0.f, last_val_ = 0.f;
 
     std::vector<std::unique_ptr<Knob>> knobs_;

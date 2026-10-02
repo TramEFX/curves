@@ -766,25 +766,44 @@ direction flips with the geometry.
 
 ---
 
-#### 19 · Length  `length`
-**0.2…1.0 · default 1.0 · Cloth**
+#### 19 · Walls  `wall_lo` / `wall_hi`
+**0…1 each · defaults 0.0 and 1.0 · dragged on the canvas, not knobs**
 
-| Assigns | Used by |
+| Assigns | `sim_->set_walls(lo, hi)` |
 |---|---|
-| `sim_->set_cloth_length(f)` | **F4** geometry |
-| `span = (N−1)·Length` | Flutter Hz `f0`; **F5** ramp wavelength |
 
-**What it does.** Where the cloth animation **terminates**, as a fraction of
-the array measured from the pole. Beyond it the tail is near-rigid
-(`m_inv = 0.02`) with up to 25× damping, so motion genuinely ends there
-rather than fading out. The termination node is **not** anchored.
+**What it does.** Two hard boundaries as fractions of the node array,
+defining the active window. Outside them the string is **held at rest**
+(`u = v = 0` every tick), so any window anywhere along the spectrum can be
+the cloth. Dragged by the posts on the canvas; the dead zones are shaded.
+Click-to-position as well as drag.
 
-**Functions.** → **F4** → **F5**, **F6**.
+**Replaced the old Cloth-length knob**, which could only shorten from the
+free end and — measured — **did not actually work**:
 
-**Interactions.** Shorter cloths are **reflection-limited** — the near-rigid
-tail is a reflecting boundary, so outward travel is weaker at 0.6 than at
-1.0. That is physics, not a defect. Because it changes `span`, it also moves
-the Flutter Hz compensation point.
+| Length | nodes still moving |
+|---|---|
+| 0.80 | 98.2% |
+| 0.60 | 99.0% |
+| 0.20 | 64.5%, reaching the far end |
+
+The "near-rigid tail" (`m_inv` 0.02 + 25× damping) was never a wall, because
+the **DC and tilt blockers subtract a global mean and trend from every
+node** and therefore kept shoving the dead region around. Both blockers now
+operate on the **active window only**, which is what makes a wall hold.
+
+**Functions.** → **F4** (geometry spans the wall window, with the pole at
+whichever end the wind origin selects) → **F5**, **F6**. The hard clamp runs
+in **F1** after the blockers, before `enforce_anchors`. The Flutter Hz `f0`
+span follows the window too.
+
+**Measured — walls hold exactly.** Peak displacement outside the window is
+**0.00e+00** at every setting tested (windows of 100%, 80%, 40%, 30%, 10%).
+
+**Interactions.** A narrower window captures less wind, so peak falls with
+it (0.88 at full width → 0.20 at 40% → 0.01 at 10%). Motion compensates.
+Defaults 0 and 1 are a true no-op, which is what keeps the frozen validation
+scenarios bit-identical.
 
 ---
 
@@ -804,7 +823,7 @@ knobs can fight.
 | `wind_phase_speed` | Wind, Precision | — |
 | `wave_density` | Waves | — |
 | `shed_freq_hz` | Flutter Hz | — |
-| `cloth_length` | Length | — |
+| `wall_lo` / `wall_hi` | Walls (canvas) | hard; blockers windowed to match |
 | `wind_origin` | Direction | — |
 | `force_model`, anchors, taper | Physics | — |
 | gain targets | Velocity, Tension, Range dB | — |

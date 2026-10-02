@@ -137,7 +137,7 @@ const char* CurvesAudioProcessor::mod_knob_id(int k) {
     static const char* kIds[kNumModKnobs] = {
         "damping", "stiffness", "tension", "smoothing", "drive", "steady",
         "leveler", "velocity", "wind", "waves", "motion", "character",
-        "length", "flutter_hz", "wrinkle"};
+        "flutter_hz", "wrinkle"};
     return kIds[juce::jlimit(0, (int)kNumModKnobs - 1, k)];
 }
 
@@ -145,8 +145,7 @@ CurvesAudioProcessor::PowerMode CurvesAudioProcessor::power_mode(int k) {
     switch (k) {
         case kCharacter:            // a balance: its extremes already mean
         case kWaves:                // all-wind / all-flutter
-        case kTension:              // scales and geometry have no "off"
-        case kLength:
+        case kTension:              // a scale has no "off"
             return kPowerNone;
         case kWind:                 // gates the gust field entirely
         case kFlutterHz:            // gates vortex shedding entirely
@@ -187,7 +186,13 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // previous behaviour exactly; raising it is a tuning decision.
     addParameter(character_ = new APF("character", "Character", R{0.0f, 1.0f}, 0.0f));
     addParameter(direction_ = new APF("direction", "Direction", R(0.0f, 1.0f, 1.0f), 0.0f));
-    addParameter(length_ = new APF("length", "Cloth length", R{0.2f, 1.0f}, 1.0f));
+    // Walls replace the old Cloth-length knob. Two independent boundaries,
+    // dragged on the canvas, so any window anywhere along the spectrum can be
+    // the active cloth. Length could only ever shorten from the free end and,
+    // worse, did not actually work: measured, Length 0.6 still left 99% of
+    // the string moving, because the "near-rigid tail" was not a hard wall.
+    addParameter(wall_lo_ = new APF("wall_lo", "Wall Low", R{0.0f, 1.0f}, 0.0f));
+    addParameter(wall_hi_ = new APF("wall_hi", "Wall High", R{0.0f, 1.0f}, 1.0f));
     // Flutter = vortex shedding. The wake oscillator is a limit cycle, so
     // this is the one control that makes the string move with NO gusting at
     // all. Default 0 (off) so the existing Flagpole feel is unchanged until
@@ -285,14 +290,12 @@ void CurvesAudioProcessor::apply_physics(int mode) {
                              static_cast<double>(n_nodes_), 1.5);
         sim_->aero_rho_cd = 0.6;
         sim_->set_density_taper(2.0);
-        // Do NOT set cloth length here: apply_physics sees the raw knob,
-        // while the per-block path tracks the magnitude-modified value, and
-        // the two desynced - last_length_ could hold a value the sim did not
-        // have, so the per-block guard saw "no change" and never corrected
-        // it. A wrong cloth_length puts a near-rigid, 25x-damped tail at the
-        // far end, which looks exactly like an anchor, intermittently.
-        // Forcing a re-apply below keeps one owner of this value.
-        last_length_ = -1.0;
+        // Walls own the active extent now, so cloth_length stays at 1 and the
+        // walls are the single owner of the geometry. (The old Cloth-length
+        // knob both desynced across apply_physics and did not actually hold:
+        // measured, length 0.6 still left 99% of the string moving.)
+        sim_->set_cloth_length(1.0);
+        last_wall_lo_ = -1.0;   // force the walls to re-apply to the new sim
     } else if (mode == kGust) {
         // No anchors; smooth zero-mean static force field across the spectrum.
         const double w = 8.0 * (static_cast<double>(n_nodes_) / 128.0);
@@ -369,10 +372,12 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // Motion is the amplitude control and absorbs it.
     sim_->wave_density = 0.5 + 4.5 * knob(kWaves, waves_->get());
     sim_->set_wind_origin(direction_->get() > 0.5f ? 1 : 0);
-    const double length_v = knob(kLength, length_->get());
-    if (std::abs(length_v - last_length_) > 1e-4) {
-        sim_->set_cloth_length(length_v);
-        last_length_ = length_v;
+    // Walls: only rebuild the geometry when they actually move.
+    const double wlo = wall_lo_->get(), whi = wall_hi_->get();
+    if (std::abs(wlo - last_wall_lo_) > 1e-4 || std::abs(whi - last_wall_hi_) > 1e-4) {
+        sim_->set_walls(wlo, whi);
+        last_wall_lo_ = wlo;
+        last_wall_hi_ = whi;
     }
     // --- excitation budget --------------------------------------------
     // One amount control (Motion) and one balance control (Character); the
@@ -417,7 +422,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // f0 is the string's fundamental and moves with Tension, node count and
     // cloth length, so it is computed live rather than baked in.
     {
-        const double span = std::max(1.0, (n_nodes_ - 1.0) * length_v);
+        const double span = std::max(1.0, (n_nodes_ - 1.0)
+                                              * std::max(0.02, whi - wlo));
         const double f0 = std::max(1e-6, tension_v / span);
         const double comp = flutter_rate_compensation(
             knob(kFlutterHz, flutter_hz_->get()) / f0);

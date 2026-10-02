@@ -24,6 +24,8 @@ StringSim::StringSim(int n_nodes, const StringParams& params)
     // sum of (i - (n-1)/2)^2 = n(n^2-1)/12, the tilt projection denominator
     tilt_sxx_ = static_cast<double>(n_) *
                 (static_cast<double>(n_) * n_ - 1.0) / 12.0;
+    wall_i0_ = 0;
+    wall_i1_ = n_ - 1;
 }
 
 void StringSim::displace(const std::vector<double>& values) {
@@ -125,6 +127,20 @@ void StringSim::set_cloth_aero(double phase_velocity_nodes_s,
     recompute_cloth();
 }
 
+void StringSim::set_walls(double lo, double hi) {
+    lo = std::clamp(lo, 0.0, 1.0);
+    hi = std::clamp(hi, 0.0, 1.0);
+    if (hi < lo)
+        std::swap(lo, hi);
+    // keep at least a few nodes of cloth between the walls
+    const double min_span = 4.0 / std::max(1.0, n_ - 1.0);
+    if (hi - lo < min_span)
+        hi = std::min(1.0, lo + min_span);
+    wall_lo_ = lo;
+    wall_hi_ = hi;
+    recompute_cloth();
+}
+
 void StringSim::set_cloth_length(double fraction) {
     cloth_length_ = std::clamp(fraction, 0.1, 1.0);
     recompute_cloth();
@@ -152,8 +168,14 @@ void StringSim::recompute_cloth() {
         anchor_high = !low_pole;
         anchor_low = low_pole;
     }
-    const int pole = low_pole ? 0 : n_ - 1;
-    const double span_total = static_cast<double>(n_ - 1);
+    // The active window is the span between the walls; the pole sits at
+    // whichever end of THAT window the wind origin selects.
+    wall_i0_ = static_cast<int>(std::lround(wall_lo_ * (n_ - 1)));
+    wall_i1_ = static_cast<int>(std::lround(wall_hi_ * (n_ - 1)));
+    wall_i0_ = std::clamp(wall_i0_, 0, n_ - 1);
+    wall_i1_ = std::clamp(wall_i1_, wall_i0_, n_ - 1);
+    const int pole = low_pole ? wall_i0_ : wall_i1_;
+    const double span_total = std::max(1.0, static_cast<double>(wall_i1_ - wall_i0_));
 
     wind_env_.resize(n_);
     m_inv_.resize(n_);
@@ -170,9 +192,10 @@ void StringSim::recompute_cloth() {
         qd_.assign(n_, 0.0);
     }
     for (int i = 0; i < n_; ++i) {
-        const double p = low_pole ? static_cast<double>(i)
+        const double p = low_pole ? static_cast<double>(i - pole)
                                   : static_cast<double>(pole - i);
-        const bool in_cloth = p <= span_total * cloth_length_ + 0.5;
+        const bool inside_walls = (i >= wall_i0_ && i <= wall_i1_);
+        const bool in_cloth = inside_walls && p <= span_total * cloth_length_ + 0.5;
         if (!is_wind_model()) {
             wind_env_[i] = 0.0;
             m_inv_[i] = 1.0;
@@ -422,13 +445,21 @@ void StringSim::tick() {
     // when damping is low. Constrain the string to average zero: remove its
     // mean position and mean velocity every tick. Global level belongs to
     // the Drive parameter, not to the string's center of mass.
+    // Both blockers operate on the ACTIVE WINDOW only. Applied globally they
+    // subtract a mean and trend computed partly from the dead regions and
+    // then shift every node, which is exactly how the old "near-rigid tail"
+    // failed to hold still (measured: cloth_length 0.6 left 99% of the
+    // string moving). With walls at their defaults the window is the whole
+    // array and this is identical to the previous behaviour.
+    const int a0 = wall_i0_, a1 = wall_i1_;
+    const int an = a1 - a0 + 1;
     double sum_u = 0.0, sum_v = 0.0;
-    for (int i = 0; i < n_; ++i) {
+    for (int i = a0; i <= a1; ++i) {
         sum_u += u_[i];
         sum_v += v_[i];
     }
-    const double mean_u = sum_u / n_, mean_v = sum_v / n_;
-    for (int i = 0; i < n_; ++i) {
+    const double mean_u = sum_u / an, mean_v = sum_v / an;
+    for (int i = a0; i <= a1; ++i) {
         u_[i] -= mean_u;
         v_[i] -= mean_v;
     }
@@ -438,20 +469,30 @@ void StringSim::tick() {
     // so it rings as a slow global rocking that outlives every real wave.
     // The centered basis is orthogonal to the mean, so this composes cleanly
     // with the DC removal above. See the header for the full rationale.
-    if (remove_tilt) {
-        const double mid = 0.5 * (static_cast<double>(n_) - 1.0);
+    if (remove_tilt && an >= 4) {
+        const double mid = 0.5 * (static_cast<double>(a0) + static_cast<double>(a1));
+        // sum of (i - mid)^2 over the window = n(n^2-1)/12
+        const double sxx = static_cast<double>(an) *
+                           (static_cast<double>(an) * an - 1.0) / 12.0;
         double sxu = 0.0, sxv = 0.0;
-        for (int i = 0; i < n_; ++i) {
+        for (int i = a0; i <= a1; ++i) {
             const double xi = static_cast<double>(i) - mid;
             sxu += xi * u_[i];
             sxv += xi * v_[i];
         }
-        const double au = sxu / tilt_sxx_, av = sxv / tilt_sxx_;
-        for (int i = 0; i < n_; ++i) {
+        const double au = sxu / sxx, av = sxv / sxx;
+        for (int i = a0; i <= a1; ++i) {
             const double xi = static_cast<double>(i) - mid;
             u_[i] -= au * xi;
             v_[i] -= av * xi;
         }
+    }
+
+    // HARD WALLS: everything outside the window is held at rest. This is
+    // what makes a wall a wall rather than a heavily damped region.
+    if (a0 > 0 || a1 < n_ - 1) {
+        for (int i = 0; i < a0; ++i) { u_[i] = 0.0; v_[i] = 0.0; }
+        for (int i = a1 + 1; i < n_; ++i) { u_[i] = 0.0; v_[i] = 0.0; }
     }
 
     enforce_anchors();

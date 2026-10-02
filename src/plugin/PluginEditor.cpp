@@ -111,7 +111,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"motion", "Motion", kCloth},       {"character", "Character", kCloth},
         {"wind", "Wind", kCloth},           {"flutter_hz", "Flutter Hz", kCloth},
         {"waves", "Waves", kCloth},         {"wrinkle", "Wrinkle", kCloth},
-        {"direction", "Direction", kCloth}, {"length", "Length", kCloth},
+        {"direction", "Direction", kCloth},
     };
     for (const auto& d : defs) {
         for (auto* p2 : processor_.getParameters()) {
@@ -304,6 +304,48 @@ float CurvesAudioProcessorEditor::y_to_value(float y) const {
     return juce::jlimit(-1.0f, 1.0f, ((b.getCentreY() - y) / half) * display_scale_);
 }
 
+// ---- walls ---------------------------------------------------------------
+// Two draggable boundaries on the canvas. Outside them the string is held at
+// rest, so any window anywhere along the spectrum can be the active cloth.
+
+float CurvesAudioProcessorEditor::wall_x(int which) const {
+    const auto b = plot_bounds();
+    const char* id = (which == 0) ? "wall_lo" : "wall_hi";
+    for (auto* p : processor_.getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+            if (rp->paramID == juce::String(id))
+                return b.getX() + rp->convertFrom0to1(rp->getValue()) * b.getWidth();
+    return b.getX();
+}
+
+void CurvesAudioProcessorEditor::set_wall(int which, float x_px) {
+    const auto b = plot_bounds();
+    const float f = juce::jlimit(0.0f, 1.0f, (x_px - b.getX()) / b.getWidth());
+    const char* id = (which == 0) ? "wall_lo" : "wall_hi";
+    for (auto* p : processor_.getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+            if (rp->paramID == juce::String(id)) {
+                rp->beginChangeGesture();
+                rp->setValueNotifyingHost(rp->convertTo0to1(f));
+                rp->endChangeGesture();
+                break;
+            }
+    repaint();
+}
+
+int CurvesAudioProcessorEditor::wall_at(juce::Point<int> p) const {
+    const auto b = plot_bounds();
+    if (!b.expanded(0.0f, 10.0f).contains(p.toFloat()))
+        return -1;
+    // Grab whichever edge is within reach; the nearer one wins a tie.
+    const float dlo = std::abs(float(p.x) - wall_x(0));
+    const float dhi = std::abs(float(p.x) - wall_x(1));
+    const float reach = 12.0f;
+    if (dlo > reach && dhi > reach)
+        return -1;
+    return (dlo <= dhi) ? 0 : 1;
+}
+
 // ---- drawing (the user holds the string) ---------------------------------
 
 void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
@@ -337,6 +379,15 @@ void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
         push_current();
         return;
     }
+    // A wall under the cursor takes precedence over drawing.
+    {
+        const auto pt = e.getEventRelativeTo(this).getPosition();
+        dragging_wall_ = wall_at(pt);
+        if (dragging_wall_ >= 0) {
+            set_wall(dragging_wall_, float(pt.x));   // click-to-position
+            return;
+        }
+    }
     if (!plot_bounds().contains(e.position.toFloat()))
         return;
     drawing_ = true;
@@ -350,6 +401,11 @@ void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
 }
 
 void CurvesAudioProcessorEditor::mouseDrag(const juce::MouseEvent& e) {
+    if (dragging_wall_ >= 0) {
+        set_wall(dragging_wall_,
+                 float(e.getEventRelativeTo(this).getPosition().x));
+        return;
+    }
     if (!drawing_)
         return;
     const float node = juce::jlimit(0.0f, float(active_nodes() - 1), x_to_node(e.position.x));
@@ -361,6 +417,7 @@ void CurvesAudioProcessorEditor::mouseDrag(const juce::MouseEvent& e) {
 }
 
 void CurvesAudioProcessorEditor::mouseUp(const juce::MouseEvent&) {
+    dragging_wall_ = -1;
     drawing_ = false;  // release: the string rings from the held shape
 }
 
@@ -554,6 +611,29 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour(t.grid_key));
     g.drawLine(b.getX(), b.getCentreY(), b.getRight(), b.getCentreY(), 1.0f);
 
+    // ---- walls: shade the dead zones, then draw the posts ----
+    {
+        const float xl = wall_x(0), xh = wall_x(1);
+        g.setColour(juce::Colour(t.bg).withAlpha(0.72f));
+        if (xl > b.getX() + 0.5f)
+            g.fillRect(b.getX(), b.getY(), xl - b.getX(), b.getHeight());
+        if (xh < b.getRight() - 0.5f)
+            g.fillRect(xh, b.getY(), b.getRight() - xh, b.getHeight());
+        for (int w = 0; w < 2; ++w) {
+            const float x = (w == 0) ? xl : xh;
+            const bool at_edge = (w == 0) ? (xl <= b.getX() + 0.5f)
+                                          : (xh >= b.getRight() - 0.5f);
+            const float a = at_edge ? 0.35f : 1.0f;   // dim when parked
+            g.setColour(juce::Colour(t.anchor).withAlpha(0.18f * a));
+            g.fillRect(x - 3.0f, b.getY(), 6.0f, b.getHeight());
+            g.setColour(juce::Colour(t.anchor).withAlpha(a));
+            g.fillRect(x - 1.0f, b.getY(), 2.0f, b.getHeight());
+            // grip handles, top and bottom
+            g.fillRoundedRectangle(x - 4.0f, b.getY() + 1.0f, 8.0f, 13.0f, 2.5f);
+            g.fillRoundedRectangle(x - 4.0f, b.getBottom() - 14.0f, 8.0f, 13.0f, 2.5f);
+        }
+    }
+
     // anchor pin: in Flagpole only the pole (high end) is anchored; the low
     // end is the free cloth termination and whips.
     if (mode == 1) {
@@ -620,7 +700,7 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour(t.text_dim));
     g.setFont(12.0f);
     g.drawText("bright = the EQ being applied   |   faint = the string   |   "
-               "drag to draw   |   right-click to flatten",
+               "drag to draw   |   right-click to flatten   |   drag the posts to wall off",
                int(b.getX()), int(b.getBottom()) + 4, int(b.getWidth()), 18,
                juce::Justification::centred);
 

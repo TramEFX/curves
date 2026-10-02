@@ -101,6 +101,13 @@ class StringSim:
         self._m_inv = np.ones(self.n)
         self._damping_mult = np.ones(self.n)
         self._cloth_length = 1.0
+        # Walls: hard boundaries as fractions of the node array. Defaults
+        # 0 and 1 are a no-op (see src/string_sim.h for why they are hard
+        # and why the DC/tilt blockers must be windowed).
+        self._wall_lo = 0.0
+        self._wall_hi = 1.0
+        self._wall_i0 = 0
+        self._wall_i1 = self.n - 1
         self._wind_exponent = 1.8
         # ---- vortex shedding / flutter (the "alive" mechanism) ----
         # A van der Pol WAKE OSCILLATOR per node (see src/string_sim.h for
@@ -214,6 +221,17 @@ class StringSim:
         self._site_k = np.array([1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6])
         self._recompute_cloth()
 
+    def set_walls(self, lo, hi):
+        lo = min(max(lo, 0.0), 1.0)
+        hi = min(max(hi, 0.0), 1.0)
+        if hi < lo:
+            lo, hi = hi, lo
+        min_span = 4.0 / max(1.0, self.n - 1.0)
+        if hi - lo < min_span:
+            hi = min(1.0, lo + min_span)
+        self._wall_lo, self._wall_hi = lo, hi
+        self._recompute_cloth()
+
     def set_cloth_length(self, fraction):
         """Where the animation TERMINATES, as a fraction of the node array
         measured from the anchored pole. The end node is NOT anchored — it
@@ -248,11 +266,16 @@ class StringSim:
         if self.is_wind_model():
             self.anchor_high = not low_pole
             self.anchor_low = low_pole
-        pole = 0 if low_pole else self.n - 1
-        span_total = float(self.n - 1)
+        self._wall_i0 = int(round(self._wall_lo * (self.n - 1)))
+        self._wall_i1 = int(round(self._wall_hi * (self.n - 1)))
+        self._wall_i0 = min(max(self._wall_i0, 0), self.n - 1)
+        self._wall_i1 = min(max(self._wall_i1, self._wall_i0), self.n - 1)
+        pole = self._wall_i0 if low_pole else self._wall_i1
+        span_total = max(1.0, float(self._wall_i1 - self._wall_i0))
         idx = np.arange(self.n)
-        p = idx if low_pole else (pole - idx)
-        in_cloth = p <= span_total * self._cloth_length + 0.5
+        p = (idx - pole) if low_pole else (pole - idx)
+        inside = (idx >= self._wall_i0) & (idx <= self._wall_i1)
+        in_cloth = inside & (p <= span_total * self._cloth_length + 0.5)
 
         env = np.zeros(self.n)
         minv = np.ones(self.n)
@@ -472,16 +495,26 @@ class StringSim:
         # DC blocker (see src/string_sim.cpp): tension is blind to uniform
         # displacement, so constrain the string to average zero — remove the
         # mean position and mean velocity every tick.
-        self.u -= self.u.mean()
-        self.v -= self.v.mean()
+        # Both blockers operate on the ACTIVE WINDOW only (see the C++).
+        a0, a1 = self._wall_i0, self._wall_i1
+        an = a1 - a0 + 1
+        self.u[a0:a1 + 1] -= self.u[a0:a1 + 1].mean()
+        self.v[a0:a1 + 1] -= self.v[a0:a1 + 1].mean()
 
         # Tilt blocker: remove the least-squares linear trend (mode 1), same
         # reasoning as the mean. The centered basis is orthogonal to the
         # mean, so this composes cleanly with the DC removal above.
-        if self.remove_tilt:
-            xi = np.arange(self.n) - 0.5 * (self.n - 1)
-            self.u -= (float(np.sum(xi * self.u)) / self._tilt_sxx) * xi
-            self.v -= (float(np.sum(xi * self.v)) / self._tilt_sxx) * xi
+        if self.remove_tilt and an >= 4:
+            mid = 0.5 * (a0 + a1)
+            sxx = an * (an * an - 1.0) / 12.0
+            xi = np.arange(a0, a1 + 1) - mid
+            self.u[a0:a1 + 1] -= (float(np.sum(xi * self.u[a0:a1 + 1])) / sxx) * xi
+            self.v[a0:a1 + 1] -= (float(np.sum(xi * self.v[a0:a1 + 1])) / sxx) * xi
+
+        # HARD WALLS: everything outside the window is held at rest.
+        if a0 > 0 or a1 < self.n - 1:
+            self.u[:a0] = 0.0; self.v[:a0] = 0.0
+            self.u[a1 + 1:] = 0.0; self.v[a1 + 1:] = 0.0
 
         self._enforce_anchors()
 

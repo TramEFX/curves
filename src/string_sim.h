@@ -173,6 +173,21 @@ public:
     // it moves freely and whips (user decision: pinning it kills the whip).
     // Beyond the termination, forcing is zero and damping is multiplied so
     // the animation genuinely ends there.
+    // ---- walls (user request 2026-10-02) ------------------------------
+    // Two hard boundaries as fractions of the node array, so any window
+    // anywhere along the spectrum can be the active cloth. Defaults 0 and 1
+    // are a no-op, which is what keeps the frozen scenarios bit-identical.
+    //
+    // These are HARD: outside the window u and v are forced to zero every
+    // tick. The older "near-rigid tail" (m_inv 0.02 + 25x damping) was not
+    // actually a wall - measured, cloth_length 0.6 still left 99% of the
+    // string moving - because the DC and tilt blockers subtract a GLOBAL
+    // mean and trend from every node and therefore kept shoving the dead
+    // region around. Both blockers now operate on the active window only.
+    void set_walls(double lo, double hi);
+    double wall_lo() const { return wall_lo_; }
+    double wall_hi() const { return wall_hi_; }
+
     void set_cloth_length(double fraction);
     double cloth_length() const { return cloth_length_; }
     void set_wind_origin(int origin);
@@ -313,6 +328,8 @@ private:
     double density_taper_ = 0.0;
     double envelope_exponent_ = 1.8;
     double cloth_length_ = 1.0;
+    double wall_lo_ = 0.0, wall_hi_ = 1.0;
+    int wall_i0_ = 0, wall_i1_ = 0;   // inclusive active node range
     double wind_k_ = 0.1;           // spatial rad/node
     double site_phase_[8] = {};
     double site_pos_[8] = {};   // nodes from origin anchor

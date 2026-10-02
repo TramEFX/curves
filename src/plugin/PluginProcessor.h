@@ -76,7 +76,7 @@ public:
     // and Test Noise are modes or switches where "half range" is meaningless.
     enum ModKnob {
         kDamping = 0, kStiffness, kTension, kSmoothing, kRangeDb, kSteady,
-        kLeveler, kVelocity, kWind, kWaves, kMotion, kCharacter, kLength,
+        kLeveler, kVelocity, kWind, kWaves, kMotion, kCharacter,
         kFlutterHz, kWrinkle, kNumModKnobs
     };
     // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
@@ -195,10 +195,11 @@ private:
     juce::AudioParameterFloat* motion_ = nullptr;    // total excitation 0..1
     juce::AudioParameterFloat* character_ = nullptr; // gust <-> shedding 0..1
     juce::AudioParameterFloat* direction_ = nullptr; // wind travel direction 0/1
-    juce::AudioParameterFloat* length_ = nullptr;    // cloth termination 0.2..1.0
+    juce::AudioParameterFloat* wall_lo_ = nullptr;   // active window, low edge
+    juce::AudioParameterFloat* wall_hi_ = nullptr;   // active window, high edge
     juce::AudioParameterFloat* flutter_hz_ = nullptr;// shedding rate, Hz
     juce::AudioParameterFloat* wrinkle_ = nullptr;   // tip fine detail 0..1
-    double last_length_ = -1.0;   // double: Length now passes through knob()
+    double last_wall_lo_ = -1.0, last_wall_hi_ = -1.0;
 
     // Paul Kellet pink-noise filter state, per channel.
     std::array<float, 7> pink_[2]{};
