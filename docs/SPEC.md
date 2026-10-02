@@ -157,13 +157,19 @@ Run `build/Release/bench.exe [sample_rate]` to re-measure.
 maps to internally, what that does physically, measured behaviour, and the
 interactions that matter when tuning.
 
-> **Shared amplitude budget — read before tuning anything in CLOTH & WIND.**
-> Force, Flutter and Wrinkle all inject energy into the same string, and
-> their contributions add. Each was calibrated *alone*; with two or three of
-> them up, peak displacement can exceed ±1 and the EQ flat-tops. This is a
-> known, deliberate trade (the project prefers waves true to the simulation
-> over an enforced ceiling) and it is visible on the display rather than
-> hidden. It is the single biggest thing to settle in a tuning pass.
+> **Excitation budget — resolved 2026-10-02.** Force and Flutter used to be
+> two independent *amount* controls feeding the same string, so their
+> contributions added and neither dial meant anything on its own (turning one
+> up changed the other's effect by **2.46×**). They are now **Motion**
+> (amount) and **Character** (balance), with the individual source strengths
+> solved for rather than set directly. Motion means the same thing at every
+> Character setting and every Precision — measured spread **1.06× / 1.11× /
+> 1.38×** at 128 / 256 / 512 nodes, with nothing clamping anywhere.
+>
+> **Wrinkle is still outside this budget** and remains additive: at Motion 1
+> it multiplies peak by **1.57×** at Character 0 and 1.12× at Character 0.5,
+> so Wrinkle near maximum can still push the EQ into the clamp. Folding it
+> into the budget is the remaining piece.
 
 ---
 
@@ -377,31 +383,68 @@ free termination that whips. A density taper of 2 octaves makes the string
 heavy at the pole and light at the tip — the whip mechanism — and a forcing
 envelope `d^1.5` grows from pole to termination.
 
-#### Force — 0…1 · default 0.6
+#### Motion — 0…1 · default 0.45
 
-Wind **speed**, in the same units as node velocity:
+**The single amount control for the whole cloth.** Sets a target peak string
+displacement, linearly:
 
 ```
-wind_speed = 25 · Force · (Tension/300)^0.6 · (128/N)^0.25
+target_peak = 0.85 · Motion · mix_boost(Character, Precision)
 ```
 
-The two normalizations exist so the dial means one thing regardless of other
-settings: the Tension term cut dial spread from 4.7× to 1.4×; the node term
-holds peak displacement roughly constant across Precision modes.
+The two source dials are then *solved for* rather than set directly, by
+inverting each source's measured peak-vs-dial curve:
 
-**Measured:** monotonic with no dead zone — peak displacement 0.04 at 15 %
-of the dial through ~0.92 at full. The response is **compressive, not
-hard-limited**: peak grows about `wind_speed^1.4`, and the saturation
-actually lives in the drag coefficient (33× more drag only doubles
-amplitude).
+```
+wind: peak = 0.8720 · dial^1.679      (measured, 3.7% error)
+shed: peak = 1.2756 · dial^0.707      (measured, 1.8% error)
 
-**Tuning notes:**
-- Calibrated against a **30-second** observation window. The gusts are
-  quasi-periodic and a short measurement under-reports the peak badly — an
-  earlier 3.5 s calibration read 0.995 where the true 30 s peak was 1.41.
-- At Precision 2 (512 nodes) the long-run peak reads ~1.01 even at Force 1.0
-  with everything else off, so this calibration is marginal in that one
-  mode.
+wind_dial = ((1 − Character) · target_peak / 0.8720)^(1/1.679)
+shed_dial = (     Character  · target_peak / 1.2756)^(1/0.707)
+```
+
+0.85 is the target at Motion = 1. The binding limit is Character = 0, where
+wind alone tops out at 0.872, so 0.85 sits just under it and well under the
+±1 clamp.
+
+Two measured corrections sit on top, both indexed by Precision because the
+sources do not scale with resolution the same way:
+
+- **Per-precision source gains** (`kNodeWindGain`, `kNodeShedGain`). Without
+  them Motion = 1 gave peak ~0.37 at 128 nodes and clamped at 512.
+- **Mix correction** (`kMixBoost`, a 3×4 table). Two *incoherent* sources do
+  not add their peaks exactly — the peaks rarely coincide — so a mix
+  under-delivers. The deficit is asymmetric because wind's exponent (1.679)
+  is far steeper than shedding's (0.707), and its size varies with
+  resolution.
+
+**Measured result:** peak tracks Motion monotonically and near-proportionally
+(ratio 0.86 → 1.08 across the dial), with spread across Character of 1.06× /
+1.11× / 1.38× at 128 / 256 / 512 nodes. Nothing clamps at any setting.
+
+**Tuning note:** this is now the knob to set first. Everything else in the
+panel is character, rate, scale or geometry.
+
+#### Character — 0…1 · default 0.0
+
+**Where the motion comes from**, not how much of it there is.
+
+- **0** — all **gust wind**: a travelling transverse velocity field driving
+  the string through aerodynamic drag. Needs the wind to keep blowing.
+- **1** — all **vortex shedding**: a van der Pol wake oscillator per node,
+  a genuine limit cycle, so the string flaps with no gust wind at all.
+
+Intermediate values split the budget between them, so the two mechanisms
+blend without the total changing.
+
+At Character = 1 the air is still but the drag term is still active, so the
+string experiences aerodynamic damping from its own motion through it —
+correct physics, and it is baked into the calibration.
+
+**Tuning note:** default 0 reproduces the previous wind-only behaviour
+exactly. Raising it is a tuning decision and one of the least-explored axes
+in the plugin — the shedding mechanism is what makes a *drawn* deposit keep
+moving, since gusts are not the only energy source any more.
 
 #### Wind — 0…1 · default 0.37
 
@@ -464,6 +507,10 @@ essentially nothing for exactly this reason.
 with the pole end unchanged — the effect stays where it is aimed.
 
 **Tuning notes:**
+- **Still outside the excitation budget.** Unlike Motion and Character,
+  Wrinkle adds on top: at Motion 1 it multiplies peak by **1.57×** at
+  Character 0 and 1.12× at Character 0.5, so near maximum it can still push
+  the EQ into the clamp. Folding it into the budget is outstanding work.
 - **Resolution-dependent.** Effective at 512 nodes, marginal at 256, useless
   at 128 (the wavelengths fall below what the grid can carry; an anti-alias
   clamp holds the finest to ≥8 nodes/cycle so it degrades rather than
@@ -493,36 +540,6 @@ Pinning it kills the whip.
 **Tuning note:** shorter cloths are reflection-limited — the near-rigid tail
 acts as a reflecting boundary, so outward wave travel is weaker at 0.6 than
 at 1.0. That is physics, not a defect.
-
-#### Flutter — 0…1 · default 0
-
-Vortex shedding. A **van der Pol wake oscillator per node**:
-
-```
-q̈ = −ε·ω·(q² − 1)·q̇ − ω²·q + coupling·v_i
-F_i = shed_gain · q_i · envelope_i          shed_gain = 90 · Flutter
-```
-
-The `(q² − 1)` term is negative damping below `|q| = 1` and positive above,
-so `q` is a genuine **limit cycle**: the string flaps with **no gust wind at
-all**. That is the difference between motion that is driven and motion that
-is alive, and it is what lets a drawn deposit keep moving — previously only
-the wind re-excited the string.
-
-The bank is seeded with an **outward travelling phase ramp** (1.5
-wavelengths per cloth span) rather than a frequency gradient. van der Pol is
-an attractor in amplitude but neutral in phase, so identical autonomous
-oscillators keep whatever phase relationship they start with — direction is
-therefore correct by construction. The `coupling·v_i` term gives lock-in:
-structure velocity pulls the wake's phase.
-
-**Measured:** self-sustained peak 0.59 / 0.88 / 1.10 at gain 30 / 60 / 90
-alone; 1.59 / 1.98 / 2.23 at those gains with Force at 1.0.
-
-**Tuning note:** the top half of this dial **will** clamp if Force is also
-up. Only ~gain 5 would keep every Precision mode under ±1 at full Force,
-which would make the control pointless — so range was kept useful instead.
-This is the clearest candidate for a shared-budget rethink.
 
 #### Flutter Hz — 0.1…20 Hz · default 3.0
 
@@ -582,8 +599,10 @@ which is honest: very fast flutter genuinely is subtle.
 Collected from measurements made while building, as the agenda for the
 knob-by-knob pass:
 
-1. **Shared amplitude budget** (Force + Flutter + Wrinkle). The biggest
-   open question. Options: compensate, cap, or keep and document.
+1. **Shared amplitude budget** — **mostly done 2026-10-02.** Force and
+   Flutter became Motion (amount) and Character (balance); spread across
+   Character is now 1.06×/1.11×/1.38× by Precision and nothing clamps.
+   **Remaining:** Wrinkle is still additive (1.57× at Character 0).
 2. ~~**Flutter Hz behaves like a volume knob**~~ — **done 2026-10-02.**
    Rate–amplitude compensation added in the plugin mapping; swing across the
    working band 23× → 2.03×, default setting unchanged. See its entry above.

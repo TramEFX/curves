@@ -39,6 +39,75 @@ constexpr double kRateRef = 0.213;
 // extreme top stay quiet, which is honest - fast flutter IS subtle.
 constexpr double kRateCompMin = 0.25, kRateCompMax = 8.0;
 
+// ---- excitation budget: Motion / Character ------------------------------
+// Force and Flutter used to be two independent AMOUNT controls feeding the
+// same string, so their contributions added and neither dial meant anything
+// on its own. Measured: the two sources add roughly LINEARLY in peak
+// displacement (10.6% mean error over a 4x4 grid), and each source's own
+// peak-vs-dial curve is a clean power law:
+//
+//     wind: peak = 0.8720 * dial^1.679      (measured, 3.7% error)
+//     shed: peak = 1.2756 * dial^0.707      (measured, 1.8% error)
+//
+// So the pair is replaced by one AMOUNT control and one BALANCE control:
+//   Motion    -> target peak displacement, linearly
+//   Character -> how that target is split between gusting and shedding
+// and the two source dials are recovered by inverting the curves above.
+// Motion therefore means the same thing at every Character setting, which
+// is what dissolves the shared-budget problem rather than documenting it.
+//
+// kMotionPeak is the peak at Motion = 1. The binding limit is Character = 0,
+// where wind alone tops out at 0.872, so 0.85 sits just under that and well
+// under the +-1 clamp the bank and the display share.
+constexpr double kWindA = 0.8720, kWindP = 1.679;
+constexpr double kShedA = 1.2756, kShedP = 0.707;
+constexpr double kMotionPeak = 0.85;
+
+// Second-order correction. Linear addition gets most of the way, but two
+// INCOHERENT sources do not add their peaks exactly - the peaks rarely
+// coincide - so a mix under-delivers relative to either source alone. The
+// deficit is asymmetric because wind's exponent (1.679) is much steeper than
+// shedding's (0.707), so splitting costs more at the wind-dominant end.
+// Measured delivered/target, averaged over Motion: 1.00 / 0.78 / 0.89 / 0.99
+// at Character 0 / 0.33 / 0.66 / 1. These are the reciprocals, interpolated.
+// Per-precision source gains. The two sources do NOT scale with node count
+// the same way - measured A_wind 0.400/0.829/1.017 and A_shed 0.617/1.296/
+// 1.193 at 128/256/512 nodes - so without this, Motion = 1 gave peak ~0.37
+// at 128 nodes and clamped at 512. Indexed by Precision, which has exactly
+// three values, so the table is exact rather than an interpolation.
+// (This also supersedes the old (128/n)^0.25 wind term, which had the wrong
+// magnitude; it is kept below and these gains are measured on top of it.)
+constexpr double kNodeWindGain[3] = {1.590, 1.031, 0.913};
+constexpr double kNodeShedGain[3] = {2.796, 0.978, 1.099};
+
+constexpr double kMixC[] = {0.0, 0.33, 0.66, 1.0};
+// ...and the correction is itself per-precision, because the size of the
+// mixing deficit depends on resolution too. Rows are Precision 0/1/2.
+constexpr double kMixBoost[3][4] = {
+    {0.969, 1.462, 1.106, 0.847},   // 128 nodes
+    {1.007, 1.340, 1.017, 0.999},   // 256 nodes
+    {0.968, 0.978, 0.805, 1.012},   // 512 nodes
+};
+
+double mix_boost(double c, int prec) {
+    c = std::clamp(c, 0.0, 1.0);
+    const double* row = kMixBoost[std::clamp(prec, 0, 2)];
+    for (int i = 0; i + 1 < 4; ++i) {
+        if (c > kMixC[i + 1])
+            continue;
+        const double t = (c - kMixC[i]) / (kMixC[i + 1] - kMixC[i]);
+        return row[i] + t * (row[i + 1] - row[i]);
+    }
+    return row[3];
+}
+
+// Invert peak = A * dial^P for the dial that delivers `target`.
+double dial_for_peak(double target, double A, double P) {
+    if (target <= 1e-9)
+        return 0.0;
+    return std::clamp(std::pow(target / A, 1.0 / P), 0.0, 1.0);
+}
+
 double flutter_rate_compensation(double ratio) {
     const double r = std::clamp(ratio, kRateRatio[0], kRateRatio[kRateN - 1]);
     double resp = kRateResp[kRateN - 1];
@@ -77,14 +146,21 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     addParameter(velocity_ = new APF("velocity", "Velocity", R{0.0f, 1.0f}, 0.0f));
     addParameter(wind_ = new APF("wind", "Wind", R{0.0f, 1.0f}, 0.37f));
     addParameter(waves_ = new APF("waves", "Waves", R{0.0f, 1.0f}, 0.4f));
-    addParameter(force_ = new APF("force", "Force", R{0.0f, 1.0f}, 0.6f));
+    // Motion = total string excitation, calibrated so peak displacement
+    // tracks the dial linearly regardless of Character. Default chosen to
+    // match the previous Force 0.6 wind-only feel (peak ~0.37).
+    addParameter(motion_ = new APF("motion", "Motion", R{0.0f, 1.0f}, 0.45f));
+    // Character = where that excitation comes from. 0 = all gust wind,
+    // 1 = all self-sustaining vortex shedding. Default 0 reproduces the
+    // previous behaviour exactly; raising it is a tuning decision.
+    addParameter(character_ = new APF("character", "Character", R{0.0f, 1.0f}, 0.0f));
     addParameter(direction_ = new APF("direction", "Direction", R(0.0f, 1.0f, 1.0f), 0.0f));
     addParameter(length_ = new APF("length", "Cloth length", R{0.2f, 1.0f}, 1.0f));
     // Flutter = vortex shedding. The wake oscillator is a limit cycle, so
     // this is the one control that makes the string move with NO gusting at
     // all. Default 0 (off) so the existing Flagpole feel is unchanged until
     // it is dialled in.
-    addParameter(flutter_ = new APF("flutter", "Flutter", R{0.0f, 1.0f}, 0.0f));
+
     // Nominal wake frequency. In Curves this is literally the rate the EQ
     // bands wobble at, so it is set in Hz and tuned by ear: below ~0.5 Hz it
     // is inert, 0.5-4 Hz is the expressive band, and above that the string's
@@ -241,6 +317,19 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         sim_->set_cloth_length(length_->get());
         last_length_ = length_->get();
     }
+    // --- excitation budget --------------------------------------------
+    // One amount control (Motion) and one balance control (Character); the
+    // individual source dials are solved for, not set directly.
+    const double motion = motion_->get();
+    const double character = character_->get();
+    const int prec_idx = std::clamp(static_cast<int>(precision_->get()), 0, 2);
+    const double target_peak =
+        kMotionPeak * motion * mix_boost(character, prec_idx);
+    const double wind_dial = dial_for_peak((1.0 - character) * target_peak,
+                                           kWindA, kWindP);
+    const double shed_dial = dial_for_peak(character * target_peak,
+                                           kShedA, kShedP);
+
     // Force = WIND SPEED (nodes/s) in the aero model. Drag rises as the
     // string's own velocity catches up to the wind, so amplitude is
     // compressive and monotonic across the whole dial with no ceiling to
@@ -260,7 +349,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // the same units as the node velocities it is compared against.
     const double tension_norm = std::pow(std::max(1.0f, tension_->get()) / 300.0, 0.6);
     const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
-    sim_->wind_speed = 25.0 * force_->get() * tension_norm * node_norm;
+    sim_->wind_speed = 25.0 * wind_dial * tension_norm * node_norm
+                       * kNodeWindGain[prec_idx];
     // Flap limiter retired in the aero path: drag IS the amplitude
     // mechanism. Left off rather than removed so the kFlagpoleWind model and
     // the six original validation scenarios keep their exact behavior.
@@ -300,7 +390,7 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         const double f0 = std::max(1e-6, static_cast<double>(tension_->get()) / span);
         const double comp = flutter_rate_compensation(
             static_cast<double>(flutter_hz_->get()) / f0);
-        sim_->shed_gain = 90.0 * flutter_->get() * comp;
+        sim_->shed_gain = 90.0 * shed_dial * comp * kNodeShedGain[prec_idx];
     }
     // Wrinkle 0..1 -> 0..3. Measured tip/pole detail ratio 1.11 (off) ->
     // 1.45 at 1.5 -> 1.82 at 3.0, with the POLE end unchanged (0.83 ->

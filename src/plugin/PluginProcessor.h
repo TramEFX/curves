@@ -130,10 +130,10 @@ private:
     juce::AudioParameterFloat* velocity_ = nullptr;  // velocity coupling 0..1
     juce::AudioParameterFloat* wind_ = nullptr;      // gust phase velocity 0..1
     juce::AudioParameterFloat* waves_ = nullptr;     // wave concentration 0..1
-    juce::AudioParameterFloat* force_ = nullptr;     // wind speed 0..1
+    juce::AudioParameterFloat* motion_ = nullptr;    // total excitation 0..1
+    juce::AudioParameterFloat* character_ = nullptr; // gust <-> shedding 0..1
     juce::AudioParameterFloat* direction_ = nullptr; // wind travel direction 0/1
     juce::AudioParameterFloat* length_ = nullptr;    // cloth termination 0.2..1.0
-    juce::AudioParameterFloat* flutter_ = nullptr;   // vortex shedding amount 0..1
     juce::AudioParameterFloat* flutter_hz_ = nullptr;// shedding rate, Hz
     juce::AudioParameterFloat* wrinkle_ = nullptr;   // tip fine detail 0..1
     float last_length_ = -1.0f;
