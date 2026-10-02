@@ -176,37 +176,76 @@ in the `d^2.8` tip envelope, and carry an **anti-alias clamp** holding the
 finest wrinkle to ≥ 8 nodes per cycle. Rebuilt only when geometry or
 `wave_density` changes — never per tick.
 
-### F7 · Node → gain mapping (`processBlock`)
+### F7 · Control smoothing + node → gain mapping
+
+**The only smoothing in the plugin**, and it runs on the string's own
+coordinate rather than on the band gain. Per sim tick, per node:
 
 ```
-disp_i = u_i + Velocity · (v_i / Tension)
-dB_i   = clamp(disp_i, −1, +1) · RangeDB
-G_i    = 2^(dB_i / 6.0206)          ( ≡ 10^(dB_i/20) )
+disp_i  = (1 − Velocity)·u_i + Velocity·(30·v_i / Tension)
+sd_i   += α·(disp_i − sd_i)          α = 1 − exp(−1/(τ·tick_rate))
 ```
 
-`G_i` is the **target**; **F8** moves the actual gain toward it.
-
-### F8 · `FilterBank::process_sample(ch, x)`
-
-Per band, per sample:
+Then once per block, per node:
 
 ```
-g_b   += alpha · (target_b − g_b)             one-pole smoothing
-v1     = bandpass(x)                          TPT SVF, Q = 1.0 fixed
-big    = g_b − 1
+dB_i = clamp(sd_i, −1, +1) · RangeDB
+G_i  = 2^(dB_i / 6.0206)             ( ≡ 10^(dB_i/20) )
+```
+
+**Why the smoother is here and not in the bank.** `disp` is already the
+log-amplitude coordinate: the x axis is log frequency and `disp` maps
+*linearly* to dB. So all state lives on a Range-free quantity and **Range
+enters exactly once, memorylessly**, which makes the drawn curve independent
+of it by construction. A one-pole on the *linear* gain is not
+scale-invariant — measured before the change, the drawn curve moved up to
+**0.298 of full scale** from a Range change alone and boosts ran **2.21×**
+faster than cuts at Range 18. Measured after: **4.95e-14** and **1.00×**.
+
+Running at the tick rate rather than per audio sample is also an
+**anti-alias filter** ahead of the block-rate sampling the bank sees, and
+makes the knob independent of the host's buffer size.
+
+`G_i` is the block **target**; **F8** walks there.
+
+### F8 · `FilterBank::process_frame(l, r, stereo)`
+
+The bank holds **no time constant of its own**. Given a block target it
+precomputes one geometric step per band, `r_b = (G_b / g_b)^(1/n)`, then per
+**sample frame** — once, not once per channel:
+
+```
+g_b  *= r_b                                   exactly linear in dB
+v1    = bandpass(x)                           TPT SVF, Q = 1.0 fixed
+big   = g_b − 1
                                               ── Steady, if amount > 0 ──
-env_b += (|v1| > env_b ? atk : rel)·(|v1| − env_b)   5 ms / 150 ms
+mag   = max(|v1_L|, |v1_R|)                   MONO detector
+env_b += (mag > env_b ? atk : rel)·(mag − env_b)    5 ms / 150 ms
 if env_b > 0.25:  big /= 1 + Steady·(env_b/0.25 − 1)
+g_eff_b = 1 + big                             ← what the display draws
 y     += v1 · big
 ```
 
 Output is `x + Σ_b v1_b·big_b` — a dry path plus summed peaking bands. This
 can **boost or cut** a band but cannot **move** one. Steady is
 **feedforward** (the follower reads the input-side bandpass), so it cannot
-oscillate. `alpha = 1 − exp(−1/(τ·fs))`, `τ = Smoothing/1000`.
+oscillate.
 
-SVF coefficients: `g = tan(π·fc/fs)`, `k = 1/Q = 1`,
-`a1 = 1/(1+g(g+k))`, `a2 = g·a1`, `a3 = g·a2`.
+**Geometric, not linear.** `g *= r` lands on the target exactly after `n`
+frames and every intermediate value is linear in dB, for one multiply. A
+linear ramp in gain was measured at up to **24 dB** of mid-block error at
+Smoothing 2 ms.
+
+**Once per frame, not once per channel.** The previous entry point took a
+channel index and stepped the shared smoother on each call, so stereo
+smoothed at **half** the set time and a mono instance did not match a
+stereo one.
+
+**One mono detector.** Per the channel-coherence rule, Steady derives one
+duck from `max(|v1_L|,|v1_R|)` and applies it identically to both channels,
+so there is exactly one true curve to draw. `gains()` returns `g_eff`,
+Steady included.
+
 
 ### F9 · `OutputLeveler::process(l, r)`
 
@@ -376,20 +415,40 @@ curve and audio identically and cannot break WYSIWYG.
 swing is a **36 dB peak-to-trough** EQ — set this before tuning anything
 physical, or you will tune the physics around a too-hot master.
 
+**It does not touch the physics, and it does not move the picture.** It has
+one writer and two readers (the gain map and the display normalization),
+never reaches `sim_`, and since 2026-10-02 all smoothing state lives
+upstream of it, so the drawn curve is **exactly** invariant to it: measured
+deviation **4.95e-14** of full scale across a 16× Range change, moving or
+still. Before that fix the same measurement gave **0.298**. The canvas now
+labels its dB axis from the *effective* Range (post magnitude modifier).
+
 ---
 
 #### 4 · Smoothing  `smoothing`
 **2…100 ms · default 30 · Global**
 
-| Assigns | `bank_.alpha_ = 1 − exp(−1/(τ·fs))`, `τ = ms/1000` |
+| Assigns | `smooth_alpha_ = 1 − exp(−1/(τ·tick_rate))`, `τ = ms/1000` |
 |---|---|
 
-**What it does.** Time constant of the one-pole that moves each band's gain
-toward its target. **This is the sound of the plugin**: the gains are always
-moving, which is frequency modulation of the filters and produces sidebands.
-Whether that reads as lush or cheap is almost entirely this timescale.
+**What it does.** Time constant of the one-pole on the **control signal** —
+`disp`, not the band gain. **This is the sound of the plugin**: the gains are
+always moving, which is frequency modulation of the filters and produces
+sidebands. Whether that reads as lush or cheap is almost entirely this
+timescale.
 
-**Functions.** → **F8**.
+**Functions.** → **F7**.
+
+**Changed 2026-10-02.** Moved out of `FilterBank` and into the control path
+(see **F7** for why), and the double-step bug fixed: the old smoother
+advanced once *per channel*, so **a stereo instance smoothed at half the set
+time** (30 ms behaved as 15 ms) and did not match a mono one. It also read
+the raw parameter in `processBlock` and therefore ignored its own magnitude
+modifier.
+
+**Consequence for tuning: the default now feels about 2× slower than it used
+to in stereo.** The default is deliberately left at 30 ms — where it should
+sit is an ear call, not a measurement.
 
 **Interactions.** The only lag between string and displayed curve, accepted
 by design. Highest-leverage under-the-hood control in the plugin.
@@ -408,9 +467,25 @@ contribution.
 
 **Functions.** → **F8**.
 
+**Fixed 2026-10-02 — two defects.** The follower was kept **per channel**,
+so Steady ducked L and R by different amounts: a dynamic stereo-image mover,
+against the channel-coherence rule, and it meant **no single curve was
+correct** — so the display showed *none* of the ducking while claiming to.
+Measured hidden gain reduction at the default Steady 0.35: **1.98 dB**, and
+**4.52 dB** at Steady 1.0. That was a live violation of the hard anchor.
+
+The detector is now **mono** — `max(|v1_L|,|v1_R|)`, one follower per band,
+one duck applied identically to both channels — and `gains()` returns the
+Steady-inclusive gain. Measured after: **0.00 dB hidden** at every amount.
+It also read the raw parameter and ignored its magnitude modifier; fixed.
+
 **Interactions.** Feedforward, so it cannot oscillate. Costs ~2 ops/band/
 sample since the bandpass already exists. Its ducking **is** visible on the
-curve, because the display draws the bank's gains.
+curve — as of 2026-10-02 this is actually true.
+
+**Steady is the one place Range still interacts with the curve's shape**,
+because the duck multiplies the *linear* `big`. That is real behaviour, not
+a display artifact, and the curve shows it exactly.
 
 ---
 
@@ -832,7 +907,7 @@ knobs can fight.
 | `wind_origin` | Direction | — |
 | `force_model`, anchors, taper | Physics | — |
 | gain targets | Velocity, Tension, Range dB | — |
-| `bank_.alpha_` | Smoothing | — |
+| `smooth_alpha_` (control one-pole) | Smoothing, Precision (tick rate) | — |
 | `bank_.steady_amount_` | Steady | — |
 | `leveler_.amount_` | Leveler | — |
 | `n_nodes_`, `sim_divisor_` | Precision | — |
@@ -857,6 +932,16 @@ though each consumer normalizes against it deliberately.
    field. Candidates for becoming presets, freeing Physics to be a real mode
    switch.
 6. **Three stepped parameters are rotaries** (Physics, Precision, Direction).
+
+10. ~~**Steady's ducking was hidden from the curve**~~ — **fixed 2026-10-02**
+    (up to 4.52 dB of real gain reduction was invisible; mono detector now,
+    `gains()` is Steady-inclusive).
+11. ~~**Range dB leaked into the drawn curve**~~ — **fixed 2026-10-02**
+    (smoother moved onto the control signal; 0.298 → 4.95e-14).
+12. ~~**Stereo smoothed at half the set time**~~ — **fixed 2026-10-02**
+    (the gain advanced once per channel instead of once per frame).
+13. **Smoothing's default is now un-tuned.** Fixing the double-step made
+    stereo 2× slower at the same setting. 30 ms is inherited, not chosen.
 7. **Precision rebuild allocates on the audio thread.**
 8. **Per-node Q is unimplemented.** `Q = 1.0` fixed for every band, despite
    per-node Q being a recorded architectural decision.
@@ -872,6 +957,14 @@ Two rules that constrain all future work:
 same ±1 clamp the audio path uses — never from the sim. Any amplitude
 mechanism must keep the string inside ±1 in normal use, or the EQ flat-tops.
 
+**Channel coherence.** One instance is one string: no process inside a
+single instance may treat L and R differently. Stereo interest comes from
+running separate *instances* per channel — the sandbox design — so internal
+divergence is a dynamic image-mover and therefore a defect. Driving a
+*different spectrum* (stereo width alone, or alongside EQ) is a wanted
+feature to be built deliberately, not something that should fall out of
+per-channel followers by accident.
+
 **Bit-exact cross-validation.** The C++ engine is validated against the
 Python spec cell by cell: **10 scenarios, 73,856 cells, 0 mismatches**. Every
 physics change must land in both with identical arithmetic order, and the
@@ -881,4 +974,5 @@ pre-existing scenario CSVs must stay byte-identical.
 python prototype/run_scenarios.py        # Python spec
 build/Release/scenarios.exe prototype    # C++ engine
 build/Release/bench.exe 48000            # per-core cost
+build/Release/gain_test.exe              # Range invariance, dB symmetry, Steady
 ```

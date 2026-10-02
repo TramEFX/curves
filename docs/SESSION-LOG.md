@@ -18,14 +18,14 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `08416ab` |
+| Head | `9c2d042` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 20, across 19 controls |
 | Validation | 10 scenarios, **73,856 cells, 0 mismatches** Python↔C++ |
-| Cost @48 kHz | 6.9% / 21.7% / 43.0% of one core at 128 / 256 / 512 nodes |
+| Cost @48 kHz | ~7% / ~22% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
 
-**Two invariants that constrain everything:**
+**Three invariants that constrain everything:**
 
 1. **WYSIWYG.** The bright curve is drawn from `FilterBank::gains()` with the
    same ±1 clamp the audio path uses — never from the sim. Any amplitude
@@ -35,6 +35,9 @@ log that runs to 2026-10-02).
    arithmetic order, and the frozen scenario CSVs stay byte-identical.
    New behaviour goes in behind a default-off flag or a new force model so
    the baselines survive.
+3. **Channel coherence** (added 2026-10-02). One instance is one string: no
+   process inside a single instance may treat L and R differently. Stereo
+   interest comes from running separate *instances* per channel.
 
 ---
 
@@ -199,6 +202,124 @@ leaves every modifier running.
 > lighter tip (4× via the taper) to damp faster with wind off and look pinned.
 > Measured tip/pole decay ratio ≈ 1.0. The real cause was a `last_length_`
 > state desync across `apply_physics`.
+
+---
+
+## 2026-10-02 · Session 2 — the gain path
+
+Three commits, `5303f1e` → `9c2d042`. Triggered by the owner's statement of
+what Range dB is *for*: "Range shouldn't affect Physics or visuals. Range
+should affect how much the visuals are applying EQ."
+
+### What the audit found
+
+Range already satisfied that **when the string is still** — one writer, two
+readers, never reaches `sim_`, and the two readers cancel exactly (identical
+to six decimals at every Range). But three defects sat in the same path.
+
+**1. The smoother was in the wrong domain.** The one-pole ran on the band's
+*linear* gain, so Range sat inside a recursive filter. A one-pole is only
+scale-invariant in its own domain:
+
+| string wobble | drawn-curve deviation, Range 3 vs 18 |
+|---|---|
+| 0.5 Hz | 0.005 |
+| 3.0 Hz | 0.162 |
+| 8.0 Hz | **0.298** — 30% of canvas height |
+
+and boosts ran **2.21×** faster than cuts at Range 18 (2.83× at 24).
+
+`ORCHESTRATION.md:155` had specified the right form from day one — "one
+one-pole smoother **toward the current sim value**". The implementation had
+drifted, because the filter consumes a linear gain so the smoother got
+written where the gain lived. Not a decision; nobody had ever chosen it.
+
+The owner's framing was the architecture: nodes are evenly spaced in **log
+frequency**, `disp` maps **linearly to dB**, the physics is linear in
+`disp` — so the chain is already linear physics on a log-log graph, and the
+smoother was the one thing outside that coordinate system. Moved onto
+`disp` at the **sim tick rate**; Range now enters once, memorylessly.
+
+**2. The gain advanced once per channel.** `process_sample(0,..)` then
+`(1,..)` each stepped the shared smoother. **Stereo smoothed at half the set
+time** (30 ms behaved as 15 ms) and a mono instance did not match a stereo
+one. Nobody had noticed because both sounded plausible.
+
+**3. Steady was invisible on the curve** — a live hard-anchor violation. The
+duck multiplied a local `big` and was never written back to `g_`, which is
+what the display reads. Hidden gain reduction: **1.98 dB** at the default
+Steady 0.35, **4.52 dB** at 1.0. Both the `gains()` comment and the spec
+asserted the opposite.
+
+### The decision that resolved it
+
+Steady's follower was **per channel**, so L and R ducked differently and
+*no single curve was correct*. Asked whether to draw the max or the mean,
+the owner reframed it:
+
+> "the goal for this is to run multiple instances within a sandbox that you
+> can run in parallel left and right channels independently … running one
+> left and right is really where the sandbox aspect gets powerful."
+
+So: **one instance is one string**, channel-coherent inside, stereo by
+*instancing*. The max-vs-mean question dissolves — a mono detector gives
+exactly one true curve. `OutputLeveler` already followed this rule. Recorded
+as an invariant, with the explicit carve-out that driving a *different*
+spectrum (stereo width) is a wanted feature to be built on purpose.
+
+### Verified on the shipped code
+
+`src/gain_test_main.cpp` exercises the real `FilterBank`, not a replica:
+
+| property | before | after |
+|---|---|---|
+| drawn curve vs 16× Range change | 0.298 | **4.95e-14** |
+| boost/cut asymmetry | 2.21× / 2.83× | **1.00×** at every Range |
+| Steady hidden from the curve | up to 4.52 dB | **0.00 dB** |
+
+Cross-validation untouched throughout: 73,856 cells, 0 mismatches — the
+work never enters `StringSim`.
+
+### Also
+
+- **dB axis on the canvas.** Gridlines at round dB values (step from
+  {1,2,3,6,12,24,48}, ≤4 per side), labelled, derived from the **effective**
+  Range so High magnitude on an 18 dB knob reads ±36 and says so. Verified on
+  screen at Range 3.74 (1 dB steps) and 18 (6 dB steps).
+- **Two more modifier desyncs**: Smoothing and Steady both read the raw
+  parameter in `processBlock` and silently ignored their own magnitude LEDs.
+  Same class as the `last_length_` bug.
+- **The flutter compensation is clamped at the default patch.** Its reference
+  point was measured at 512 nodes (`f/f0 = 5.11`), but the default Precision
+  is 128 — where `comp` = **0.25**, pinned at its min clamp, not the 1.0 the
+  spec implied. Latent today because Character defaults to 0, which makes the
+  shed branch inert. It bites the moment Character leaves 0.
+
+### Corrections on record
+
+- **I projected a 33% CPU reduction from flop counting. Wrong.** The SVF
+  dominates the per-band cost, so removing the one-pole barely moves it.
+  Measured at 512 nodes: bank unchanged within noise (12.16 vs 12.06), and
+  the control smoother **adds 1.57%** of one core. The redesign is
+  **cost-neutral**; it was never a performance change.
+- A naive cell-by-cell diff of the scenario CSVs reports **156,679 mismatches
+  of 369,330** and means nothing: Python writes `0.0` where C++ writes
+  `0.000000`, and the scenario column is tagged `cpp_pluck` vs `pluck`. The
+  real comparison is the `value` column parsed as floats — 73,856 cells.
+  Noted because the naive check looks catastrophic and is pure formatting.
+
+### Open after this session
+
+- **Smoothing's default is un-tuned.** Stereo is now 2× slower at the same
+  setting; 30 ms is inherited, not chosen. Needs ears.
+- **Steady is the one remaining Range interaction** with the curve's shape,
+  because the duck multiplies the linear `big`. Real behaviour, shown
+  exactly — flagged rather than fixed.
+- **Character at higher precisions**, the owner's next target. Hypothesis
+  (unverified): amplitude is already budgeted flat, but shedding spreads over
+  4× the oscillators at 512 nodes so each couples less. Measure spatial and
+  temporal spectrum and the self-sustaining fraction before changing
+  anything — three hypotheses have been wrong on this project already.
 
 ---
 
