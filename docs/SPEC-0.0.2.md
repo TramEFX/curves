@@ -2,8 +2,8 @@
 
 **Status: current.** Supersedes `SPEC-0.0.1.md`, which is kept for history.
 
-An exhaustive knob-by-knob reference covering all **21 parameters** across
-**20 controls** (the two Walls share one entry). For every control it states:
+An exhaustive knob-by-knob reference covering all **22 parameters** across
+**21 controls** (the two Walls share one entry). For every control it states:
 
 1. **Assigned parameters** — the exact engine variables it writes.
 2. **What it does** — the effect, in plain language.
@@ -135,7 +135,8 @@ mid_k_j = 2π · mid_waves · kMidK_j / span,   kMidK = {0.72, 1.0, 1.37, 1.9}
 ```
 
 Tables bake in a `sin(π·dd)^1.4` bump envelope whose peak is warped to sit at
-`mid_lock_d = 0.65` — which is exactly where the `c·2^(taper/4)` phase lock is
+`mid_lock_d = 0.65`, plus the **Flap** term `+ flap·d²·(1 − bump)` which fills
+the envelope back in toward the free end — which is exactly where the `c·2^(taper/4)` phase lock is
 resonant. Wrinkle sits at the tip, this sits in the middle, the gust spans
 the lot. `mid_waves` is an **absolute** wave count, deliberately *not* scaled
 by `wave_density`, so Waves keeps owning the gust pattern alone. Skipped
@@ -969,7 +970,48 @@ essentially nothing for exactly this reason.
 
 ---
 
-#### 19 · Direction  `direction`
+#### 19 · Flap  `flap`
+**0…1 · default 0.45 · Cloth**
+
+| Assigns | `sim_->mid_flap` |
+|---|---|
+
+**What it does.** How hard the **mid-band ripples drive the free end**.
+
+**Why it is needed.** The mid-band envelope is a bump whose peak is warped to
+`mid_lock_d`, and it returns to **exactly zero at `d = 1`**:
+
+| d | 0.65 | 0.80 | 0.90 | 0.95 | 0.99 | 1.00 |
+|---|---|---|---|---|---|---|
+| envelope | 1.000 | 0.709 | 0.311 | 0.122 | 0.013 | **0.000** |
+
+So the ripples shrinking toward the end was never damping — **they were
+never forced there** (owner's read: "it may be the fact that is the end of
+the simulation"). Flap adds `flap·d²·(1 − bump)`, which fills the tip in
+*without touching the middle*. `flap = 0` is exactly the old envelope.
+
+**Measured** at the shipped shape, Wind 0.5 — note `f2` barely moves:
+
+| flap | f2 | f3 | tip | tip/f3 | peak |
+|---|---|---|---|---|---|
+| 0.00 | 10454 | 9838 | 3649 | 0.37 | 1.11× |
+| **0.45** | 10755 | 10029 | 4303 | 0.43 | **1.27×** |
+| 1.00 | 11139 | 10317 | 6523 | 0.63 | 1.61× |
+
+**Honest limit.** The tip is **off-resonance**: local wave speed there is
+`c·2^(taper/2) = 2.00c` against a lock at `c·2^(taper·0.65/2) = 1.57c`, a
+**1.27× detune**, so it couples less per unit forcing than the middle no
+matter how hard it is driven — which is why even `flap = 1` leaves the tip
+below the `f3` peak. Shifting the lock toward the tip with Flap would buy
+more whip at the cost of moving the whole band's centre. Not done.
+
+**Unbudgeted, like Wrinkle.** Flap adds *on top of* the Motion budget
+(1.45× peak across its range) rather than inside it. Harmless at default
+Motion — peak 0.55 against the ±1 clamp — but it will clip near Motion 1.
+
+---
+
+#### 20 · Direction  `direction`
 **0/1 step 1 · default 0 · Cloth**
 
 | Assigns | `sim_->set_wind_origin(value > 0.5 ? 1 : 0)` |
@@ -986,7 +1028,7 @@ direction flips with the geometry.
 
 ---
 
-#### 20 · Walls  `wall_lo` / `wall_hi`
+#### 21 · Walls  `wall_lo` / `wall_hi`
 **0…1 each · defaults 0.0 and 1.0 · dragged on the canvas, not knobs**
 
 | Assigns | `sim_->set_walls(lo, hi)` |
@@ -1043,6 +1085,7 @@ knobs can fight.
 | `wind_phase_speed` | Wind, **Tension** | normalized: the dial is a multiple of `c` |
 | `wave_density` | Waves | — |
 | `mid_waves`, `mid_travel`, `mid_ripple` | Wind, Motion | size + travel from Wind, amount from Motion |
+| `mid_flap` | Flap | **unbudgeted, adds on top** |
 | `shed_freq_hz` | Flutter Hz | — |
 | `wall_lo` / `wall_hi` | Walls (canvas) | hard; blockers windowed to match |
 | `wind_origin` | Direction | — |
@@ -1063,7 +1106,8 @@ though each consumer normalizes against it deliberately.
 ## §5 — Known Defects and Tuning Targets
 
 1. **Wrinkle is outside the excitation budget** — 1.57× peak multiplier at
-   Character 0. The last piece of the Motion/Character work.
+   Character 0. The last piece of the Motion/Character work. **Flap is
+   outside it too** (1.45× across its range), for the same reason.
 2. **Range dB default 18** gives a 36 dB peak-to-trough span. Probably too
    hot; set it before tuning physics.
 3. **Stiffness is weaker than its range** now that DC and tilt are blocked.

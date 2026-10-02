@@ -18,9 +18,9 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `bc87114` |
+| Head | `4bbbe3c` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
-| Parameters | 21, across 20 controls |
+| Parameters | 22, across 21 controls |
 | Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
 | Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
@@ -513,6 +513,40 @@ Python, and the `mid` scenario in *both* engines was repointed at the
 **shipped** shape. The new envelope formula reduces exactly to the old one at
 the default values, so the baselines held — which meant validation would
 otherwise have passed while covering a configuration the plugin never uses.
+
+### Flap — the tip was never forced
+
+Owner: "the dampening at the end of the wind may not be a dampening issue at
+all. It may be the fact that is the end of the simulation." **Correct**, and
+it was my envelope, not the physics. The mid-band bump returns to *exactly
+zero* at `d = 1`:
+
+| d | 0.65 | 0.80 | 0.90 | 0.95 | 0.99 | 1.00 |
+|---|---|---|---|---|---|---|
+| envelope | 1.000 | 0.709 | 0.311 | 0.122 | 0.013 | **0.000** |
+
+Flap adds `flap·d²·(1 − bump)` — fills the tip in, leaves the middle alone,
+and `flap = 0` reproduces the old envelope exactly so the baselines hold.
+
+| flap | f2 (middle) | tip | tip/f3 | peak |
+|---|---|---|---|---|
+| 0.00 | 10454 | 3649 | 0.37 | 1.11× |
+| **0.45** | 10755 | 4303 | 0.43 | **1.27×** |
+| 1.00 | 11139 | 6523 | 0.63 | 1.61× |
+
+`f2` barely moving across the whole range is the design working.
+
+**Two limits recorded rather than hidden:**
+
+- **The tip is off-resonance.** Local wave speed there is `c·2^(taper/2) =
+  2.00c` against a lock at `1.57c` — a 1.27× detune — so it couples less per
+  unit forcing than the middle *no matter how hard it is driven*. That is
+  why even `flap = 1` leaves the tip below the `f3` peak. Shifting the lock
+  toward the tip with Flap would buy more whip at the cost of moving the
+  band's centre; not done, available if wanted.
+- **Unbudgeted, like Wrinkle** — 1.45× peak across its range, on top of the
+  Motion budget rather than inside it. Fine at default Motion (peak 0.55
+  against the ±1 clamp), will clip near Motion 1.
 
 ---
 
