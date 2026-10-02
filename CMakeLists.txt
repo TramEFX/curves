@@ -23,6 +23,9 @@ target_link_libraries(bench PRIVATE curves_string)
 add_executable(gain_test src/gain_test_main.cpp)
 target_link_libraries(gain_test PRIVATE curves_string)
 
+add_executable(tension_test src/tension_test_main.cpp)
+target_link_libraries(tension_test PRIVATE curves_string)
+
 # ---- JUCE / CLAP plugin shell (M0 second half) ----
 # enable via -DCURVES_BUILD_PLUGIN=ON; FetchContent pulls JUCE so the repo
 # stays light. CLAP comes from clap-juce-extensions (JUCE has no native CLAP).

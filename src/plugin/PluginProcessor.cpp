@@ -82,6 +82,29 @@ constexpr double kVelScale = 30.0;
 // (This also supersedes the old (128/n)^0.25 wind term, which had the wrong
 // magnitude; it is kept below and these gains are measured on top of it.)
 constexpr double kNodeWindGain[3] = {1.590, 1.031, 0.913};
+// Tension compensation exponent, per precision: wind_speed scales as
+// (c/300)^kTensionP so that a given Motion means the same amplitude at any
+// Tension. Theory says 1.0 -- at steady state drag balances tension,
+// rhoCd*W^2 ~= c^2 k^2 u, so u is Tension-free only when W scales linearly
+// with c -- and the measured optimum sits just under that because a
+// faster-moving string sees less relative velocity.
+//
+// It is per-precision because the measurement says so. Peak against Tension
+// is a HUMP, not a slope: it maxes near a fixed f0 = c/span, so the hump
+// sits at a different Tension in each mode and no single exponent flattens
+// the whole dial. These values flatten the UPPER half (300 -> 600), which is
+// where "turning Tension up makes it quieter" is actually felt.
+//
+//   peak ratio, Tension 300 -> 600:   was (0.6)      now
+//     128 nodes                        0.56x        0.79x   (p 0.85)
+//     256 nodes                        0.61x        0.79x   (p 0.80)
+//     512 nodes                        0.94x        0.94x   (p 0.60, unchanged
+//                                                            -- not broken)
+// Whole-dial spread at 128 nodes: 3.15x -> 1.46x.
+//
+// Note (c/300)^p == 1 at Tension 300 for ANY p, so the Motion calibration at
+// the default Tension is untouched by this and needs no re-fit.
+constexpr double kTensionP[3] = {0.85, 0.80, 0.60};
 constexpr double kNodeShedGain[3] = {2.796, 0.978, 1.099};
 
 constexpr double kMixC[] = {0.0, 0.33, 0.66, 1.0};
@@ -396,11 +419,13 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // lines only convert a dial into engine units.
     //
     // The tension term makes a given dial mean the same thing at any Tension
-    // (measured spread 4.7x -> 1.4x). The node term plus kNodeWindGain hold
+    // (see kTensionP: it is per-precision, and the old flat 0.6 left the
+    // string audibly quieter at high Tension). The node term plus kNodeWindGain hold
     // it across precision modes - the two sources scale differently with
     // resolution, so each carries its own per-precision gain.
     const double tension_v = knob(kTension, tension_->get());
-    const double tension_norm = std::pow(std::max(1.0, tension_v) / 300.0, 0.6);
+    const double tension_norm =
+        std::pow(std::max(1.0, tension_v) / 300.0, kTensionP[prec_idx]);
     const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
     // Wind's power LED gates the gust MECHANISM: off means no gust forcing
     // at all, which is what "turn the wind off" has to mean. Previously
