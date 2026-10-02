@@ -250,23 +250,41 @@ its label and clickable:
 | **Power** | right of the label | yellow = on, black = off |
 
 ```
-knob(k, raw) =  lo                                   if power is off
-             =  lo + (raw − lo) · {0.5, 1.0, 2.0}    for low / medium / high
+magnitude: value = lo + (raw − lo) · {0.5, 1.0, 2.0}   low / medium / high
 ```
 
-- **Off resolves to the knob's minimum**, which is the neutral value for
-  every modifiable knob: Motion 0, Steady 0, Smoothing 2 ms (no smoothing),
-  Range 3 dB (minimal), Damping 0.05 (almost none).
-- **Magnitude scales travel above the minimum**, so **High can exceed the
-  nominal maximum** — that is the point. Medium is the calibrated setting.
-- When a knob is powered off, **both** its LEDs go dark.
+**Magnitude scales travel above the minimum**, so **High can exceed the
+nominal maximum** — that is the point. Medium is the calibrated setting.
+Every continuous knob has one.
+
+**What power-off means is per knob**, and a blanket rule was wrong here. The
+first version collapsed every knob to its minimum, which produced a real bug:
+with Character, Wind, Waves and Wrinkle all "off" the string still drifted in
+large slow curves, because Character's minimum is 0 = **all gust wind**,
+Wind's minimum is the *slowest* rate (measured 0.091 Hz — an 11-second
+period) and Waves' minimum is the *most stretched* pattern. "Everything off"
+was really "full wind, slowest, largest".
+
+| Mode | Knobs | Off means |
+|---|---|---|
+| `kPowerToMin` | Motion, Steady, Velocity, Wrinkle, Leveler, Stiffness, Smoothing, Range dB, Damping | the knob's minimum — genuinely neutral for these (Motion 0, Steady 0, Smoothing 2 ms, Range 3 dB, Damping 0.05) |
+| `kPowerGate` | **Wind**, **Flutter Hz** | the whole **mechanism** is silenced, not the value: Wind zeroes the gust field, Flutter Hz zeroes shedding |
+| `kPowerNone` | Character, Waves, Tension, Length | **no power LED** — "off" is meaningless for a balance, a scale or a geometry |
+
+So **Wind power off is the way to turn the gusts off**, and Flutter Hz power
+off silences shedding; between them, plus Motion, every excitation source has
+an independent kill switch. Verified on screen: with Wind powered off and
+RESET pressed, the curve is flat and stays flat.
+
+When a knob with a power LED is off, **both** its LEDs go dark. Knobs with no
+power LED keep their magnitude LED lit.
 
 **Not AudioParameters.** 19 knobs × 2 would add 38 entries to the host's
 automation list for what is a tuning aid, so these ride in the state tree
 (`knobMods`) like the colour theme. Promote any that prove essential later.
 
-**Physics, Precision, Direction and Test Noise have no modifiers** — they are
-modes and switches where "half range" is meaningless.
+**Physics, Precision, Direction and Test Noise have no modifiers at all** —
+they are modes and switches where "half range" is meaningless.
 
 **Interaction with the Motion budget.** `dial_for_peak` clamps the solved
 source dial at **2.0**, not 1.0. At Medium the dial never exceeds 1 and the

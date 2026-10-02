@@ -82,9 +82,21 @@ public:
     // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
     // exceed the nominal maximum - that is the point of it.
     static constexpr double kMagScale[3] = {0.5, 1.0, 2.0};
-    // "Off" is the knob's minimum, which is the neutral value for every
-    // modifiable knob: Motion 0, Steady 0, Smoothing 2 ms (no smoothing),
-    // Range 3 dB (minimal), Damping 0.05 (almost none), and so on.
+    // What "power off" MEANS depends on the knob, and getting this wrong was
+    // a real bug: a blanket "off = the knob's minimum" rule left Character
+    // off = 0 = ALL GUST WIND, Wind off = the slowest rate (0.091 Hz, an
+    // 11-second period) and Waves off = the most stretched pattern. Together
+    // that produced large slow-moving curves with "everything off".
+    //
+    //   kPowerToMin  off -> the knob's minimum, which IS neutral for these:
+    //                Motion 0, Steady 0, Velocity 0, Wrinkle 0, Leveler 0,
+    //                Stiffness 0, Smoothing 2 ms, Range 3 dB, Damping 0.05.
+    //   kPowerGate   off -> the whole MECHANISM is silenced, not the value.
+    //                Wind gates the gust field; Flutter Hz gates shedding.
+    //   kPowerNone   no power LED: "off" is meaningless for a balance
+    //                (Character) or a scale/geometry (Waves, Tension, Length).
+    enum PowerMode { kPowerNone = 0, kPowerToMin, kPowerGate };
+    static PowerMode power_mode(int k);
     struct KnobMod {
         bool on = true;
         int mag = 1;        // 0 = low, 1 = medium, 2 = high
@@ -131,9 +143,15 @@ private:
     std::atomic<bool> reset_request_{false};
     double knob(int k, double raw) const {
         const auto& m = knob_mods_[k];
-        if (!m.on)
+        // Magnitude always applies; power-off only collapses to the minimum
+        // for knobs where the minimum is genuinely neutral. kPowerGate knobs
+        // keep their value and are silenced at the mechanism instead.
+        if (!m.on && power_mode(k) == kPowerToMin)
             return m.lo;
         return m.lo + (raw - m.lo) * kMagScale[juce::jlimit(0, 2, m.mag)];
+    }
+    bool mechanism_on(int k) const {
+        return power_mode(k) != kPowerGate || knob_mods_[k].on;
     }
     double fs_ = 48000.0;
     int sim_counter_ = 0;

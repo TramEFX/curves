@@ -137,6 +137,21 @@ const char* CurvesAudioProcessor::mod_knob_id(int k) {
     return kIds[juce::jlimit(0, (int)kNumModKnobs - 1, k)];
 }
 
+CurvesAudioProcessor::PowerMode CurvesAudioProcessor::power_mode(int k) {
+    switch (k) {
+        case kCharacter:            // a balance: its extremes already mean
+        case kWaves:                // all-wind / all-flutter
+        case kTension:              // scales and geometry have no "off"
+        case kLength:
+            return kPowerNone;
+        case kWind:                 // gates the gust field entirely
+        case kFlutterHz:            // gates vortex shedding entirely
+            return kPowerGate;
+        default:
+            return kPowerToMin;
+    }
+}
+
 CurvesAudioProcessor::CurvesAudioProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -362,8 +377,13 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const double tension_v = knob(kTension, tension_->get());
     const double tension_norm = std::pow(std::max(1.0, tension_v) / 300.0, 0.6);
     const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
-    sim_->wind_speed = 25.0 * wind_dial * tension_norm * node_norm
-                       * kNodeWindGain[prec_idx];
+    // Wind's power LED gates the gust MECHANISM: off means no gust forcing
+    // at all, which is what "turn the wind off" has to mean. Previously
+    // only its rate dropped to minimum and the gusts kept blowing slowly.
+    sim_->wind_speed = mechanism_on(kWind)
+                           ? 25.0 * wind_dial * tension_norm * node_norm
+                                 * kNodeWindGain[prec_idx]
+                           : 0.0;
     // Flap limiter permanently off: aerodynamic drag IS the amplitude
     // mechanism now. Kept in the engine rather than deleted so the legacy
     // kFlagpoleWind model and the frozen validation scenarios still behave
@@ -378,7 +398,10 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         const double f0 = std::max(1e-6, tension_v / span);
         const double comp = flutter_rate_compensation(
             knob(kFlutterHz, flutter_hz_->get()) / f0);
-        sim_->shed_gain = 90.0 * shed_dial * comp * kNodeShedGain[prec_idx];
+        // Flutter Hz's power LED gates shedding entirely.
+        sim_->shed_gain = mechanism_on(kFlutterHz)
+                              ? 90.0 * shed_dial * comp * kNodeShedGain[prec_idx]
+                              : 0.0;
     }
     // Wrinkle 0..1 -> 0..3. Measured tip/pole detail ratio 1.11 (off) ->
     // 1.45 at 1.5 -> 1.82 at 3.0, with the POLE end unchanged (0.83 ->

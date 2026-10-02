@@ -317,7 +317,9 @@ void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
         for (auto& k : knobs_) {
             if (k->mod < 0 || !k->slider.isEnabled())
                 continue;
-            if (k->power.expanded(4).contains(pt)) {
+            if (CurvesAudioProcessor::power_mode(k->mod)
+                    != CurvesAudioProcessor::kPowerNone
+                && k->power.expanded(4).contains(pt)) {
                 processor_.set_knob_on(k->mod, !processor_.knob_on(k->mod));
                 repaint();
                 return;
@@ -640,7 +642,12 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
         juce::Graphics::ScopedSaveState ss(g);
         if (!live)
             g.setOpacity(0.35f);
-        draw_led(g, k->magnitude, kMagCol[juce::jlimit(0, 2, mag)], on);
-        draw_led(g, k->power, juce::Colour(0xffffd21f), on);
+        const bool has_power =
+            CurvesAudioProcessor::power_mode(k->mod) != CurvesAudioProcessor::kPowerNone;
+        // Magnitude stays lit when there is no power switch to dim it.
+        draw_led(g, k->magnitude, kMagCol[juce::jlimit(0, 2, mag)],
+                 has_power ? on : true);
+        if (has_power)
+            draw_led(g, k->power, juce::Colour(0xffffd21f), on);
     }
 }
