@@ -74,23 +74,40 @@ int main(int argc, char** argv) {
             std::printf("sim tick  n=%-4d wind + flutter    %8.0f  %8.0f   %8.2f\n",
                         n, ns, tick_rate, ns * 1e-9 * tick_rate * 100.0);
         }
+        // --- control smoother: the one-pole on disp, at the TICK rate ---
+        // This is the smoothing system now. It moved off the linear gain
+        // (where Range dB leaked into it) onto the string control signal.
+        {
+            std::vector<double> u(n, 0.1), v(n, 0.3), sd(n, 0.0);
+            const double a = 0.05, va = 0.3, vs = 0.1;
+            const int reps = 20000;
+            const double t = seconds([&] {
+                for (int i = 0; i < n; ++i) {
+                    const double disp = (1.0 - va) * u[i] + va * (vs * v[i]);
+                    sd[i] += a * (disp - sd[i]);
+                }
+            }, reps);
+            const double ns = t / reps * 1e9;
+            std::printf("smoother  n=%-4d control/tick      %8.0f  %8.0f   %8.2f\n",
+                        n, ns, tick_rate, ns * 1e-9 * tick_rate * 100.0);
+        }
         // --- filter bank, per sample, 2 channels ---
         {
             FilterBank bank;
             bank.prepare(n, fs, 2);
             for (int b = 0; b < n; ++b)
                 bank.set_band_frequency(b, 30.0 * std::pow(600.0, (double)b / (n - 1)));
-            bank.set_smoothing(30.0);
             std::vector<double> g(n, 1.0);
-            bank.set_targets(g.data());
+            bank.set_block_targets(g.data(), 512);
             const int reps = 20000;
-            float x = 0.1f;
+            float x = 0.1f, y = 0.1f;
             const double t = seconds([&] {
-                x = bank.process_sample(0, x) * 0.5f + 0.05f;
-                x = bank.process_sample(1, x) * 0.5f + 0.05f;
+                bank.process_frame(x, y, true);
+                x = x * 0.5f + 0.05f;
+                y = y * 0.5f + 0.05f;
             }, reps);
             const double ns = t / reps * 1e9;
-            std::printf("bank      n=%-4d 2ch/sample        %8.0f  %8.0f   %8.2f\n",
+            std::printf("bank      n=%-4d 2ch/frame         %8.0f  %8.0f   %8.2f\n",
                         n, ns, fs, ns * 1e-9 * fs * 100.0);
             std::printf("\n");
         }

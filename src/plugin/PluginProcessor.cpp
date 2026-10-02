@@ -258,10 +258,10 @@ void CurvesAudioProcessor::rebuild(int precision) {
     sim_counter_ = 0;
 
     bank_.prepare(n_nodes_, fs_, 2);
-    bank_.set_smoothing(knob(kSmoothing, smoothing_->get()));
     bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
     rebuild_band_map();
     gain_targets_.assign(n_nodes_, 1.0);
+    smoothed_disp_.fill(0.0);
     last_physics_ = -1;  // force re-apply on the current preset
 }
 
@@ -438,8 +438,15 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // +30% amplitude on user request: 3.0 -> 3.9 at the top of the dial.
     sim_->wrinkle = 3.9 * knob(kWrinkle, wrinkle_->get());
     sim_->shed_freq_hz = knob(kFlutterHz, flutter_hz_->get());
-    bank_.set_smoothing(smoothing_->get());
-    bank_.set_steady(steady_->get(), 0.25);
+    // Smoothing is now a one-pole on disp at the sim tick rate. Both of
+    // these used the RAW knob and so quietly ignored their own magnitude
+    // modifiers; they take knob() like every other control now.
+    {
+        const double tau = std::max(1e-4, knob(kSmoothing, smoothing_->get()) * 1e-3);
+        const double tick_rate = fs_ / std::max(1, sim_divisor_);
+        smooth_alpha_ = 1.0 - std::exp(-1.0 / (tau * tick_rate));
+    }
+    bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
     leveler_.set_amount(knob(kLeveler, leveler_amt_->get()));
     max_gain_db_.store(knob(kRangeDb, drive_->get()), std::memory_order_relaxed);
 
@@ -458,20 +465,19 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //    self-normalising: measured rms and peak of the velocity term with
     //    kVelScale = 30 are close to those of u, so neither extreme pushes
     //    the +-1 clamp the way an additive form would.
-    const double vel_amt = knob(kVelocity, velocity_->get());
-    const double ws = std::max(1.0, tension_v);
+    vel_amt_ = knob(kVelocity, velocity_->get());
+    vel_scale_ = kVelScale / std::max(1.0, tension_v);
     const double range_db = max_gain_db_.load(std::memory_order_relaxed);
-    const auto& u = sim_->positions();
-    const auto& v = sim_->velocities();
+    // disp has already been smoothed, at the tick rate, in its own (log)
+    // domain. Range therefore enters exactly once and memorylessly, which is
+    // what makes the drawn curve independent of it.
     for (int i = 0; i < n_nodes_; ++i) {
-        const double disp = (1.0 - vel_amt) * u[i]
-                            + vel_amt * (kVelScale * v[i] / ws);
-        const double db = std::clamp(disp, -1.0, 1.0) * range_db;
+        const double db = std::clamp(smoothed_disp_[i], -1.0, 1.0) * range_db;
         // 10^(db/20) == 2^(db/6.0206). exp2 is markedly cheaper than pow and
         // this runs once per node per block (512 calls at high precision).
         gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
     }
-    bank_.set_targets(gain_targets_.data());
+    bank_.set_block_targets(gain_targets_.data(), buffer.getNumSamples());
 
     // 3b. Reset request from the UI: flatten the string, touch nothing else.
     //     Wind, flutter and every knob stay exactly as they are, so the
@@ -488,18 +494,29 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const int n = buffer.getNumSamples();
     float* ch0 = buffer.getWritePointer(0);
     float* ch1 = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+    const bool stereo = ch1 != nullptr;
     for (int s = 0; s < n; ++s) {
         if (++sim_counter_ >= sim_divisor_) {
             sim_->tick();
             sim_counter_ = 0;
+            // The string has new information: fold it into the smoothed
+            // control signal. This is the only smoothing in the plugin.
+            const auto& u = sim_->positions();
+            const auto& v = sim_->velocities();
+            const double a = smooth_alpha_, va = vel_amt_, vs = vel_scale_;
+            for (int i = 0; i < n_nodes_; ++i) {
+                const double disp = (1.0 - va) * u[i] + va * (vs * v[i]);
+                smoothed_disp_[i] += a * (disp - smoothed_disp_[i]);
+            }
         }
         if (test_on) {
             ch0[s] = pink_noise(0);
             if (ch1)
                 ch1[s] = pink_noise(1);
         }
-        float l = bank_.process_sample(0, ch0[s]);
-        float r = ch1 ? bank_.process_sample(1, ch1[s]) : l;
+        float l = ch0[s];
+        float r = stereo ? ch1[s] : l;
+        bank_.process_frame(l, r, stereo);
         leveler_.process(l, r);
         ch0[s] = l;
         if (ch1)

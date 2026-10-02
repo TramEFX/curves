@@ -12,25 +12,18 @@ void FilterBank::prepare(int num_bands, double sample_rate, int num_channels) {
     a2_.assign(num_bands, 0.0);
     a3_.assign(num_bands, 0.0);
     g_.assign(num_bands, 1.0);
-    target_.assign(num_bands, 1.0);
-    s1_.assign(num_channels, std::vector<double>(num_bands, 0.0));
-    s2_.assign(num_channels, std::vector<double>(num_bands, 0.0));
-    steady_env_.assign(num_channels, std::vector<double>(num_bands, 0.0));
+    ramp_.assign(num_bands, 1.0);
+    g_eff_.assign(num_bands, 1.0);
+    steady_env_.assign(num_bands, 0.0);
+    s1_.assign(std::max(num_channels, 2), std::vector<double>(num_bands, 0.0));
+    s2_.assign(std::max(num_channels, 2), std::vector<double>(num_bands, 0.0));
     recompute_coefficients();
-    set_smoothing(30.0);
     set_steady(0.0, 0.25);
 }
 
 void FilterBank::set_band_frequency(int band, double fc) {
     fc_[band] = fc;
     recompute_coefficients();
-}
-
-void FilterBank::set_smoothing(double tau_ms) {
-    // One-pole coefficient: alpha = 1 - exp(-1 / (tau * fs)). This is the
-    // entire smoothing system — fixed math, no state to corrupt.
-    const double tau = tau_ms * 1e-3;
-    alpha_ = 1.0 - std::exp(-1.0 / (tau * fs_));
 }
 
 void FilterBank::set_steady(double amount, double threshold) {
@@ -41,9 +34,17 @@ void FilterBank::set_steady(double amount, double threshold) {
     rel_alpha_ = 1.0 - std::exp(-1.0 / (0.150 * fs_));
 }
 
-void FilterBank::set_targets(const double* linear_gains) {
-    for (int b = 0; b < num_bands_; ++b)
-        target_[b] = linear_gains[b];
+void FilterBank::set_block_targets(const double* linear_gains, int num_frames) {
+    // Geometric step: after num_frames applications of g *= ramp, g lands on
+    // the target exactly, and every intermediate value is linear in dB. That
+    // is what keeps Range dB out of the gain's transient shape — Range is
+    // applied once, upstream, by a memoryless map.
+    const double inv_n = 1.0 / static_cast<double>(std::max(1, num_frames));
+    for (int b = 0; b < num_bands_; ++b) {
+        const double g0 = std::max(g_[b], 1e-9);
+        const double g1 = std::max(linear_gains[b], 1e-9);
+        ramp_[b] = std::pow(g1 / g0, inv_n);
+    }
 }
 
 void FilterBank::recompute_coefficients() {

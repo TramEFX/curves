@@ -169,6 +169,27 @@ private:
     // band center frequencies + per-block gain targets
     std::vector<double> band_fc_;
     std::vector<double> gain_targets_{};
+
+    // THE SMOOTHER. It lives here, on the string's own control signal, not
+    // downstream on the linear gain where it used to sit.
+    //
+    // disp is already the log-amplitude coordinate: the x axis is log
+    // frequency and disp maps LINEARLY to dB, so the whole chain is linear
+    // physics on a log-log graph and Range dB is a single memoryless scale
+    // at the very end. Smoothing the linear gain instead put Range inside a
+    // recursive filter, which is not scale-invariant: measured, boosts
+    // reached 90% in 46 ms and cuts in 102 ms at Range 18 (2.21x, widening
+    // with Range), and the drawn curve moved by up to 0.30 of full scale
+    // purely from a Range change. Smoothing disp makes all of that exact.
+    //
+    // Runs at the SIM TICK rate, which is where disp actually carries new
+    // information; it is also an anti-alias filter ahead of the block-rate
+    // sampling the bank sees.  (ORCHESTRATION.md:155 specified this from the
+    // start -- "one one-pole smoother toward the current sim value".)
+    std::array<double, kMaxNodes> smoothed_disp_{};
+    double smooth_alpha_ = 0.05;   // one-pole coefficient at the tick rate
+    double vel_amt_ = 0.0;         // cached for the per-tick update
+    double vel_scale_ = 0.0;
     // Read by the GUI thread for the dB axis; relaxed atomic because a
     // torn double would print a nonsense label.
     std::atomic<double> max_gain_db_{18.0};
