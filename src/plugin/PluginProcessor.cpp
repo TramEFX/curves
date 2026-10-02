@@ -190,7 +190,10 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     addParameter(damping_ = new APF("damping", "Damping", R{0.05f, 18.0f}, 1.5f));
     addParameter(stiffness_ = new APF("stiffness", "Stiffness", R{0.0f, 20.0f}, 4.0f));
     addParameter(tension_ = new APF("tension", "Tension", R{50.0f, 600.0f}, 300.0f));
-    addParameter(smoothing_ = new APF("smoothing", "Smoothing ms", R{2.0f, 100.0f}, 30.0f));
+    // 30 -> 15 ms: the smoother used to advance once PER CHANNEL, so a stereo
+    // instance ran at half the set time. Fixing that doubled the real
+    // smoothing at any given setting; 15 ms restores the previous feel.
+    addParameter(smoothing_ = new APF("smoothing", "Smoothing ms", R{2.0f, 100.0f}, 15.0f));
     addParameter(drive_ = new APF("drive", "Max gain dB", R{3.0f, 24.0f}, 18.0f));
     addParameter(steady_ = new APF("steady", "Steady (per-band)", R{0.0f, 1.0f}, 0.35f));
     addParameter(leveler_amt_ = new APF("leveler", "Leveler (output)", R{0.0f, 1.0f}, 0.5f));
@@ -198,7 +201,7 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     addParameter(physics_ = new APF("physics", "Physics", R(0.0f, 3.0f, 1.0f), 0.0f));
     addParameter(precision_ = new APF("precision", "Precision", R(0.0f, 2.0f, 1.0f), 0.0f));
     addParameter(velocity_ = new APF("velocity", "Velocity", R{0.0f, 1.0f}, 0.0f));
-    addParameter(wind_ = new APF("wind", "Wind", R{0.0f, 1.0f}, 0.37f));
+    addParameter(wind_ = new APF("wind", "Wind", R{0.0f, 1.0f}, 0.50f));
     addParameter(waves_ = new APF("waves", "Waves", R{0.0f, 1.0f}, 0.4f));
     // Motion = total string excitation, calibrated so peak displacement
     // tracks the dial linearly regardless of Character. Default chosen to
@@ -379,10 +382,35 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     sim_->set_stiffness(knob(kStiffness, stiffness_->get()));
     sim_->set_wave_speed(knob(kTension, tension_->get()));
     // Wind = gust PHASE VELOCITY: how fast the flapping pattern travels
-    // along the cloth, not how hard it blows. The n/128 term keeps a given
-    // setting meaning the same thing in every precision mode.
-    sim_->wind_phase_speed = (10.0 + 490.0 * knob(kWind, wind_->get()))
-                             * (static_cast<double>(n_nodes_) / 128.0);
+    // along the cloth.
+    //
+    // It is set RELATIVE TO THE STRING, as a multiple of the wave speed, for
+    // the same reason Flutter Hz is normalized by f0: what you see depends
+    // entirely on whether the string can FOLLOW the gust, and that is a
+    // question about f_gust / f0, not about absolute nodes/s.
+    //
+    // The old mapping, (10 + 490*Wind) * n/128, held the gust frequency
+    // constant across precision while f0 = c/span falls as 1/n. Measured,
+    // that put the same Wind setting at wildly different places relative to
+    // the string's resonance -- f_gust/f0 = 0.64 at 128 nodes but 2.54 at
+    // 512, with the dial top reaching 6.7 where the string cannot follow at
+    // all. At 512 the usable action was squeezed into the bottom quarter of
+    // the travel and the rest was a slow fade, which is why the knob read as
+    // doing nothing (user: "wind is not really affecting the string anymore
+    // ... no difference at high levels or low levels"). Measured at 512:
+    // peak 0.21 at Wind 0, 0.52 at Wind 0.15, 0.18 at Wind 1.
+    //
+    // Damping is NOT the lever here: a 10x damping change moves the observed
+    // motion frequency by 4%, because drag dominates dissipation.
+    //
+    // ratio = 0.12 * 25^Wind spans 0.12 .. 3.0 of the fundamental, which is
+    // the band where the string actually tracks the gust at every precision.
+    // Wind 0.5 gives 0.60, the ratio the 128-node calibration was tuned at.
+    {
+        const double ratio = 0.12 * std::pow(25.0, knob(kWind, wind_->get()));
+        const double c = std::max(1.0, knob(kTension, tension_->get()));
+        sim_->wind_phase_speed = ratio * c;
+    }
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
     // Waves range extended 0.5-3.0 -> 0.5-5.0 (user: "not noticing waves
     // doing much"). Measured spatial centroid vs density: 1.03 / 1.21 /
