@@ -304,10 +304,9 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     sim_->set_damping(damping_->get());
     sim_->set_stiffness(stiffness_->get());
     sim_->set_wave_speed(tension_->get());
-    // Knob semantics (project decision): Wind = how fast the cloth flaps
-    // (gust phase velocity, 10..500 nodes/s). Force = amplitude LIMITER —
-    // the flap-distance ceiling, independent of drive and resonance. The
-    // drive amplitude itself is an internal constant.
+    // Wind = gust PHASE VELOCITY: how fast the flapping pattern travels
+    // along the cloth, not how hard it blows. The n/128 term keeps a given
+    // setting meaning the same thing in every precision mode.
     sim_->wind_phase_speed = (10.0 + 490.0 * wind_->get())
                              * (static_cast<double>(n_nodes_) / 128.0);
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
@@ -330,56 +329,22 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const double shed_dial = dial_for_peak(character * target_peak,
                                            kShedA, kShedP);
 
-    // Force = WIND SPEED (nodes/s) in the aero model. Drag rises as the
-    // string's own velocity catches up to the wind, so amplitude is
-    // compressive and monotonic across the whole dial with no ceiling to
-    // tune, no dead zone, and no limiter gain that can latch.
+    // Source strengths. Both dials come from the budget above; these two
+    // lines only convert a dial into engine units.
     //
-    // Calibration (measured, ORCHESTRATION §14) against a LONG observation
-    // window: the gusts are quasi-periodic, so a short run under-reports the
-    // peak — the first pass calibrated on 3.5 s and read 0.995 where the
-    // 30 s peak was 1.41. Re-tuned so peak |u| stays under the ±1 clamp the
-    // bank and the display share, in every precision mode and at the knob
-    // extremes, which is what keeps the on-screen shape a faithful picture
-    // of the EQ rather than a flat-topped one.
-    //   wind_speed = 25 * force * (tension/300)^0.6 * (128/n)^0.25
-    // The tension term makes the dial mean the same thing at any Tension
-    // (spread 4.7x -> 1.4x); the node term holds it across precision modes.
-    // No node-count scaling of a FORCE any more: wind_speed is a velocity in
-    // the same units as the node velocities it is compared against.
+    // The tension term makes a given dial mean the same thing at any Tension
+    // (measured spread 4.7x -> 1.4x). The node term plus kNodeWindGain hold
+    // it across precision modes - the two sources scale differently with
+    // resolution, so each carries its own per-precision gain.
     const double tension_norm = std::pow(std::max(1.0f, tension_->get()) / 300.0, 0.6);
     const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
     sim_->wind_speed = 25.0 * wind_dial * tension_norm * node_norm
                        * kNodeWindGain[prec_idx];
-    // Flap limiter retired in the aero path: drag IS the amplitude
-    // mechanism. Left off rather than removed so the kFlagpoleWind model and
-    // the six original validation scenarios keep their exact behavior.
+    // Flap limiter permanently off: aerodynamic drag IS the amplitude
+    // mechanism now. Kept in the engine rather than deleted so the legacy
+    // kFlagpoleWind model and the frozen validation scenarios still behave
+    // exactly as their baselines record.
     sim_->flap_limit = 1e9;
-    // Flutter: shedding amount and rate, gain topping out at 30.
-    //
-    // AMPLITUDE BUDGET IS SHARED WITH FORCE, and this does not fully fit.
-    // Giving the wake an outward travelling phase ramp made it COHERENT, so
-    // it now ADDS to the gusts where the old incoherent version partly
-    // cancelled them. Measured long-run peak at Force 1.0 (n = 256/512/1024):
-    //   gain  0 -> 0.826 / 1.011 / 0.906
-    //   gain  5 -> 0.841 / 0.931 / 0.943
-    //   gain  8 -> 0.853 / 0.971 / 0.992
-    //   gain 30 -> 1.104 (n=256), 1.585 (n=512)
-    // So only ~5 would keep every precision mode under the clamp at Force
-    // 1.0 - which would make Flutter too weak to be worth having. The range
-    // is kept useful instead: Force and Flutter both near maximum WILL reach
-    // the +-1 clamp and flat-top. That stays honest against the WYSIWYG
-    // anchor (the display draws the clamped curve, so it is visible rather
-    // than hidden) and it matches the standing project decision to favour
-    // waves true to the simulation over an enforced ceiling. Flutter
-    // defaults to 0, so nothing clamps unless both are dialled up.
-    // Note also that n = 512 reads 1.011 at Flutter 0, so the Force base-25
-    // calibration is itself marginal in that one precision mode.
-    // Gain ceiling raised 30 -> 90 on user request. Measured peak at Force
-    // 1.0: 1.585 at 30, 1.977 at 60, 2.233 at 90; alone (Force 0): 0.585 /
-    // 0.876 / 1.096. So the upper half of the dial will clamp when Force is
-    // also up - the shared-budget characteristic noted above, now with more
-    // room to push into deliberately.
     // Flutter amount, with the rate dial's amplitude swing compensated out so
     // Flutter Hz is a RATE control rather than a rate-and-volume control.
     // f0 is the string's fundamental and moves with Tension, node count and

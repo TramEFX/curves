@@ -1,4 +1,9 @@
-# Curves — Technical Specification
+# Curves — Technical Specification **v0.0.1**
+
+> **SUPERSEDED by `SPEC-0.0.2.md`.** Kept for history. 0.0.2 is the
+> exhaustive knob → parameter → function mapping and is the current
+> reference; where the two differ, 0.0.2 is correct.
+
 
 Reference for what the plugin does and exactly what every control does, as
 built on 2026-10-02. Written as the working document for a knob-by-knob
