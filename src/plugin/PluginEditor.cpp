@@ -19,6 +19,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"wind", "Wind"},          {"waves", "Waves"},
         {"force", "Force"},
         {"direction", "Direction"}, {"length", "Length"},
+        {"flutter", "Flutter"},    {"flutter_hz", "Flutter Hz"},
         {"test", "Test noise"},
     };
     for (const auto& d : defs) {

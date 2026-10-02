@@ -231,6 +231,54 @@ def scenario_tilt():
     print(f"  late peak|u|           {late_peak:.6f}  (only genuine waves remain)")
 
 
+def scenario_shed():
+    """Vortex shedding: the wake oscillator is a genuine limit cycle, so the
+    string must flap with the gust wind switched OFF ENTIRELY. That is the
+    whole point - motion that is alive rather than driven. Also checks the
+    wake decorrelates into cells instead of one global in-phase breath."""
+    print("scenario: shed (wake oscillator, ZERO gust wind)")
+    sim = StringSim(n_nodes=N, tick_rate=TICK_RATE,
+                    wave_speed=300.0, damping=1.2, stiffness=2.0)
+    sim.set_cloth_aero(phase_velocity_nodes_s=192.0, wavelength_nodes=128.0,
+                       envelope_exponent=1.5)
+    sim.wind_speed = 0.0     # no gusting at all - shedding must self-sustain
+    sim.aero_rho_cd = 0.6
+    sim.set_density_taper(2.0)
+    sim.set_cloth_length(1.0)
+    sim.shed_gain = 60.0
+    frames = []
+    peak = 0.0
+    probe_idx = N // 4
+    prev = 0.0
+    crossings = 0
+    t_first, t_last = -1.0, 0.0
+    coh = []
+    for s in range(6000):
+        sim.tick()
+        t = s * sim.dt
+        if s % 100 == 0:
+            frames.append((t, sim.u.copy()))
+        if t >= 2.0:
+            peak = max(peak, float(np.max(np.abs(sim.u))))
+            cur = float(sim.u[probe_idx])
+            if prev != 0.0 and ((cur > 0.0) != (prev > 0.0)):
+                crossings += 1
+                if t_first < 0.0:
+                    t_first = t
+                t_last = t
+            prev = cur
+            coh.append(abs(float(np.mean(sim._q)))
+                       / max(float(np.mean(np.abs(sim._q))), 1e-9))
+    save_frames("shed", frames)
+    rate = (0.5 * (crossings - 1) / (t_last - t_first)
+            if crossings > 2 and t_last > t_first else 0.0)
+    finite = bool(np.all(np.isfinite(sim.u)))
+    print(f"  late peak|u|      {peak:.6f}  (self-sustained with NO gust wind - the alive test)")
+    print(f"  probe modulation  {rate:.6f} Hz  (shed_freq_hz = 3.0)")
+    print(f"  wake coherence    {float(np.mean(coh)):.3f}  (0 = vortex cells, 1 = one global breath)")
+    print(f"  finite: {'yes' if finite else 'NO - BLEW UP'}")
+
+
 if __name__ == "__main__":
     scenario_pluck()
     scenario_flagpole()
@@ -240,4 +288,5 @@ if __name__ == "__main__":
     scenario_cloth_rev()
     scenario_aero()
     scenario_tilt()
+    scenario_shed()
     print("done.")

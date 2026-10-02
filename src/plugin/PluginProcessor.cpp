@@ -37,6 +37,18 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     addParameter(force_ = new APF("force", "Force", R{0.0f, 1.0f}, 0.6f));
     addParameter(direction_ = new APF("direction", "Direction", R(0.0f, 1.0f, 1.0f), 0.0f));
     addParameter(length_ = new APF("length", "Cloth length", R{0.2f, 1.0f}, 1.0f));
+    // Flutter = vortex shedding. The wake oscillator is a limit cycle, so
+    // this is the one control that makes the string move with NO gusting at
+    // all. Default 0 (off) so the existing Flagpole feel is unchanged until
+    // it is dialled in.
+    addParameter(flutter_ = new APF("flutter", "Flutter", R{0.0f, 1.0f}, 0.0f));
+    // Nominal wake frequency. In Curves this is literally the rate the EQ
+    // bands wobble at, so it is set in Hz and tuned by ear: below ~0.5 Hz it
+    // is inert, 0.5-4 Hz is the expressive band, and above that the string's
+    // own mass and tension filter it out (measured: peak 0.35 at 3 Hz but
+    // only 0.03 at 12 Hz). Per-band rate varies around this by the shedding
+    // gradient, which is what makes it read as cloth and not an LFO.
+    addParameter(flutter_hz_ = new APF("flutter_hz", "Flutter Hz", R{0.3f, 8.0f}, 3.0f));
 }
 
 void CurvesAudioProcessor::prepareToPlay(double sampleRate, int) {
@@ -197,6 +209,12 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // mechanism. Left off rather than removed so the kFlagpoleWind model and
     // the six original validation scenarios keep their exact behavior.
     sim_->flap_limit = 1e9;
+    // Flutter: shedding amount and rate. Gain tops out at 120 (measured
+    // self-sustained peak ~0.35 with no gust wind, and combining it with
+    // wind LOWERS the peak - 0.83 -> 0.72 - because the wake is incoherent
+    // with the gusts, trading big coherent lurches for continuous motion).
+    sim_->shed_gain = 120.0 * flutter_->get();
+    sim_->shed_freq_hz = flutter_hz_->get();
     bank_.set_smoothing(smoothing_->get());
     bank_.set_steady(steady_->get(), 0.25);
     leveler_.set_amount(leveler_amt_->get());

@@ -66,6 +66,46 @@ Node values are stored **normalized** (−1..+1), not as dB. Any parameter can s
 
 This is what makes it a *sandbox* and not just an EQ.
 
+**Selection criterion for subscribers (user framing, 2026-10-01):** the
+parameter must *itself be a spectrum* — it has one meaningful, independent
+value at every frequency. That is what makes the string's node array the
+natural control surface for it, and it is the filter that decides what gets
+built. "Stereo placement" was raised as a strong candidate; the broader
+shortlist, ordered by fit:
+
+| Candidate | Values per node | Fit | Notes |
+|---|---|---|---|
+| **Gain** | 1 | shipping | the first subscriber |
+| **Stereo width** (M/S ratio per band) | 1 | **excellent** | mono bass / wide highs is already a classic move; width is a *ratio*, so it needs no band isolation |
+| **Q** | 1 | decided (§5) | per-node Q |
+| **Stereo placement** (pan per band) | 1 | good | differential boost/cut between L and R; a *spectral* pan rather than a hard one |
+| **Drive / saturation** | 1 | good | per-band nonlinearity depth |
+| **Gate / expansion threshold** | 1 | good | natural extension of Steady, which is already a per-band follower |
+| **Delay time** | 1 | expensive | needs a delay line per band; this is spectral smear / dispersion |
+| **Phase / allpass rotation** | 1 | expensive | overlaps the "phase wrecking" open decision |
+
+**Topology consequence for the stereo pair — important, and it splits the
+two cleanly.** The bank is currently `out = x + Σ bandpass·(G−1)`: a dry
+path plus summed peaking bands. That can *boost or cut* a band, but it
+cannot **move** one, because the dry path always carries the full-bandwidth
+signal at its original position. So:
+
+- **Width works with the topology as it stands.** Width is a ratio, not a
+  position: split to M/S, run a bank instance on each, and let the string
+  drive the per-band S-vs-M gain. Cost is ~2× the bank, no topology change,
+  and the string supplies exactly the one scalar per node it needs.
+- **Pan needs more care.** As a differential L/R boost/cut it works and is
+  musically useful, but it can never be a hard pan while a dry path exists.
+  A true per-band pan wants a complementary/crossover bank that *partitions*
+  the spectrum instead of summing onto dry — which is a bigger change and
+  interacts with the parallel-path Open Decision.
+
+**Watch item:** the ear is far more sensitive to time-varying inter-channel
+differences than to gain wobble, and a *moving* per-band pan or width is
+exactly that. Any stereo subscriber needs smoothing at least as strict as
+gain, probably stricter, and a mono-compatibility check — a wide, moving
+spectral image can collapse badly when summed.
+
 ### 3.4 Visual String ≠ Control String
 
 Decoupled from day one:
@@ -383,3 +423,15 @@ CMAKE="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/ID
   - Note: the Leveler's ~1 s global trim can still add a slow *level* pump on varying material. That is distinct from the spectral sway above and is inherent to any auto-trim; the remedy if it bothers is a shorter follower or amount = 0.
   - **Validation: eight scenarios, 35,456 cells, 0 mismatches, max diff 0.** New `tilt` scenario exercises the blocker; all seven pre-existing baselines **byte-identical**, having been explicitly opted out of the blocker so they remain the frozen regression tripwire while the engine default stays correct.
   - **Deploy note:** Reaper was open holding the VST3, so the auto-copy to Common Files failed with "Permission denied" and aborted the build before the Standalone target. CLAP and VST3 built locally; Standalone rebuilt separately and smoke-tested clean. **The deployed VST3 in Common Files is still the previous build — close Reaper and rebuild to deploy.** CLAP is not auto-deployed at all (no copy step configured); it exists only under `build/Curves_artefacts/Release/CLAP/`.
+- **2026-10-01** — **Subscriber shortlist recorded (user: stereo placement, and more broadly "things that are spectrums").** §3.3 now carries the selection criterion — a subscriber must *itself be a spectrum*, one meaningful independent value per frequency — plus a ranked candidate table and the topology consequence that splits the stereo pair: **width** fits the current `dry + Σ peaking bands` topology (it is a ratio, so M/S with a bank instance on each needs no isolation, ~2× bank cost), while **pan** cannot be a hard pan while a dry path carries the full-bandwidth signal — a true per-band pan wants a complementary/partitioning bank, which interacts with the parallel-path Open Decision. Watch item logged: the ear is far more sensitive to time-varying inter-channel differences than to gain wobble, so any stereo subscriber needs smoothing at least as strict as gain plus a mono-compatibility check.
+- **2026-10-01** — **Step 2 — vortex shedding ("Flutter"): the string is now ALIVE rather than driven.** A van der Pol **wake oscillator per node**, after Facchinetti-style vortex-induced-vibration models: `q'' = -eps*w_i*(q^2-1)*q' - w_i^2*q + coupling*v_i`, with `F_i = shed_gain * q_i * wind_env_i`. The `(q^2-1)` term is negative damping below `|q|=1` and positive above, so `q` is a genuine **limit cycle**.
+  - **The acceptance test was motion with the gust wind switched off entirely**, because anything that needs gusting is just more forcing. Measured: self-sustained flapping at `wind_speed = 0`, peak 0.23–0.35 depending on amount, finite and stable across a 4× gain sweep. This is also what finally lets the Damping knob behave on a *deposit* — previously only the wind re-excited the string, so a drawn shape had no energy source and damping read as "drawing flatlines".
+  - **Vortex cells, not one global breath.** `w_i` carries a gradient along the cloth (`shed_spread`, thinner/lighter elements shed faster), which detunes neighbours. Measured wake coherence **0.02–0.03** (0 = fully decorrelated cells, 1 = everything in phase). Without the gradient the whole string sheds together and reads as a single LFO.
+  - **Lock-in** comes from the `coupling*v_i` term: structure velocity pulls the wake's phase, so shedding near a structural resonance synchronizes to it.
+  - **Rate is an audible modulation rate, so it is set in Hz and tuned by ear**, never derived from a fictional Reynolds number (the x-axis is log-frequency, not space — there is no real Strouhal number here). Measured monotonic control: nominal 0.7/1.5/3/6/12 Hz → dominant band-modulation 0.50/1.06/2.06/4.19/8.38 Hz. **The observed/nominal ratio is configuration-dependent** (≈0.70 at n=256 with an FFT-dominant metric, ≈1.30 at n=128 with a zero-crossing metric), so NO calibration fudge was applied — `shed_freq_hz` is documented as the nominal wake frequency and the per-band rate varies around it by the gradient, which is exactly what makes it read as cloth rather than an LFO. Faking a single Hz number would have been dishonest.
+  - **Useful range is ~0.3–4 Hz, and the rate knob is implicitly also a depth knob:** the string's mass and tension lowpass the forcing, so peak falls from 0.35 at 3 Hz to 0.03 at 12 Hz. Left physical rather than gain-compensated; the knob tops out at 8 Hz.
+  - **It makes the amplitude situation BETTER, not worse.** Combined with gust wind at Force = 1.0, raising shed gain 0 → 120 *lowered* peak 0.826 → 0.722 while raising the mean 0.176 → 0.233: the wake is incoherent with the gusts, so it trades occasional big coherent lurches for continuous motion. No new clamping risk against the WYSIWYG anchor.
+  - **Debug lesson on record:** the first prototype produced exactly zero string motion despite the wake oscillator visibly running at its limit cycle (`q` = 1.27). Two causes, both instructive. (1) In `kClothAero` the wind update *owns* `f_` and zeroes it, so an externally injected shedding force was wiped every tick — shedding has to be computed inside the wind update. (2) `q = qd = 0` is an **unstable fixed point** of the van der Pol oscillator: with both exactly zero and the string at rest it never departs. It needs a deterministic nonzero seed (`kShedSeed = 0.01`); the working prototype had one and the spec port did not. The seed is now preserved across cloth-geometry changes so moving Length or Direction does not stall the flutter mid-flight.
+  - **Plugin: two new parameters, 16 → 18.** `Flutter` (0–1 → shed_gain 0–120, **default 0** so existing feel is unchanged until dialled in) and `Flutter Hz` (0.3–8.0, default 3.0). Also fixed a stale comment: `force_` was still documented as "flap ceiling" when it has been wind speed since the aero pass.
+  - **Validation: nine scenarios, 43,136 cells, 0 mismatches, max diff 0.** New `shed` scenario asserts self-sustaining behaviour with zero gust wind. All eight pre-existing baselines **byte-identical** — `shed_gain` defaults to 0 and the stage is skipped entirely at 0, so it costs nothing and perturbs nothing.
+  - All formats rebuilt, VST3 deployed and verified byte-identical to the build, standalone smoke-tested clean.

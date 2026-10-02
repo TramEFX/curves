@@ -309,6 +309,60 @@ void scenario_tilt(const fs::path& out) {
               << "  (only genuine waves remain)\n";
 }
 
+// Vortex shedding: the wake oscillator is a genuine limit cycle, so the
+// string must flap with the gust wind switched OFF ENTIRELY. That is the
+// whole point - motion that is alive rather than driven. Also checks the
+// wake decorrelates into cells instead of one global in-phase breath.
+void scenario_shed(const fs::path& out) {
+    std::cout << "scenario: shed (wake oscillator, ZERO gust wind)\n";
+    StringParams p;
+    p.tick_rate = kTickRate;
+    p.wave_speed = 300.0;
+    p.damping = 1.2;
+    p.stiffness = 2.0;
+    StringSim sim(kNodes, p);
+    sim.set_cloth_aero(192.0, 128.0, 1.5);
+    sim.wind_speed = 0.0;     // no gusting at all - shedding must self-sustain
+    sim.aero_rho_cd = 0.6;
+    sim.set_density_taper(2.0);
+    sim.set_cloth_length(1.0);
+    sim.shed_gain = 60.0;
+    std::vector<std::pair<double, std::vector<double>>> frames;
+    double peak = 0.0;
+    int crossings = 0;
+    double prev_probe = 0.0;
+    bool finite = true;
+    const int probe = kNodes / 4;
+    double t_first = -1.0, t_last = 0.0;
+    for (int s = 0; s < 6000; ++s) {
+        sim.tick();
+        if (s % 100 == 0) frames.emplace_back(s / kTickRate, sim.positions());
+        const double t = s / kTickRate;
+        const auto& u = sim.positions();
+        for (int i = 0; i < kNodes; ++i)
+            if (!std::isfinite(u[i])) finite = false;
+        if (t >= 2.0) {
+            peak = std::max(peak, std::abs(*std::max_element(
+                u.begin(), u.end(),
+                [](double a, double b) { return std::abs(a) < std::abs(b); })));
+            const double cur = u[probe];
+            if (prev_probe != 0.0 && ((cur > 0.0) != (prev_probe > 0.0))) {
+                ++crossings;
+                if (t_first < 0.0) t_first = t;
+                t_last = t;
+            }
+            prev_probe = cur;
+        }
+    }
+    save_frames(out, "cpp_shed", frames);
+    const double rate = (crossings > 2 && t_last > t_first)
+                            ? 0.5 * (crossings - 1) / (t_last - t_first) : 0.0;
+    std::cout << "  late peak|u|      " << peak
+              << "  (self-sustained with NO gust wind - the alive test)\n";
+    std::cout << "  probe modulation  " << rate << " Hz  (shed_freq_hz = 3.0)\n";
+    std::cout << "  finite: " << (finite ? "yes" : "NO - BLEW UP") << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -323,6 +377,7 @@ int main(int argc, char** argv) {
     scenario_cloth(out, true);
     scenario_aero(out);
     scenario_tilt(out);
+    scenario_shed(out);
     std::cout << "done.\n";
     return 0;
 }

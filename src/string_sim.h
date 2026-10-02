@@ -152,6 +152,43 @@ public:
     void set_density_taper(double octaves);
     double density_taper_octaves() const { return density_taper_; }
 
+    // ---- vortex shedding / flutter (the "alive" mechanism) ----
+    // A van der Pol WAKE OSCILLATOR per node, after Facchinetti-style
+    // vortex-induced-vibration models:
+    //   q'' = -eps*w_i*(q^2 - 1)*q' - w_i^2*q + coupling*v_i
+    //   F_i = shed_gain * q_i * wind_env_i
+    // The (q^2 - 1) term is NEGATIVE damping below |q| = 1 and positive
+    // above, so q is a genuine limit cycle: the string flaps with NO
+    // external gusting at all. That is the difference between motion that
+    // is driven and motion that is alive — and it is what lets the damping
+    // knob behave, since a deposit no longer needs the wind to be re-excited.
+    //
+    // w_i carries a GRADIENT along the cloth (shed_spread): a thinner,
+    // lighter element sheds faster, so neighbours detune and the wake breaks
+    // into vortex CELLS instead of one global in-phase breath (measured wake
+    // coherence 0.01 with spread 0.6, i.e. fully decorrelated).
+    //
+    // The coupling term is what produces LOCK-IN: structure velocity pulls
+    // the wake's phase, so when shedding lands near a structural resonance
+    // the two synchronize.
+    //
+    // NOTE ON UNITS: shed_freq_hz is a real modulation rate in Hz, and in
+    // Curves that rate is directly audible — it is how fast the EQ bands
+    // wobble. It is therefore tuned BY EAR in the musical band (roughly
+    // 0.5-8 Hz; above ~20 Hz it stops being motion and starts making
+    // sidebands), never derived from a fictional Reynolds number.
+    //
+    // shed_gain = 0 (default) disables the whole stage, so the frozen
+    // validation scenarios are untouched.
+    double shed_gain = 0.0;      // flutter amount; 0 = off
+    double shed_freq_hz = 3.0;   // shedding rate (audible modulation rate)
+    double shed_eps = 0.3;       // van der Pol nonlinearity (limit-cycle)
+    double shed_coupling = 0.02; // structure velocity -> wake (lock-in)
+    double shed_spread = 0.6;    // frequency gradient along the cloth
+    // q = qd = 0 is an unstable fixed point of the van der Pol oscillator, so
+    // a deterministic nonzero seed is required or it never starts.
+    static constexpr double kShedSeed = 0.01;
+
     // Tilt blocker (project decision, 2026-10-01). The DC blocker removes
     // mode 0 (uniform displacement) because tension is blind to it. Mode 1 —
     // a linear TILT across the spectrum — has the same pathology: the
@@ -230,6 +267,8 @@ private:
     double wind_phase_ = 0.0;
     double flap_gain_ = 1.0;  // smoothed limiter gain (fast attack, slow release)
     double tilt_sxx_ = 1.0;   // sum of centered x^2, for the tilt projection
+    std::vector<double> q_, qd_;    // wake-oscillator state per node
+    std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)
     void recompute_cloth();
 };
 

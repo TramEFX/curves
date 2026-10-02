@@ -84,6 +84,30 @@ class StringSim:
         self._damping_mult = np.ones(self.n)
         self._cloth_length = 1.0
         self._wind_exponent = 1.8
+        # ---- vortex shedding / flutter (the "alive" mechanism) ----
+        # A van der Pol WAKE OSCILLATOR per node (see src/string_sim.h for
+        # the full rationale):
+        #   q'' = -eps*w_i*(q^2 - 1)*q' - w_i^2*q + coupling*v_i
+        #   F_i = shed_gain * q_i * wind_env_i
+        # The (q^2 - 1) term is negative damping below |q| = 1 and positive
+        # above, so q is a genuine limit cycle: the string flaps with NO
+        # external gusting. w_i carries a gradient along the cloth so
+        # neighbours detune and the wake forms vortex CELLS rather than one
+        # global in-phase breath. The coupling term produces lock-in.
+        # shed_gain = 0 (default) disables the stage entirely.
+        self.shed_gain = 0.0
+        self.shed_freq_hz = 3.0
+        self.shed_eps = 0.3
+        self.shed_coupling = 0.02
+        self.shed_spread = 0.6
+        # q = qd = 0 is an UNSTABLE FIXED POINT of the van der Pol
+        # oscillator: with both exactly zero and the string at rest it never
+        # departs, so a deterministic nonzero seed is required to start it.
+        self.SHED_SEED = 0.01
+        self._q = np.full(self.n, self.SHED_SEED)
+        self._qd = np.zeros(self.n)
+        self._cloth_d = np.zeros(self.n)
+
         # Tilt blocker (see src/string_sim.h): the DC blocker removes mode 0
         # because tension is blind to uniform displacement; mode 1 (a linear
         # TILT) has the same pathology — the Laplacian of a linear ramp is
@@ -212,6 +236,12 @@ class StringSim:
         self._wind_env = env
         self._m_inv = minv
         self._damping_mult = mult
+        # normalized distance from the pole (0..1), for the shedding gradient
+        cd = np.zeros(self.n)
+        if self.is_wind_model():
+            cd[in_cloth] = d[in_cloth]
+            cd[~in_cloth] = 1.0
+        self._cloth_d = cd
         self._site_pos = np.array([0.08, 0.22, 0.38, 0.52, 0.66, 0.78, 0.88, 0.96]) * span_total * self._cloth_length
         self._w_field = np.zeros(self.n)
         # Heaviest inverse mass bounds how hard drag can push a node — what
@@ -243,6 +273,19 @@ class StringSim:
             self.force[:] = 0.0
         else:
             self.force[:] = self.wind_strength * self._wind_env * (w / 8.0)
+
+        # Vortex shedding: integrate the per-node wake oscillator and add its
+        # force. Skipped at shed_gain 0 so the frozen scenarios are
+        # bit-identical and the stage costs nothing.
+        if self.shed_gain != 0.0:
+            wi = (2 * np.pi * self.shed_freq_hz
+                  * (1.0 + self.shed_spread * (self._cloth_d - 0.5)))
+            q, qd = self._q, self._qd
+            qdd = (-self.shed_eps * wi * (q * q - 1.0) * qd
+                   - wi * wi * q + self.shed_coupling * self.v)
+            self._qd = qd + self.dt * qdd
+            self._q = q + self.dt * self._qd
+            self.force[:] += self.shed_gain * self._q * self._wind_env
 
     def clear_forces(self):
         self.force[:] = 0.0

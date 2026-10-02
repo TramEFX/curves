@@ -17,6 +17,8 @@ StringSim::StringSim(int n_nodes, const StringParams& params)
     u_.assign(n_, 0.0);
     v_.assign(n_, 0.0);
     f_.assign(n_, 0.0);
+    q_.assign(n_, kShedSeed);
+    qd_.assign(n_, 0.0);
     m_inv_.assign(n_, 1.0);      // uniform mass until a taper is configured
     damping_mult_.assign(n_, 1.0);  // uniform damping until cloth length is set
     // sum of (i - (n-1)/2)^2 = n(n^2-1)/12, the tilt projection denominator
@@ -157,6 +159,16 @@ void StringSim::recompute_cloth() {
     m_inv_.resize(n_);
     damping_mult_.resize(n_);
     w_field_.assign(n_, 0.0);
+    cloth_d_.assign(n_, 0.0);
+    // The wake oscillator sits on an UNSTABLE FIXED POINT at q = qd = 0: with
+    // both exactly zero and the string at rest it never departs, so it needs
+    // a deterministic seed to break away. Preserved across geometry changes
+    // (cloth length, direction) so moving those knobs does not stall the
+    // flutter mid-flight.
+    if (static_cast<int>(q_.size()) != n_) {
+        q_.assign(n_, kShedSeed);
+        qd_.assign(n_, 0.0);
+    }
     for (int i = 0; i < n_; ++i) {
         const double p = low_pole ? static_cast<double>(i)
                                   : static_cast<double>(pole - i);
@@ -171,6 +183,7 @@ void StringSim::recompute_cloth() {
             // tail beyond the termination: near-rigid and heavily damped,
             // so the animation genuinely ends at the cloth length
             wind_env_[i] = 0.0;
+            cloth_d_[i] = 1.0;
             m_inv_[i] = 0.02;
             const double into_tail = std::abs(p - span_total * cloth_length_) /
                                      std::max(1.0, 0.1 * n_);
@@ -179,6 +192,7 @@ void StringSim::recompute_cloth() {
             // cloth: envelope and taper grow from the pole toward the
             // termination (light end = whip)
             const double d = std::min(1.0, p / std::max(1.0, span_total * cloth_length_));
+            cloth_d_[i] = d;
             wind_env_[i] = std::pow(d, envelope_exponent_);
             m_inv_[i] = std::pow(2.0, density_taper_ * d);
             damping_mult_[i] = 1.0;
@@ -221,6 +235,23 @@ void StringSim::update_wind_forces() {
             f_[i] = 0.0;
         } else {
             f_[i] = wind_strength * wind_env_[i] * (w / 8.0);
+        }
+    }
+
+    // Vortex shedding: integrate the per-node wake oscillator and add its
+    // force. Skipped entirely at shed_gain 0 so the stage costs nothing and
+    // the frozen scenarios are bit-identical. See the header for the model.
+    if (shed_gain != 0.0) {
+        const double two_pi = 6.283185307179586;
+        for (int i = 0; i < n_; ++i) {
+            const double wi = two_pi * shed_freq_hz *
+                              (1.0 + shed_spread * (cloth_d_[i] - 0.5));
+            const double q = q_[i], qd = qd_[i];
+            const double qdd = -shed_eps * wi * (q * q - 1.0) * qd
+                               - wi * wi * q + shed_coupling * v_[i];
+            qd_[i] = qd + dt_ * qdd;
+            q_[i] = q + dt_ * qd_[i];
+            f_[i] += shed_gain * q_[i] * wind_env_[i];
         }
     }
 }
