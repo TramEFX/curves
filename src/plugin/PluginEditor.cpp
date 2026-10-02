@@ -111,7 +111,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"motion", "Motion", kCloth},       {"wind", "Wind", kCloth},
         {"character", "Character", kCloth}, {"flutter_hz", "Flutter Hz", kCloth},
         {"waves", "Waves", kCloth},         {"wrinkle", "Wrinkle", kCloth},
-        {"direction", "Direction", kCloth},
+        {"flap", "Flap", kCloth},           {"direction", "Direction", kCloth},
     };
     for (const auto& d : defs) {
         for (auto* p2 : processor_.getParameters()) {

@@ -22,7 +22,7 @@ constexpr int kN = 512;
 struct R { double fifth[5]; double peak; };
 
 R run(double env, double lock_d, double travel, double mid_amp,
-      double wind_knob, double seconds = 14.0) {
+      double wind_knob, double seconds = 14.0, double flap = 0.0) {
     const double tick = 24000.0;
     StringParams p;
     p.tick_rate = tick; p.wave_speed = 300.0;
@@ -44,6 +44,7 @@ R run(double env, double lock_d, double travel, double mid_amp,
     sim.mid_env = env;
     sim.mid_lock_d = lock_d;
     sim.mid_travel = travel;
+    sim.mid_flap = flap;
 
     R r{};
     const long long ticks = (long long)(seconds * tick);
@@ -147,6 +148,18 @@ int main() {
                         r.peak / off.peak);
         }
     }
+    }
+
+    std::printf("\n5. FLAP -- how hard the mid band drives the FREE END.\n");
+    std::printf("   shipped shape, Wind 0.5. f4 is the tip fifth.\n");
+    std::printf("%7s %9s %9s %9s %9s %9s %9s\n",
+                "flap", "f1", "f2", "f3", "tip", "tip/f3", "peak");
+    for (double fl : {0.0, 0.25, 0.45, 0.7, 1.0}) {
+        R r = run(1.4, 0.65, 0.829, 1.194, 0.5, 14.0, fl);
+        std::printf("%7.2f %9.0f %9.0f %9.0f %9.0f %9.2f %7.4f (%.2fx)\n",
+                    fl, r.fifth[1], r.fifth[2], r.fifth[3], r.fifth[4],
+                    r.fifth[4] / std::max(1.0, r.fifth[3]), r.peak,
+                    r.peak / off.peak);
     }
 
     return 0;

@@ -83,7 +83,7 @@ public:
     enum ModKnob {
         kDamping = 0, kStiffness, kTension, kSmoothing, kRangeDb, kSteady,
         kLeveler, kVelocity, kWind, kWaves, kMotion, kCharacter,
-        kFlutterHz, kWrinkle, kMix, kNumModKnobs
+        kFlutterHz, kWrinkle, kMix, kFlap, kNumModKnobs
     };
     // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
     // exceed the nominal maximum - that is the point of it.
@@ -215,6 +215,7 @@ private:
     juce::AudioParameterFloat* smoothing_ = nullptr;
     juce::AudioParameterFloat* drive_ = nullptr;     // max gain dB
     juce::AudioParameterFloat* mix_ = nullptr;       // dry/wet
+    juce::AudioParameterFloat* flap_ = nullptr;      // mid-band tip drive
     juce::AudioParameterFloat* steady_ = nullptr;    // per-band dynamic EQ depth
     juce::AudioParameterFloat* leveler_amt_ = nullptr; // output RMS trim depth
     juce::AudioParameterFloat* test_src_ = nullptr;  // internal pink noise

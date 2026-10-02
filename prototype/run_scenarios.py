@@ -363,6 +363,7 @@ def scenario_mid():
     sim.mid_lock_d = 0.65
     sim.mid_env = 1.4
     sim.mid_travel = 0.83
+    sim.mid_flap = 0.45
     frames = []
     mid_c = end_c = 0.0
     peak = 0.0

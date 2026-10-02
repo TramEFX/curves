@@ -211,7 +211,7 @@ const char* CurvesAudioProcessor::mod_knob_id(int k) {
     static const char* kIds[kNumModKnobs] = {
         "damping", "stiffness", "tension", "smoothing", "drive", "steady",
         "leveler", "velocity", "wind", "waves", "motion", "character",
-        "flutter_hz", "wrinkle", "mix"};
+        "flutter_hz", "wrinkle", "mix", "flap"};
     return kIds[juce::jlimit(0, (int)kNumModKnobs - 1, k)];
 }
 
@@ -299,6 +299,10 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // Wrinkle: tip-localized fine detail - "how the last third resolves or
     // flaps". 0 = off, so the stage costs nothing until dialled in.
     addParameter(wrinkle_ = new APF("wrinkle", "Wrinkle", R{0.0f, 1.0f}, 0.0f));
+    // Flap: how hard the mid-band ripples drive the FREE END. The bump
+    // envelope is zero there by construction, so without this the ripples
+    // fade out over the last fifth -- they were never forced, not damped.
+    addParameter(flap_ = new APF("flap", "Flap", R{0.0f, 1.0f}, 0.45f));
 
     // Capture each modifiable knob's minimum; "off" resolves to it.
     for (int k = 0; k < kNumModKnobs; ++k) {
@@ -473,6 +477,7 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         sim_->mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
         sim_->mid_lock_d = kMidLockD;
         sim_->mid_env = kMidEnv;
+        sim_->mid_flap = knob(kFlap, flap_->get());
         // Wind also sets how fast the ripples RUN DOWN the string, with the
         // detuning loss compensated so it stays a speed control.
         const double travel =

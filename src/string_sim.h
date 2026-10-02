@@ -194,6 +194,24 @@ public:
     // Envelope is sin(pi*d)^mid_env. Lower = wider, i.e. more of the band
     // survives toward the ends.
     double mid_env = 2.0;
+    // FLAP: how much the mid band is allowed to drive the FREE END.
+    //
+    // The bump envelope returns to zero at d = 1 by construction, so the
+    // ripples were not damped at the tip -- they were never forced there
+    // (owner's read was right: "it may be the fact that is the end of the
+    // simulation"). Flap fills that in without touching the middle:
+    //
+    //     env = bump + flap * d^2 * (1 - bump)
+    //
+    // so flap = 0 is EXACTLY the old envelope and flap = 1 drives the tip at
+    // full amplitude. The tip is also the light end of the mass taper, so
+    // what arrives there whips.
+    //
+    // Note the tip is off-resonance: local wave speed is c*2^(taper/2)
+    // against a lock at c*2^(taper*mid_lock_d/2), a 1.27x detune at the
+    // shipped settings, so the tip couples less per unit forcing than the
+    // middle does. Flap compensates by forcing it harder, not by retuning.
+    double mid_flap = 0.0;
     // Multiplier on the lock speed. 1.0 = exactly on resonance. Anything
     // else detunes, which is the price of making the ripples travel at a
     // speed other than the string's own.
@@ -406,6 +424,7 @@ private:
     double tables_mid_ = -1.0;       // mid_waves the tables were built for
     double tables_mid_env_ = -1.0;
     double tables_mid_lock_ = -1.0;
+    double tables_mid_flap_ = -1.0;
     std::vector<double> q_, qd_;    // wake-oscillator state per node
     std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)
     void recompute_cloth();

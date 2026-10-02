@@ -303,7 +303,9 @@ void StringSim::rebuild_gust_tables() {
                               ? 0.5 * d / std::max(1e-6, mid_lock_d)
                               : 0.5 + 0.5 * (d - mid_lock_d)
                                           / std::max(1e-6, 1.0 - mid_lock_d);
-        const double bump = std::pow(std::sin(3.141592653589793 * dd), mid_env);
+        double bump = std::pow(std::sin(3.141592653589793 * dd), mid_env);
+        // Flap: fill in toward the free end without touching the middle.
+        bump += mid_flap * (d * d) * (1.0 - bump);
         for (int j = 0; j < 4; ++j) {
             mid_cos_[static_cast<std::size_t>(i) * 4 + j] =
                 bump * std::cos(mid_k_[j] * p_i);
@@ -314,6 +316,7 @@ void StringSim::rebuild_gust_tables() {
     tables_density_ = wave_density;
     tables_mid_ = mid_waves;
     tables_mid_env_ = mid_env;
+    tables_mid_flap_ = mid_flap;
     tables_mid_lock_ = mid_lock_d;
 }
 
@@ -359,6 +362,7 @@ void StringSim::update_wind_forces() {
     // only on change, never per tick.
     if (tables_density_ != wave_density || tables_mid_ != mid_waves ||
         tables_mid_env_ != mid_env || tables_mid_lock_ != mid_lock_d ||
+        tables_mid_flap_ != mid_flap ||
         site_cos_.size() != static_cast<std::size_t>(n_) * 8)
         rebuild_gust_tables();
 

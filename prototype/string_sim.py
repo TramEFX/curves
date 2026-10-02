@@ -112,12 +112,18 @@ class StringSim:
         # Multiplier on the lock speed. 1.0 = exactly on resonance; anything
         # else detunes, which is the price of a different travel speed.
         self.mid_travel = 1.0
+        # FLAP: how much the mid band drives the FREE END. The bump
+        # envelope returns to zero at d = 1, so the ripples were never
+        # forced at the tip. env = bump + flap*d^2*(1-bump); flap = 0 is
+        # exactly the old envelope.
+        self.mid_flap = 0.0
         self._mid_cos = None
         self._mid_sin = None
         self._mid_phase = np.zeros(4)
         self._tables_mid = -1.0
         self._tables_mid_env = -1.0
         self._tables_mid_lock = -1.0
+        self._tables_mid_flap = -1.0
         self.flap_limit = 1e9  # Force semantics: flap peak ceiling; 1e9 = off
         self._flap_gain = 1.0
         self._wind_k = 0.1
@@ -366,6 +372,7 @@ class StringSim:
                       0.5 + 0.5 * (d - self.mid_lock_d)
                       / max(1e-6, 1.0 - self.mid_lock_d))
         bump = np.power(np.sin(np.pi * dd), self.mid_env)
+        bump = bump + self.mid_flap * (d * d) * (1.0 - bump)
         marg = p[:, None] * self._mid_k[None, :]
         self._mid_cos = bump[:, None] * np.cos(marg)
         self._mid_sin = bump[:, None] * np.sin(marg)
@@ -373,6 +380,7 @@ class StringSim:
         self._tables_mid = self.mid_waves
         self._tables_mid_env = self.mid_env
         self._tables_mid_lock = self.mid_lock_d
+        self._tables_mid_flap = self.mid_flap
 
     def seed_wake_phase(self, preserve_amplitude):
         """(Re)impose the outward travelling phase ramp on the wake bank.
@@ -411,6 +419,7 @@ class StringSim:
                 or self._tables_mid != self.mid_waves
                 or self._tables_mid_env != self.mid_env
                 or self._tables_mid_lock != self.mid_lock_d
+                or self._tables_mid_flap != self.mid_flap
                 or self._site_cos.shape[0] != self.n):
             self.rebuild_gust_tables()
         self._site_phase += (self._wind_k * self.wind_phase_speed
