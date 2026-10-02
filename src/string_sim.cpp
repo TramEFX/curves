@@ -207,6 +207,32 @@ void StringSim::recompute_cloth() {
         m_inv_max_ = std::max(m_inv_max_, m_inv_[i]);
     // Geometry or origin changed, so re-impose the outward phase ramp.
     seed_wake_phase(true);
+    rebuild_gust_tables();
+}
+
+// The gust field is sum_s sin(psi_s(t) - k_s*p_i), where
+//   k_s   = wind_k * wave_density * kSiteK[s]      (constant per tick)
+//   psi_s = site_phase[s] + k_s * site_pos[s]      (the only time-varying part)
+// Expanding sin(a - b) = sin(a)cos(b) - cos(a)sin(b) splits it into a
+// per-tick scalar part and a per-node SPATIAL part that never changes with
+// time. Tabulating the spatial part turns 8 transcendental calls per node
+// per tick into 8 sin + 8 cos per TICK plus multiply-adds per node. At 512
+// nodes and a 24 kHz tick that is 98 million sin() calls per second
+// removed - the measured cause of dropouts in high precision.
+void StringSim::rebuild_gust_tables() {
+    site_cos_.assign(static_cast<std::size_t>(n_) * 8, 0.0);
+    site_sin_.assign(static_cast<std::size_t>(n_) * 8, 0.0);
+    const bool low_pole = (wind_origin == 1);
+    for (int i = 0; i < n_; ++i) {
+        const double p_i = low_pole ? static_cast<double>(i)
+                                    : static_cast<double>(n_ - 1 - i);
+        for (int s = 0; s < 8; ++s) {
+            const double k_s = wind_k_ * wave_density * kSiteK_[s];
+            site_cos_[static_cast<std::size_t>(i) * 8 + s] = std::cos(k_s * p_i);
+            site_sin_[static_cast<std::size_t>(i) * 8 + s] = std::sin(k_s * p_i);
+        }
+    }
+    tables_density_ = wave_density;
 }
 
 void StringSim::seed_wake_phase(bool preserve_amplitude) {
@@ -247,16 +273,29 @@ void StringSim::update_wind_forces() {
         const double denom = aero_rho_cd * m_inv_max_ * dt_;
         aero_vrel_max_ = (denom > 1e-12) ? 0.5 / denom : 1e9;
     }
+    // wave_density is live (the Waves knob), so the tables follow it - but
+    // only on change, never per tick.
+    if (tables_density_ != wave_density ||
+        site_cos_.size() != static_cast<std::size_t>(n_) * 8)
+        rebuild_gust_tables();
+
     for (int s = 0; s < 8; ++s)
         site_phase_[s] += wind_k_ * wind_phase_speed * kSiteMult_[s] * dt_;
-    const bool low_pole = (wind_origin == 1);
+    // The entire time-varying part of the gust field: 16 transcendental
+    // calls per tick, independent of node count.
+    double sp[8], cp[8];
+    for (int s = 0; s < 8; ++s) {
+        const double k_s = wind_k_ * wave_density * kSiteK_[s];
+        const double psi = site_phase_[s] + k_s * site_pos_[s];
+        sp[s] = std::sin(psi);
+        cp[s] = std::cos(psi);
+    }
     for (int i = 0; i < n_; ++i) {
-        const double p_i = low_pole ? static_cast<double>(i)
-                                    : static_cast<double>(n_ - 1 - i);
+        const double* crow = &site_cos_[static_cast<std::size_t>(i) * 8];
+        const double* srow = &site_sin_[static_cast<std::size_t>(i) * 8];
         double w = 0.0;
         for (int s = 0; s < 8; ++s)
-            w += std::sin(site_phase_[s]
-                          - wind_k_ * wave_density * kSiteK_[s] * (p_i - site_pos_[s]));
+            w += sp[s] * crow[s] - cp[s] * srow[s];
         if (force_model == kClothAero) {
             // transverse wind VELOCITY (nodes/s) — same units as v_
             w_field_[i] = wind_speed * wind_env_[i] * (w / 8.0);

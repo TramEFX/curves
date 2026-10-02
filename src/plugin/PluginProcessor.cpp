@@ -245,7 +245,9 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     for (int i = 0; i < n_nodes_; ++i) {
         const double disp = u[i] + vel_amt * (v[i] / ws);
         const double db = std::clamp(disp, -1.0, 1.0) * max_gain_db_;
-        gain_targets_[i] = std::pow(10.0, db / 20.0);
+        // 10^(db/20) == 2^(db/6.0206). exp2 is markedly cheaper than pow and
+        // this runs once per node per block (512 calls at high precision).
+        gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
     }
     bank_.set_targets(gain_targets_.data());
 
@@ -274,12 +276,26 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             ch1[s] = r;
     }
 
-    // 5. GUI is a reader: publish positions for display.
-    publish_display();
+    // 5. GUI is a reader: publish positions for display, throttled to ~60 Hz.
+    //    The editor repaints at 30 Hz, so publishing every block was ~6x the
+    //    lock traffic and ~6x the per-node log10 work for no visible gain.
+    display_accum_ += buffer.getNumSamples();
+    const int publish_interval = static_cast<int>(fs_ / 60.0);
+    if (display_accum_ >= publish_interval) {
+        display_accum_ = 0;
+        publish_display();
+    }
 }
 
 void CurvesAudioProcessor::publish_display() {
-    const juce::SpinLock::ScopedLockType lk(display_lock_);
+    // The audio thread must NEVER block on the GUI thread. The editor holds
+    // this same spinlock while it copies the snapshot out, and a spinlock
+    // owned by a lower-priority thread is a textbook priority inversion:
+    // the audio thread burns its deadline spinning. Try, and bail if the
+    // editor has it - dropping a frame is invisible at 30 Hz, a dropout is
+    // not. (Diagnosed alongside the high-precision glitch report.)
+    if (!display_lock_.tryEnter())
+        return;
     const auto& u = sim_->positions();
     for (int i = 0; i < n_nodes_; ++i)
         display_buffer_[i] = static_cast<float>(u[i]);
@@ -293,6 +309,7 @@ void CurvesAudioProcessor::publish_display() {
     }
     display_count_ = n_nodes_;
     display_version_.fetch_add(1, std::memory_order_release);
+    display_lock_.exit();
 }
 
 void CurvesAudioProcessor::push_draw(const std::array<float, kMaxNodes>& nodes,

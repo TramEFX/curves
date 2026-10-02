@@ -16,6 +16,10 @@ target_include_directories(curves_string PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_executable(scenarios src/scenarios_main.cpp)
 target_link_libraries(scenarios PRIVATE curves_string)
 
+# ---- Audio-thread cost benchmark (diagnosing real-time glitches) ----
+add_executable(bench src/bench_main.cpp)
+target_link_libraries(bench PRIVATE curves_string)
+
 # ---- JUCE / CLAP plugin shell (M0 second half) ----
 # enable via -DCURVES_BUILD_PLUGIN=ON; FetchContent pulls JUCE so the repo
 # stays light. CLAP comes from clap-juce-extensions (JUCE has no native CLAP).

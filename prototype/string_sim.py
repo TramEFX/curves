@@ -110,6 +110,13 @@ class StringSim:
         # oscillator: with both exactly zero and the string at rest it never
         # departs, so a deterministic nonzero seed is required to start it.
         self.SHED_SEED = 0.01
+        # Gust-field spatial tables (see src/string_sim.cpp): the gust sum is
+        # sin(psi_s - k_s*p_i) and the k_s*p_i part is time-invariant, so
+        # cos/sin of it are tabulated. Per-tick cost becomes 8 sin + 8 cos
+        # TOTAL instead of 8 transcendental calls PER NODE.
+        self._site_cos = None
+        self._site_sin = None
+        self._tables_density = -1.0
         self._q = np.full(self.n, self.SHED_SEED)
         self._qd = np.zeros(self.n)
         self._cloth_d = np.zeros(self.n)
@@ -250,11 +257,24 @@ class StringSim:
         self._cloth_d = cd
         # Geometry or origin changed, so re-impose the outward phase ramp.
         self.seed_wake_phase(True)
+        self.rebuild_gust_tables()
         self._site_pos = np.array([0.08, 0.22, 0.38, 0.52, 0.66, 0.78, 0.88, 0.96]) * span_total * self._cloth_length
         self._w_field = np.zeros(self.n)
         # Heaviest inverse mass bounds how hard drag can push a node — what
         # the explicit-integration stability guard is sized against.
         self._m_inv_max = max(1.0, float(np.max(minv)))
+
+    def rebuild_gust_tables(self):
+        """Tabulate the time-invariant spatial part of the gust field. Cheap
+        but not free (8*n sin + 8*n cos), so it runs only when the geometry
+        or wave_density changes, never per tick."""
+        p = (np.arange(self.n) if self.wind_origin == 1
+             else (self.n - 1 - np.arange(self.n))).astype(float)
+        k = self._wind_k * self.wave_density * self._site_k      # (8,)
+        arg = p[:, None] * k[None, :]                            # (n, 8)
+        self._site_cos = np.cos(arg)
+        self._site_sin = np.sin(arg)
+        self._tables_density = self.wave_density
 
     def seed_wake_phase(self, preserve_amplitude):
         """(Re)impose the outward travelling phase ramp on the wake bank.
@@ -287,15 +307,24 @@ class StringSim:
         if self.force_model == 2:
             denom = self.aero_rho_cd * self._m_inv_max * self.dt
             self._aero_vrel_max = 0.5 / denom if denom > 1e-12 else 1e9
+        # wave_density is live (the Waves knob), so the tables follow it -
+        # but only on change, never per tick.
+        if (self._site_cos is None or self._tables_density != self.wave_density
+                or self._site_cos.shape[0] != self.n):
+            self.rebuild_gust_tables()
         self._site_phase += (self._wind_k * self.wind_phase_speed
                              * self._site_mult * self.dt)
-        idx = np.arange(self.n)
-        p_i = idx if self.wind_origin == 1 else (self.n - 1 - idx)
+        # Entire time-varying part: 16 transcendental calls per tick,
+        # independent of node count.
+        k = self._wind_k * self.wave_density * self._site_k
+        psi = self._site_phase + k * self._site_pos
+        sp = np.sin(psi)
+        cp = np.cos(psi)
+        # Accumulate in site order 0..7 so each node's additions happen in
+        # the same sequence as the C++ inner loop (bit-exactness).
         w = np.zeros(self.n)
         for s in range(8):
-            w += np.sin(self._site_phase[s]
-                        - self._wind_k * self.wave_density * self._site_k[s]
-                        * (p_i - self._site_pos[s]))
+            w += sp[s] * self._site_cos[:, s] - cp[s] * self._site_sin[:, s]
         if self.force_model == 2:
             # transverse wind VELOCITY (nodes/s) — same units as self.v
             self._w_field = self.wind_speed * self._wind_env * (w / 8.0)

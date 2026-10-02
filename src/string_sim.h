@@ -285,6 +285,14 @@ private:
     double wind_phase_ = 0.0;
     double flap_gain_ = 1.0;  // smoothed limiter gain (fast attack, slow release)
     double tilt_sxx_ = 1.0;   // sum of centered x^2, for the tilt projection
+    // Gust-field spatial tables, layout [node*8 + site] so one node's eight
+    // sites are contiguous (16 separate arrays would thrash the cache).
+    // The gust sum is sin(psi_s - k_s*p_i), and the k_s*p_i part does not
+    // change with time, so cos(k_s*p_i) and sin(k_s*p_i) are precomputed and
+    // the per-tick work becomes 8 sin + 8 cos TOTAL plus multiply-adds per
+    // node, instead of 8 transcendental calls PER NODE. See the .cpp.
+    std::vector<double> site_cos_, site_sin_;
+    double tables_density_ = -1.0;   // wave_density the tables were built for
     std::vector<double> q_, qd_;    // wake-oscillator state per node
     std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)
     void recompute_cloth();
@@ -294,6 +302,10 @@ private:
     // oscillator's current magnitude and only re-phases it, so dragging
     // Length or Direction does not restart the flutter from silence.
     void seed_wake_phase(bool preserve_amplitude);
+    // Rebuild the gust spatial tables. Cheap but not free (8*n sin + 8*n
+    // cos), so it runs only when the geometry or wave_density changes, never
+    // per tick.
+    void rebuild_gust_tables();
 };
 
 }  // namespace curves

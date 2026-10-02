@@ -83,6 +83,7 @@ private:
     std::unique_ptr<curves::StringSim> sim_;
     curves::FilterBank bank_;
     curves::OutputLeveler leveler_;
+    int display_accum_ = 0;          // samples since the last display publish
     double fs_ = 48000.0;
     int sim_counter_ = 0;
     int sim_divisor_ = 4;
