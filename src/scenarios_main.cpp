@@ -381,6 +381,64 @@ void scenario_shed(const fs::path& out) {
     std::cout << "  finite: " << (finite ? "yes" : "NO - BLEW UP") << "\n";
 }
 
+// Tip wrinkles: fine detail concentrated in the LAST THIRD. Asserts the
+// detail is localized - tip curvature rises while the pole end stays put.
+// Curvature (the second spatial difference) is used as the density proxy:
+// it weights short wavelengths heavily, and is cheap and deterministic in
+// both languages, unlike an FFT.
+void scenario_wrinkle(const fs::path& out) {
+    std::cout << "scenario: wrinkle (tip-resonant fine detail, last third)\n";
+    StringParams p;
+    p.tick_rate = kTickRate;
+    p.wave_speed = 300.0;
+    p.damping = 1.2;
+    p.stiffness = 2.0;
+    // Wrinkles need resolution: at 128 nodes their wavelengths land at
+    // 10.7-4.1 nodes, at or past what the grid can carry, and the tip then
+    // measures LESS detailed than the pole. This scenario therefore runs at
+    // 512 nodes - the regime the feature is for. Usage note on record:
+    // Wrinkle is a high-precision control.
+    const int kWNodes = 512;
+    p.tick_rate = kTickRate;
+    StringSim sim(kWNodes, p);
+    sim.set_cloth_aero(192.0 * kWNodes / 128.0, (double)kWNodes, 1.5);
+    sim.wind_speed = 25.0 * std::pow(128.0 / kWNodes, 0.25);
+    sim.aero_rho_cd = 0.6;
+    sim.set_density_taper(2.0);
+    sim.set_cloth_length(1.0);
+    sim.wrinkle = 2.0;
+    std::vector<std::pair<double, std::vector<double>>> frames;
+    double tip_c = 0.0, tip_a = 0.0, pole_c = 0.0, pole_a = 0.0, peak = 0.0;
+    bool finite = true;
+    for (int s = 0; s < 6000; ++s) {
+        sim.tick();
+        if (s % 100 == 0) frames.emplace_back(s / kTickRate, sim.positions());
+        if (s / kTickRate < 2.0) continue;
+        const auto& u = sim.positions();
+        for (int i = 0; i < kWNodes; ++i) {
+            if (!std::isfinite(u[i])) finite = false;
+            // peak over ALL nodes: the free whip end is usually the largest,
+            // and excluding it made this disagree with the Python spec's
+            // report even though the sims were bit-identical.
+            peak = std::max(peak, std::abs(u[i]));
+        }
+        for (int i = 1; i + 1 < kWNodes; ++i) {
+            const double curv = std::abs(u[i - 1] - 2.0 * u[i] + u[i + 1]);
+            if (i < kWNodes / 3) { tip_c += curv; tip_a += std::abs(u[i]); }
+            else if (i >= 2 * kWNodes / 3) { pole_c += curv; pole_a += std::abs(u[i]); }
+        }
+    }
+    save_frames(out, "cpp_wrinkle", frames);
+    const double tipd = tip_c / std::max(tip_a, 1e-12);
+    const double poled = pole_c / std::max(pole_a, 1e-12);
+    std::cout << "  tip   wrinkle density " << tipd << "\n";
+    std::cout << "  pole  wrinkle density " << poled
+              << "   (ratio " << tipd / std::max(poled, 1e-12)
+              << "x - detail is localized at the END)\n";
+    std::cout << "  late peak|u| " << peak << "   finite: "
+              << (finite ? "yes" : "NO - BLEW UP") << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -396,6 +454,7 @@ int main(int argc, char** argv) {
     scenario_aero(out);
     scenario_tilt(out);
     scenario_shed(out);
+    scenario_wrinkle(out);
     std::cout << "done.\n";
     return 0;
 }

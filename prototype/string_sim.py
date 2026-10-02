@@ -74,6 +74,18 @@ class StringSim:
         self.wind_phase_speed = 192.0
         self.wave_density = 1.0  # Waves knob: spatial density of the wind pattern
         self.wind_origin = 0  # 0 = pole at high end (whip at lows), 1 = pole at low end
+        # ---- tip wrinkles (see src/string_sim.h for the full rationale) ----
+        # Four extra gust components windowed by a d^4 tip envelope, with high
+        # spatial wavenumbers AND a phase velocity locked to the LOCAL WAVE
+        # SPEED AT THE TIP. The resonance lock is the whole trick: at these
+        # wavenumbers c^2*k^2 is ~1944 against a stiffness of ~2, so short
+        # waves are suppressed ~1000x and can only be excited on resonance.
+        # wrinkle = 0 (default) skips the stage entirely.
+        self.wrinkle = 0.0
+        self.WRINKLE_K = np.array([12.0, 17.0, 23.0, 31.0])
+        self._wrinkle_cos = None
+        self._wrinkle_sin = None
+        self._wrinkle_phase = np.zeros(4)
         self.flap_limit = 1e9  # Force semantics: flap peak ceiling; 1e9 = off
         self._flap_gain = 1.0
         self._wind_k = 0.1
@@ -274,6 +286,22 @@ class StringSim:
         arg = p[:, None] * k[None, :]                            # (n, 8)
         self._site_cos = np.cos(arg)
         self._site_sin = np.sin(arg)
+        # Wrinkle tables, with the d^4 tip envelope baked in so the per-node
+        # work stays a plain multiply-add.
+        span = max(1.0, (self.n - 1.0) * self._cloth_length)
+        d = np.clip(p / span, 0.0, 1.0)
+        d2 = d * d
+        tip = d2 * d2          # grouping matched to the C++ (NOT d**4)
+        # Anti-alias clamp: the finest wrinkle must stay resolvable on the
+        # node grid (>= 8 nodes per cycle), or the stencil aliases it
+        # instead of carrying it. The set is scaled together.
+        k_top = self._wind_k * self.wave_density * self.WRINKLE_K[3]
+        k_limit = 2 * np.pi / 8.0
+        k_scale = (k_limit / k_top) if k_top > k_limit else 1.0
+        self._wrinkle_k = self._wind_k * self.wave_density * self.WRINKLE_K * k_scale
+        warg = p[:, None] * self._wrinkle_k[None, :]
+        self._wrinkle_cos = tip[:, None] * np.cos(warg)
+        self._wrinkle_sin = tip[:, None] * np.sin(warg)
         self._tables_density = self.wave_density
 
     def seed_wake_phase(self, preserve_amplitude):
@@ -328,6 +356,20 @@ class StringSim:
         if self.force_model == 2:
             # transverse wind VELOCITY (nodes/s) — same units as self.v
             self._w_field = self.wind_speed * self._wind_env * (w / 8.0)
+            if self.wrinkle != 0.0:
+                # Phase velocity locked to the tip wave speed c*sqrt(2^taper)
+                # so these drive short tip waves ON resonance. c2 is live
+                # (Tension), so this is recomputed per tick - 8 scalars.
+                c_tip = np.sqrt(self.c2) * 2.0 ** (0.5 * self._density_taper)
+                self._wrinkle_phase = (self._wrinkle_phase
+                                       + self._wrinkle_k * c_tip * self.dt)
+                wsp = np.sin(self._wrinkle_phase)
+                wcp = np.cos(self._wrinkle_phase)
+                ww = np.zeros(self.n)
+                for j in range(4):
+                    ww += (wsp[j] * self._wrinkle_cos[:, j]
+                           - wcp[j] * self._wrinkle_sin[:, j])
+                self._w_field = self._w_field + self.wind_speed * self.wrinkle * (ww / 4.0)
             self.force[:] = 0.0
         else:
             self.force[:] = self.wind_strength * self._wind_env * (w / 8.0)

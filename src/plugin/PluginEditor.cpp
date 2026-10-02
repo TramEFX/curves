@@ -20,6 +20,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"force", "Force"},
         {"direction", "Direction"}, {"length", "Length"},
         {"flutter", "Flutter"},    {"flutter_hz", "Flutter Hz"},
+        {"wrinkle", "Wrinkle"},
         {"test", "Test noise"},
     };
     for (const auto& d : defs) {

@@ -232,6 +232,34 @@ void StringSim::rebuild_gust_tables() {
             site_sin_[static_cast<std::size_t>(i) * 8 + s] = std::sin(k_s * p_i);
         }
     }
+    // Wrinkle tables: same idea, but the d^4 tip envelope is baked in so the
+    // per-node loop stays a plain multiply-add.
+    wrinkle_cos_.assign(static_cast<std::size_t>(n_) * 4, 0.0);
+    wrinkle_sin_.assign(static_cast<std::size_t>(n_) * 4, 0.0);
+    const double span = std::max(1.0, (n_ - 1.0) * cloth_length_);
+    // Anti-alias clamp: the finest wrinkle must stay resolvable on the node
+    // grid. Below ~8 nodes per cycle the 4th-order stencil attenuates and
+    // aliases it instead of carrying it, which showed up as the tip reading
+    // LESS detailed than the pole at 128 nodes. The whole set is scaled
+    // together so their relative spacing is preserved.
+    const double k_top = wind_k_ * wave_density * kWrinkleK_[3];
+    const double k_limit = 6.283185307179586 / 8.0;   // 8 nodes per cycle
+    const double k_scale = (k_top > k_limit) ? k_limit / k_top : 1.0;
+    for (int j = 0; j < 4; ++j)
+        wrinkle_k_[j] = wind_k_ * wave_density * kWrinkleK_[j] * k_scale;
+    for (int i = 0; i < n_; ++i) {
+        const double p_i = low_pole ? static_cast<double>(i)
+                                    : static_cast<double>(n_ - 1 - i);
+        const double d = std::clamp(p_i / span, 0.0, 1.0);
+        const double d2 = d * d;
+        const double tip = d2 * d2;   // grouping matched in the Python spec
+        for (int j = 0; j < 4; ++j) {
+            wrinkle_cos_[static_cast<std::size_t>(i) * 4 + j] =
+                tip * std::cos(wrinkle_k_[j] * p_i);
+            wrinkle_sin_[static_cast<std::size_t>(i) * 4 + j] =
+                tip * std::sin(wrinkle_k_[j] * p_i);
+        }
+    }
     tables_density_ = wave_density;
 }
 
@@ -290,6 +318,19 @@ void StringSim::update_wind_forces() {
         sp[s] = std::sin(psi);
         cp[s] = std::cos(psi);
     }
+    // Wrinkle components: phase velocity locked to the tip wave speed
+    // c*sqrt(2^taper), so they drive short tip waves ON resonance. c2_ is
+    // live (the Tension knob), so this is recomputed per tick — 8 scalar
+    // transcendentals, independent of node count.
+    double wsp[4] = {}, wcp[4] = {};
+    if (wrinkle != 0.0) {
+        const double c_tip = std::sqrt(c2_) * std::pow(2.0, 0.5 * density_taper_);
+        for (int j = 0; j < 4; ++j) {
+            wrinkle_phase_[j] += wrinkle_k_[j] * c_tip * dt_;
+            wsp[j] = std::sin(wrinkle_phase_[j]);
+            wcp[j] = std::cos(wrinkle_phase_[j]);
+        }
+    }
     for (int i = 0; i < n_; ++i) {
         const double* crow = &site_cos_[static_cast<std::size_t>(i) * 8];
         const double* srow = &site_sin_[static_cast<std::size_t>(i) * 8];
@@ -300,6 +341,14 @@ void StringSim::update_wind_forces() {
             // transverse wind VELOCITY (nodes/s) — same units as v_
             w_field_[i] = wind_speed * wind_env_[i] * (w / 8.0);
             f_[i] = 0.0;
+            if (wrinkle != 0.0) {
+                const double* wc = &wrinkle_cos_[static_cast<std::size_t>(i) * 4];
+                const double* ws = &wrinkle_sin_[static_cast<std::size_t>(i) * 4];
+                double ww = 0.0;
+                for (int j = 0; j < 4; ++j)
+                    ww += wsp[j] * wc[j] - wcp[j] * ws[j];
+                w_field_[i] += wind_speed * wrinkle * (ww / 4.0);
+            }
         } else {
             f_[i] = wind_strength * wind_env_[i] * (w / 8.0);
         }

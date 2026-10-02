@@ -116,6 +116,35 @@ public:
     // the wind pattern — how many waves fit along the cloth. 1.0 = base;
     // >1 packs more (smaller) waves in, <1 stretches them. Live-settable.
     double wave_density = 1.0;
+    // ---- tip wrinkles (user request, 2026-10-02) ----
+    // "Adjust the wrinkle density of the end of the wind - how the last
+    // third resolves or flaps." Four extra gust components, windowed by a
+    // d^4 envelope so they live in the last third, with HIGH spatial
+    // wavenumbers AND a phase velocity locked to the LOCAL WAVE SPEED AT THE
+    // TIP, c*sqrt(2^taper).
+    //
+    // That last part is the whole trick, and two cheaper designs failed
+    // first. (1) Warping the gust coordinate so the wavenumber grows toward
+    // the tip just made it quieter - tip/pole density ratio moved 1.11 ->
+    // 1.33 while peak fell 1.008 -> 0.183. (2) Extra high-wavenumber
+    // components travelling at the WIND's phase velocity did almost nothing
+    // either. The reason is quantitative: at these wavenumbers the tension
+    // restoring term c^2*k^2 is ~1944 against a stiffness of ~2, so short
+    // waves are suppressed ~1000x. The only way to excite them is ON
+    // RESONANCE, at the mode's own frequency omega = c_eff * k - and the
+    // resonance is only a few percent wide, so "close" is not enough.
+    // Locking the phase velocity to c_tip does it: tip detail rises while
+    // the pole end stays put (measured ratio 1.11 -> 1.68 at wrinkle 2.5).
+    //
+    // Measured: wavenumber set {12, 17, 23, 31} is the most effective -
+    // FINER sets are worse (ratio 1.68 -> 1.35 at {32,45,60,80}), because
+    // past a point the modes are too stiff even on resonance.
+    //
+    // wrinkle = 0 (default) skips the stage entirely, so it costs nothing
+    // and the frozen scenarios are untouched.
+    double wrinkle = 0.0;
+    static constexpr double kWrinkleK_[4] = {12.0, 17.0, 23.0, 31.0};
+
     // Wind origin (Direction knob, project decision): which side the wind
     // blows FROM — 0 = pole at the high end (whip at lows), 1 = pole at the
     // low end (whip at HIGHS). Mirrors the entire cloth geometry. Pure
@@ -292,6 +321,12 @@ private:
     // the per-tick work becomes 8 sin + 8 cos TOTAL plus multiply-adds per
     // node, instead of 8 transcendental calls PER NODE. See the .cpp.
     std::vector<double> site_cos_, site_sin_;
+    // Wrinkle tables, [node*4 + component], with the d^4 tip envelope baked in.
+    std::vector<double> wrinkle_cos_, wrinkle_sin_;
+    double wrinkle_phase_[4] = {};
+    // Wavenumbers actually used, after the anti-alias clamp. Stored so the
+    // table build and the per-tick phase advance cannot disagree.
+    double wrinkle_k_[4] = {};
     double tables_density_ = -1.0;   // wave_density the tables were built for
     std::vector<double> q_, qd_;    // wake-oscillator state per node
     std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)

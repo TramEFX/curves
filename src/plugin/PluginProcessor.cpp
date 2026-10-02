@@ -48,7 +48,20 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // own mass and tension filter it out (measured: peak 0.35 at 3 Hz but
     // only 0.03 at 12 Hz). Per-band rate varies around this by the shedding
     // gradient, which is what makes it read as cloth and not an LFO.
-    addParameter(flutter_hz_ = new APF("flutter_hz", "Flutter Hz", R{0.3f, 8.0f}, 3.0f));
+    // Range extended on user request (was 0.3-8.0). Measured consequence,
+    // which the dial does NOT compensate for: amplitude swings ~50x across
+    // this range. It peaks near 0.45 Hz, where the shedding resonantly
+    // drives the string's fundamental (omega = c*2*pi/span lands about
+    // there) - 4.35x the amplitude of 3 Hz - and damping barely touches it
+    // (4.37 at damping 0.5, 3.48 at damping 12, so it is not a damping
+    // problem to solve). Above ~12 Hz the string's own mass and tension
+    // lowpass it away (0.08). Left uncompensated because the project
+    // prefers true-to-simulation behaviour; gain-compensating the rate is a
+    // one-line change if it starts feeling like a volume knob.
+    addParameter(flutter_hz_ = new APF("flutter_hz", "Flutter Hz", R{0.1f, 20.0f}, 3.0f));
+    // Wrinkle: tip-localized fine detail - "how the last third resolves or
+    // flaps". 0 = off, so the stage costs nothing until dialled in.
+    addParameter(wrinkle_ = new APF("wrinkle", "Wrinkle", R{0.0f, 1.0f}, 0.0f));
 }
 
 void CurvesAudioProcessor::prepareToPlay(double sampleRate, int) {
@@ -229,7 +242,16 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // defaults to 0, so nothing clamps unless both are dialled up.
     // Note also that n = 512 reads 1.011 at Flutter 0, so the Force base-25
     // calibration is itself marginal in that one precision mode.
-    sim_->shed_gain = 30.0 * flutter_->get();
+    // Gain ceiling raised 30 -> 90 on user request. Measured peak at Force
+    // 1.0: 1.585 at 30, 1.977 at 60, 2.233 at 90; alone (Force 0): 0.585 /
+    // 0.876 / 1.096. So the upper half of the dial will clamp when Force is
+    // also up - the shared-budget characteristic noted above, now with more
+    // room to push into deliberately.
+    sim_->shed_gain = 90.0 * flutter_->get();
+    // Wrinkle 0..1 -> 0..3. Measured tip/pole detail ratio 1.11 (off) ->
+    // 1.45 at 1.5 -> 1.82 at 3.0, with the POLE end unchanged (0.83 ->
+    // 0.87), i.e. the effect stays where it was asked for.
+    sim_->wrinkle = 3.0 * wrinkle_->get();
     sim_->shed_freq_hz = flutter_hz_->get();
     bank_.set_smoothing(smoothing_->get());
     bank_.set_steady(steady_->get(), 0.25);

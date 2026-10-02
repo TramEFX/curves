@@ -128,6 +128,7 @@ private:
     juce::AudioParameterFloat* length_ = nullptr;    // cloth termination 0.2..1.0
     juce::AudioParameterFloat* flutter_ = nullptr;   // vortex shedding amount 0..1
     juce::AudioParameterFloat* flutter_hz_ = nullptr;// shedding rate, Hz
+    juce::AudioParameterFloat* wrinkle_ = nullptr;   // tip fine detail 0..1
     float last_length_ = -1.0f;
 
     // Paul Kellet pink-noise filter state, per channel.

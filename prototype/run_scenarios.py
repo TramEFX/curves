@@ -294,6 +294,53 @@ def scenario_shed():
     print(f"  finite: {'yes' if finite else 'NO - BLEW UP'}")
 
 
+def scenario_wrinkle():
+    """Tip wrinkles: fine detail concentrated in the LAST THIRD. Asserts the
+    detail is localized - tip curvature rises while the pole end stays put.
+    Curvature (the second spatial difference) is the density proxy: it
+    weights short wavelengths heavily and is cheap and deterministic in both
+    languages, unlike an FFT."""
+    print("scenario: wrinkle (tip-resonant fine detail, last third)")
+    # Wrinkles need resolution: at 128 nodes their wavelengths land at
+    # 10.7-4.1 nodes, at or past what the grid can carry, and the tip then
+    # measures LESS detailed than the pole. This scenario runs at 512 nodes
+    # - the regime the feature is for. Wrinkle is a high-precision control.
+    WN = 512
+    sim = StringSim(n_nodes=WN, tick_rate=TICK_RATE,
+                    wave_speed=300.0, damping=1.2, stiffness=2.0)
+    sim.set_cloth_aero(phase_velocity_nodes_s=192.0 * WN / 128.0,
+                       wavelength_nodes=float(WN), envelope_exponent=1.5)
+    sim.wind_speed = 25.0 * (128.0 / WN) ** 0.25
+    sim.aero_rho_cd = 0.6
+    sim.set_density_taper(2.0)
+    sim.set_cloth_length(1.0)
+    sim.wrinkle = 2.0
+    frames = []
+    tip_c = tip_a = pole_c = pole_a = 0.0
+    peak = 0.0
+    for s in range(6000):
+        sim.tick()
+        t = s * sim.dt
+        if s % 100 == 0:
+            frames.append((t, sim.u.copy()))
+        if t < 2.0:
+            continue
+        curv = np.abs(sim.u[:-2] - 2.0 * sim.u[1:-1] + sim.u[2:])
+        mag = np.abs(sim.u[1:-1])
+        peak = max(peak, float(np.max(np.abs(sim.u))))
+        third = WN // 3
+        tip_c += float(np.sum(curv[:third - 1]))
+        tip_a += float(np.sum(mag[:third - 1]))
+        pole_c += float(np.sum(curv[2 * third - 1:]))
+        pole_a += float(np.sum(mag[2 * third - 1:]))
+    save_frames("wrinkle", frames)
+    tipd = tip_c / max(tip_a, 1e-12)
+    poled = pole_c / max(pole_a, 1e-12)
+    print(f"  tip   wrinkle density {tipd:.6f}")
+    print(f"  pole  wrinkle density {poled:.6f}   (ratio {tipd / max(poled, 1e-12):.2f}x - detail is localized at the END)")
+    print(f"  late peak|u| {peak:.6f}   finite: {'yes' if np.all(np.isfinite(sim.u)) else 'NO - BLEW UP'}")
+
+
 if __name__ == "__main__":
     scenario_pluck()
     scenario_flagpole()
@@ -304,4 +351,5 @@ if __name__ == "__main__":
     scenario_aero()
     scenario_tilt()
     scenario_shed()
+    scenario_wrinkle()
     print("done.")
