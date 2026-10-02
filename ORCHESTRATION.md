@@ -1,5 +1,11 @@
 # Curves — Orchestration Document
 
+> **Documentation map.** `docs/SPEC-0.0.2.md` is the current control
+> reference (every knob → parameter → function). `docs/SESSION-LOG.md` is the
+> running work log: measurements, root causes, dead ends and open threads.
+> `docs/SPEC-0.0.1.md` is superseded, kept for history. This file remains the
+> architecture and decision record.
+>
 > **Living document.** This file is the source of truth for the current state of the Curves project. Update it whenever a decision is made, changed, or superseded. Section [Change Log](#change-log) must be appended on every material edit.
 
 ---
@@ -481,3 +487,4 @@ CMAKE="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/ID
   - **Method note worth keeping: a visual change needs looking at.** The build was clean and the layout maths was right, yet the UI was substantially broken. Screenshots were captured with `PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT)` rather than a screen grab, because a screen grab caught whatever window happened to be in front; `PrintWindow` captures the window's own surface regardless of occlusion. The theme cycling was verified by synthesising a click on the header button and re-capturing (AQUA and MAGENTA both confirmed).
   - **Window 760x560 → 1000x700** to fit the three panels without crowding.
   - Engine, spec and all ten CSV baselines **untouched** — verified by diff, this was a pure UI change. All formats rebuilt, VST3 deployed and verified byte-identical.
+- **2026-10-02** — **Documentation restructured ahead of a context compaction.** `docs/SPEC-0.0.1.md` (the first spec) is superseded and kept; `docs/SPEC-0.0.2.md` is the current exhaustive knob → parameter → function reference, audited against source at `08416ab`; `docs/SESSION-LOG.md` is new and backfills the whole first session — twenty commits from `3da1368` to `08416ab` — with the measurements worth not re-deriving (cost table, Motion budget constants, Flutter Hz response table, Waves centroid table, Velocity scale), the root causes behind each reported bug, the three hypotheses that measurement rejected, the Windows UI-automation lessons, and twelve open threads. Purpose is to survive context loss: anything expensive to measure is written down once.

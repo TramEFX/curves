@@ -1,0 +1,316 @@
+# Curves — Session Log
+
+Running record of working sessions: what changed, what was **measured**, what
+was decided and why, and what is still open. Backfilled 2026-10-02.
+
+Purpose: survive context loss. Anything expensive to re-derive — calibration
+constants, measured response curves, root causes, dead ends — lives here so it
+is never measured twice.
+
+**Companions:** `SPEC-0.0.2.md` (current control reference), `SPEC-0.0.1.md`
+(superseded), `ORCHESTRATION.md` (architecture and decisions, with a change
+log that runs to 2026-10-02).
+
+---
+
+## State at a glance — end of 2026-10-02
+
+| | |
+|---|---|
+| Repo | `github.com/TramEFX/curves` (private), branch `main` |
+| Head | `08416ab` |
+| Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
+| Parameters | 20, across 19 controls |
+| Validation | 10 scenarios, **73,856 cells, 0 mismatches** Python↔C++ |
+| Cost @48 kHz | 6.9% / 21.7% / 43.0% of one core at 128 / 256 / 512 nodes |
+| Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
+
+**Two invariants that constrain everything:**
+
+1. **WYSIWYG.** The bright curve is drawn from `FilterBank::gains()` with the
+   same ±1 clamp the audio path uses — never from the sim. Any amplitude
+   mechanism must keep the string inside ±1 in normal use.
+2. **Bit-exact cross-validation.** Every physics change lands in both
+   `src/string_sim.cpp` and `prototype/string_sim.py` with identical
+   arithmetic order, and the frozen scenario CSVs stay byte-identical.
+   New behaviour goes in behind a default-off flag or a new force model so
+   the baselines survive.
+
+---
+
+## 2026-10-01 → 10-02 · Session 1
+
+Twenty commits, `3da1368` → `08416ab`.
+
+### Phase 1 — Version control
+
+The project had **zero commits**: 46 KB of design doc, a validated engine and
+a working plugin existed only on local disk, because git had never been
+configured on the machine. Set identity, committed, pushed to a new private
+GitHub repo. `gh` installed via winget; auth via browser passkey.
+
+### Phase 2 — Physics
+
+Prompted by a design discussion the owner had with another assistant. Two of
+its suggestions were already done; the valuable ones were relative-velocity
+drag and vortex shedding.
+
+**Aerodynamic drag (`kClothAero`).** The wind had been a *prescribed force
+field* — a function of position and time with no node velocity anywhere. The
+string could be pushed but never push back, which is the root cause of the
+entire flap-limiter saga (four separate bug reports). Replaced with a
+transverse wind **velocity** field and force from relative velocity:
+
+```
+v_rel = W_i − v_i ;  F_i = ρCd · |v_rel|·v_rel / (1 + s_i²)
+```
+
+Added as a **new force model** so `kFlagpoleWind` and all six existing
+scenarios stayed byte-identical — deliberate, because this made the system
+nonlinear and a linear system cross-validates trivially where a nonlinear one
+may not. Flap limiter retired.
+
+> **Correction on record:** I claimed drag would be a hard amplitude bound. It
+> is not — peak grows ~`wind_speed^1.4` with no ceiling. The saturation lives
+> in `aero_rho_cd` (33× more drag only doubles amplitude). The effect is
+> *compressive*, not limiting.
+
+Side effect worth keeping: **damping became nearly decoupled** from flap
+amplitude — a 100× damping change moves peak only 0.84 → 0.50 — because drag
+now dominates dissipation.
+
+**Tilt blocker.** Owner reported a slow low→high sway that outlived the
+string. Ruled the Leveler out by inspection (output-wide gain cannot make a
+spectral tilt). The cause was **mode 1** — a linear tilt — which has the same
+pathology the DC blocker was built for: tension is blind to a linear ramp.
+Measured on an asymmetric deposit: tilt starts at **38× the amplitude of all
+other modes combined**, every other mode is gone in 2–3 s, tilt still rings
+past 10 s at 0.6–0.9 Hz and barely responds to Stiffness. Under wind it was
+consuming **0.947 of the ±1 span**. Removing the least-squares linear trend
+each tick fixed it, and incidentally resolved a Waves/Force overshoot.
+
+**Leveler.** Found a 6 dB error: `target = 0.0625` was commented as
+"(−18 dBFS)²" but 0.0625 is (−12 dBFS)². Fed exactly −18 dBFS the stage
+applied **+5.9 dB**. Also widened the range ±6 → ±12 dB and documented that
+`amount = 0` is **not** a bypass (the peak limiter is unconditional).
+
+**Vortex shedding ("Flutter").** A van der Pol wake oscillator per node — a
+genuine limit cycle, so the acceptance test was motion with the gusts **off
+entirely**. Passes. This is also what lets a *drawn deposit* keep moving.
+
+**Wave direction.** Owner reported waves travelling inward. My first
+measurement used `argmax(|cross-correlation|)`, which lets anti-correlation
+masquerade as a delay and reported the **exact inverse**. Built a 2-D
+spatio-temporal FFT metric and **validated it on synthetic waves of known
+direction** first — which caught that *it* had the k-sign convention backwards
+too. Verdict: gusts 0.621 outward (correct), flutter **0.203 inward**.
+
+Root cause: a **frequency gradient cannot set a travel direction**, because it
+makes a phase ramp that steepens with time. Fixed by exploiting that van der
+Pol is **neutral in phase** — identical autonomous oscillators keep whatever
+phase relationship they start with — so the bank is *seeded* with an outward
+ramp. Direction is then correct by construction. 0.70–0.88 outward everywhere.
+
+### Phase 3 — Performance
+
+Owner reported dropouts in high precision with wind, at ~6.5% total CPU.
+
+**The 6.5% was the misleading part.** The machine has 16 logical processors,
+so that is **1.04 of a single core**, and an audio callback runs on one
+thread. Measured per-stage as a fraction of one core: at 512 nodes the sim
+with wind was **86.1%** and the bank 11.5% — **101.4% total**, a guaranteed
+dropout. Wind-off totalled 25%, which is why it only glitched with wind.
+
+Cause: the gust field evaluated **8 `sin()` per node per tick** — 98 million
+per second. Fixed by expanding `sin(a−b)` and tabulating the time-invariant
+spatial part, making the per-tick cost **8 sin + 8 cos total, independent of
+node count**. 86.1% → 25.9%. **All CSV baselines stayed byte-identical** — the
+rewrite is numerically indistinguishable at 6 decimals.
+
+Also fixed a **priority inversion**: `publish_display()` took a *blocking*
+spinlock the editor also holds, so the audio thread could spin on a
+lower-priority GUI thread. Now `tryEnter()` and bail.
+
+Added `bench` (`src/bench_main.cpp`, takes a sample rate). **96 kHz roughly
+doubles everything** — 512 nodes ≈ 85% of a core.
+
+### Phase 4 — Features and UI
+
+**Wrinkle** — tip-localized fine detail. Two cheaper designs failed first, for
+a quantitative reason worth remembering: at those wavenumbers the tension term
+`c²k²` is ~1944 against a stiffness of ~2, so short waves are suppressed
+~1000× and **can only be excited on resonance**, which is a few percent wide.
+Locking the phase velocity to the *tip* wave speed `c·2^(taper/2)` works.
+Counterintuitively, **finer wavenumber sets are less effective**.
+
+**UI rework** — grouped panels (GLOBAL / STRING / CLOTH & WIND, the last
+dimming outside Flagpole), five colour themes, glow rendering, custom rotary.
+
+> **Bug found only by screenshotting:** `CurvesTheme` has 15 colour fields but
+> every literal supplied **14**. C++ aggregate initialization silently shifted
+> every later field and zero-initialized the last — and **a zero `juce::Colour`
+> is fully transparent, not black**. Every piece of `text_dim` text rendered
+> invisibly while the geometry was correct. Compiled without a warning. Guarded
+> with a `jassert` now.
+
+### Phase 5 — Knob orthogonalization
+
+Owner asked whether knobs feeding the same thing could be simplified. The
+diagnosis: **seven knobs landed on "amount"**.
+
+**Flutter Hz** swung amplitude ~130×. The response shape is approximately
+**universal in `f/f0`** (`f0 = c/span`), so one normalized table adapts to
+Tension, node count and window automatically. Working band 0.3–8 Hz:
+**23× → 2.03×**, with the default setting unchanged.
+
+**Waves** was measured and **deliberately left alone** at the time (1.50×
+swing, non-monotonic) — a fix would have been machinery for nothing.
+
+**Motion + Character replaced Force + Flutter.** The two sources add roughly
+linearly in peak (10.6% error) and each has a clean power law, so the source
+dials are *solved for* rather than set. Spread across Character fell from
+**2.46×** to 1.06×/1.11×/1.38× by precision, with nothing clamping.
+
+**Per-knob modifiers** — power and magnitude LEDs, stored as UI state rather
+than 38 extra AudioParameters. Plus **RESET**, which flattens the string and
+leaves every modifier running.
+
+**Then four reported bugs, all reproduced:**
+
+1. *"Everything off and the string still drifts."* My own blanket rule
+   "power off = the knob's minimum" was wrong: Character's minimum is **all
+   gust wind**, Wind's is the *slowest* rate, Waves' is the *most stretched*
+   pattern. "Everything off" meant "full wind, slowest, largest" — measured at
+   0.084 peak, **0.091 Hz, an 11-second period**. Replaced with per-knob power
+   modes (`kPowerToMin` / `kPowerGate` / `kPowerNone`).
+2. *"Wind off also turns off wrinkle."* True — wrinkle was scaled by
+   `wind_speed`. Gave it its own reference.
+3. *"Velocity does nothing."* Measured **3.4%** of rms displacement at full;
+   the `1/Tension` divisor was ~30× too large. Made it a **blend** rather than
+   a sum, because an additive form at the corrected scale would have gone
+   straight through the ±1 clamp.
+4. *"Length only reduces to ~80%."* Worse than reported — measured, Length
+   0.60 still left **99% of the string moving**. The "near-rigid tail" was
+   never a wall, because the DC and tilt blockers subtract a **global** mean
+   and trend from every node. Replaced with **hard walls** and windowed the
+   blockers. Outside the window is now exactly **0.00e+00**.
+
+> **Hypothesis I got wrong and the measurement rejected:** I expected the
+> lighter tip (4× via the taper) to damp faster with wind off and look pinned.
+> Measured tip/pole decay ratio ≈ 1.0. The real cause was a `last_length_`
+> state desync across `apply_physics`.
+
+---
+
+## Measurements worth not re-deriving
+
+**Cost, % of one core @48 kHz** (`bench.exe [rate]`; ×2 at 96 kHz):
+
+| nodes | sim (wind+flutter) | bank | total |
+|---|---|---|---|
+| 128 | 3.8 | 3.1 | **6.9** |
+| 256 | 15.9 | 5.9 | **21.7** |
+| 512 | 30.8 | 12.2 | **43.0** |
+
+**Motion budget** — source power laws and calibration:
+
+```
+wind: peak = 0.8720 · dial^1.679   (3.7% err)
+shed: peak = 1.2756 · dial^0.707   (1.8% err)
+kMotionPeak = 0.85 ;  dial ceiling 2.0 (High magnitude over-drives)
+kNodeWindGain = {1.590, 1.031, 0.913}   per precision
+kNodeShedGain = {2.796, 0.978, 1.099}
+kMixBoost     = 3×4 table (incoherent sources under-add)
+```
+
+**Flutter Hz** — peak-normalized response vs `f/f0`:
+
+| f/f0 | 0.15 | 0.30 | 0.50 | 0.75 | 1.00 | 1.50 | 2.50 | 4.00 | 7.00 | 12.0 | 25.0 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| R | 0.23 | 0.43 | 0.75 | 0.93 | 1.00 | 0.93 | 0.63 | 0.34 | 0.117 | 0.043 | 0.010 |
+
+**Waves** — spatial centroid vs density (reverses past ~8):
+
+| density | 0.5 | 1.5 | 3.0 | 5.0 | 8.0 | 12.0 |
+|---|---|---|---|---|---|---|
+| centroid | 1.03 | 1.21 | 1.38 | 1.50 | 1.63 | 1.38 |
+| peak | 0.70 | 0.74 | 0.60 | 0.41 | 0.30 | 0.21 |
+
+**Velocity** — `|v|/|u| ≈ 10` at Tension 300. Blend with `kVelScale = 30`
+holds rms 0.074–0.107, peak 0.54–0.85, **0% clamping** across the dial.
+
+**Wrinkle** — envelope `d^2.8` (reach 56.1% of the cloth, 1.28× the old
+`d^4`); amplitude `3.9·knob`; tip/pole detail ratio 6.20× in-scenario. Still
+**outside the excitation budget**: ×1.57 peak at Character 0.
+
+---
+
+## Method notes
+
+- **Measure before fixing.** Three hypotheses were wrong this session (drag as
+  a hard limiter; tip-damping as the "anchor"; the Leveler as the sway) and
+  measurement caught all three before any code was written for them.
+- **Validate a metric on a known signal first.** The direction metric was
+  wrong twice — once from `abs()`, once from a sign convention — and synthetic
+  waves caught both.
+- **Trust the CSV cross-diff, not a printed statistic.** The bit-exact
+  tripwire once fired on a *reporting* bug (a loop excluding the end node,
+  plus pairwise vs sequential summation) while the sims were identical.
+- **A visual change needs looking at.** The build was clean and the layout
+  maths right while the UI was substantially broken.
+- **Windows UI automation, hard-won:**
+  - Screenshots: `PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT)`, *not* a screen
+    grab — a screen grab catches whatever window is in front.
+  - Synthetic clicks: need `AttachThreadInput` before `SetForegroundWindow`,
+    or Windows silently refuses and every click is dropped.
+  - Synthetic drags: `SetCursorPos` with a button held does **not** generate
+    the move messages JUCE tracks. Use absolute `mouse_event` moves.
+  - Scripts live in the session scratchpad (`shot2.ps1`, `click2.ps1`,
+    `drag2.ps1`).
+
+---
+
+## Open threads
+
+**Needs the owner's ears** — nothing here can be settled by measurement:
+
+1. **M2 feel gate** — Flagpole "physical, not animated", zipper-free. Still
+   the formal milestone exit.
+2. **Magnitude multipliers `{0.5, 1.0, 2.0}`** are a guess, not a measurement.
+   Medium is calibrated; Low and High are untested by ear.
+3. **Wall drag** verified only by click-to-position; drag could not be driven
+   synthetically.
+4. **Range dB default 18** gives a 36 dB peak-to-trough span. Probably hot;
+   set it before tuning physics.
+
+**Known defects / deliberate debts:**
+
+5. **Wrinkle is outside the excitation budget** (×1.57 at Character 0) — the
+   last piece of the Motion/Character work.
+6. **Whip termination within the window was lost** with the Length knob;
+   `cloth_length` is pinned at 1 inside the walls. May want it back as its own
+   control.
+7. **Stiffness is weaker than its range** now that DC and tilt are blocked.
+8. **Physics modes 2 and 3 are thin** — knob values plus, for Gust, a static
+   field. Candidates for presets, freeing Physics to be a real mode switch.
+9. **Per-node Q is unimplemented** — `Q = 1.0` fixed, despite being a recorded
+   architectural decision.
+10. **Precision rebuild allocates on the audio thread.**
+11. **CLAP is never auto-deployed** — no copy step; it only exists under
+    `build/Curves_artefacts/Release/CLAP/`.
+12. **Three stepped parameters are rotaries** (Physics, Precision, Direction).
+
+**Next up, per the owner:** a knob-by-knob tuning pass, now that the controls
+are orthogonal enough for it to measure something real.
+
+---
+
+## Housekeeping
+
+- `prototype/cpp_*.csv` are regenerated by every `scenarios.exe` run, so they
+  show as modified after each validation pass. Useful as a tripwire, noisy
+  otherwise.
+- Reaper holds the VST3 open; the auto-copy fails with "Permission denied"
+  while it is running. Close Reaper, rebuild, rescan.
+- `ORCHESTRATION.md` changelog entries from several commits cite a stale
+  validation cell count. 73,856 is current.

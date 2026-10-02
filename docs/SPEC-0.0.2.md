@@ -2,7 +2,8 @@
 
 **Status: current.** Supersedes `SPEC-0.0.1.md`, which is kept for history.
 
-An exhaustive knob-by-knob reference. For every control it states:
+An exhaustive knob-by-knob reference covering all **20 parameters** across
+**19 controls** (the two Walls share one entry). For every control it states:
 
 1. **Assigned parameters** — the exact engine variables it writes.
 2. **What it does** — the effect, in plain language.
@@ -12,8 +13,11 @@ An exhaustive knob-by-knob reference. For every control it states:
 Consuming functions are defined once in §2 and referenced by tag (**F1**…
 **F12**) so each knob entry stays short without being vague.
 
-Verified against source on 2026-10-02. Where this document and the code
-disagree, the code is the truth and this document is a bug.
+Verified against source on 2026-10-02 at commit `08416ab`. Where this
+document and the code disagree, the code is the truth and this document is a
+bug.
+
+**Session history, measurements and open threads:** `SESSION-LOG.md`.
 
 ---
 
@@ -28,7 +32,7 @@ disagree, the code is the truth and this document is a bug.
 | `W_i` | transverse wind **velocity** at node `i` |
 | `dt` | sim tick period = `divisor / fs` |
 | `c` | wave speed (`Tension`), `c² = c2_` |
-| `span` | `(N−1) · Length` — the cloth's length in nodes |
+| `span` | `(N−1) · (wall_hi − wall_lo)` — the active window, in nodes |
 | `p_i` | distance of node `i` from the anchored pole, in nodes |
 | `d_i` | `p_i / span`, clamped to 0…1 |
 | `f0` | string fundamental ≈ `c / span`, in Hz |
@@ -160,7 +164,7 @@ van der Pol is an attractor in amplitude but **neutral in phase**, so
 identical autonomous oscillators keep whatever phase relationship they start
 with — travel direction is therefore correct *by construction* rather than
 emerging from a coupling gain. `preserve_amplitude` keeps each oscillator's
-current magnitude, so moving Length or Direction re-aims the travel without
+current magnitude, so moving a Wall or Direction re-aims the travel without
 restarting the flutter from silence.
 
 ### F6 · `rebuild_gust_tables()`
@@ -269,7 +273,7 @@ was really "full wind, slowest, largest".
 |---|---|---|
 | `kPowerToMin` | Motion, Steady, Velocity, Wrinkle, Leveler, Stiffness, Smoothing, Range dB, Damping | the knob's minimum — genuinely neutral for these (Motion 0, Steady 0, Smoothing 2 ms, Range 3 dB, Damping 0.05) |
 | `kPowerGate` | **Wind**, **Flutter Hz** | the whole **mechanism** is silenced, not the value: Wind zeroes the gust field, Flutter Hz zeroes shedding |
-| `kPowerNone` | Character, Waves, Tension, Length | **no power LED** — "off" is meaningless for a balance, a scale or a geometry |
+| `kPowerNone` | Character, Waves, Tension | **no power LED** — "off" is meaningless for a balance or a scale |
 
 So **Wind power off is the way to turn the gusts off**, and Flutter Hz power
 off silences shedding; between them, plus Motion, every excitation source has
@@ -650,7 +654,7 @@ exists here.
 **Mapping function.**
 
 ```
-f0   = Tension / span,   span = (N−1)·Length
+f0   = Tension / span,   span = (N−1)·(wall_hi − wall_lo)
 comp = clamp( 0.213 / R(f/f0), 0.25, 8.0 )
 
 R = peak-normalized response, log-interpolated over f/f0:
@@ -662,7 +666,8 @@ Raw, this dial swung amplitude **~130×**: the shedding drives the string's
 fundamental resonantly near `f0`, and above that the string's own mass and
 tension lowpass it away. The response shape is approximately **universal in
 `f/f0`** (three of four tested configurations agree within 0.19), so one
-table adapts to Tension, node count and Length automatically. `0.213` is `R`
+table adapts to Tension, node count and the wall window automatically.
+`0.213` is `R`
 at the default operating point, so the default setting is **unchanged**.
 
 **Functions.** → **F3c** (`ω = 2π·shed_freq_hz`), and `shed_gain` → **F3c**.
@@ -815,7 +820,7 @@ knobs can fight.
 | Engine parameter | Written by | Status |
 |---|---|---|
 | `wind_speed` | Motion, Character, Tension, Precision | budgeted — Motion is the only *amount* |
-| `shed_gain` | Motion, Character, Flutter Hz, Tension, Length, Precision | budgeted + rate-compensated |
+| `shed_gain` | Motion, Character, Flutter Hz, Tension, Walls, Precision | budgeted + rate-compensated |
 | `wrinkle` | Wrinkle | **unbudgeted, adds on top** |
 | `c2_` | Tension | — |
 | `damping_` | Damping | — |
