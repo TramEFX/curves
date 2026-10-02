@@ -18,9 +18,9 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `79e02fe` |
+| Head | `bc87114` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
-| Parameters | 20, across 19 controls |
+| Parameters | 21, across 20 controls |
 | Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
 | Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
@@ -468,6 +468,51 @@ defaults to 0 so they stay byte-identical by construction, which proves
 nothing about the new code. Added a `mid` scenario to *both* engines; they
 report mid-third curvature **948.902818** and peak **0.602248** to the digit.
 Validation is now **11 scenarios, 104,576 cells, 0 mismatches**.
+
+### Mid-band reach, Wind-driven travel, and three UI items
+
+**Reach.** The mid ripples faded out over the last fifth, because the
+envelope peak and the resonance lock sit at the same place by construction
+and both were at mid-cloth. Lock moved to `d = 0.65`, envelope exponent
+2.0 → 1.4, amount trimmed 1.5 → 1.2 to pay for it. Tip-fifth curvature
+**6870 → 11120**.
+
+**Travel.** Asked for Wind to make the ripples run faster down the string.
+The honest constraint is that they are *resonant* — that is why they are
+excitable at all — so their natural speed is the string's own wave speed.
+But the resonance turned out broad enough to detune usefully:
+
+| travel | 0.35 | 0.50 | 0.65 | 0.80 | **1.00** | 1.20 | 1.45 | 1.80 | 2.40 |
+|---|---|---|---|---|---|---|---|---|---|
+| R | 0.286 | 0.346 | 0.476 | 0.794 | **1.000** | 0.593 | 0.286 | 0.166 | 0.114 |
+
+Asymmetric — a slower forcing still pushes quasi-statically, a faster one
+outruns the string. Wind maps to 0.55–1.25 (2.3×) with R compensated out,
+the same shape of fix as `flutter_rate_compensation`.
+
+> **The compensation nearly shipped a bug, and the catch is the lesson.**
+> That table measures **detail** (curvature), but a slow-travelling forcing
+> makes large *displacement* while making little detail. Compensating detail
+> fully drove peak to **1.98×** the no-mid baseline at Wind 0 — straight at
+> the ±1 clamp. Caught only because the shipped mapping was measured
+> end-to-end rather than assumed from the component tables. Clamp `[0.80,
+> 1.25]` holds peak ≤ **1.28×** everywhere while still roughly doubling
+> low-Wind detail against no compensation. **A compensation table is only
+> valid for the quantity it was measured on.**
+
+**Also:** glow and area fill removed from the plot (one bright line = applied
+EQ, one faint = the string; knob arcs keep their glow). **Mix** added — 21
+parameters now — dry/wet after the bank and *before* the Leveler, so the
+Leveler trims what is actually heard. CLOTH & WIND reordered to Motion /
+Wind / Character / Flutter Hz. GLOBAL had to go to one row of **8**: at 7 the
+new knob wrapped Test Noise out of the panel height and clipped it, found by
+screenshotting.
+
+**Validation note.** `mid_lock_d` / `mid_env` / `mid_travel` were mirrored in
+Python, and the `mid` scenario in *both* engines was repointed at the
+**shipped** shape. The new envelope formula reduces exactly to the old one at
+the default values, so the baselines held — which meant validation would
+otherwise have passed while covering a configuration the plugin never uses.
 
 ---
 

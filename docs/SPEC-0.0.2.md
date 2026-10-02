@@ -2,8 +2,8 @@
 
 **Status: current.** Supersedes `SPEC-0.0.1.md`, which is kept for history.
 
-An exhaustive knob-by-knob reference covering all **20 parameters** across
-**19 controls** (the two Walls share one entry). For every control it states:
+An exhaustive knob-by-knob reference covering all **21 parameters** across
+**20 controls** (the two Walls share one entry). For every control it states:
 
 1. **Assigned parameters** — the exact engine variables it writes.
 2. **What it does** — the effect, in plain language.
@@ -130,12 +130,12 @@ gust sites (1.7–6 waves across the cloth) and wrinkle (25–64):
 
 ```
 W_i += wind_speed · mid_ripple · (1/4) Σ_j [ sin(μ_j)·MC_j,i − cos(μ_j)·MS_j,i ]
-μ_j += mid_k_j · c_mid · dt,     c_mid = c · 2^(taper/4)
+μ_j += mid_k_j · c_mid · dt,  c_mid = c · 2^(taper·mid_lock_d/2) · mid_travel
 mid_k_j = 2π · mid_waves · kMidK_j / span,   kMidK = {0.72, 1.0, 1.37, 1.9}
 ```
 
-Tables bake in a **raised-cosine bump** envelope `0.5(1 − cos 2πd)`, centred
-at `d = 0.5` — which is exactly where the `c·2^(taper/4)` phase lock is
+Tables bake in a `sin(π·dd)^1.4` bump envelope whose peak is warped to sit at
+`mid_lock_d = 0.65` — which is exactly where the `c·2^(taper/4)` phase lock is
 resonant. Wrinkle sits at the tip, this sits in the middle, the gust spans
 the lot. `mid_waves` is an **absolute** wave count, deliberately *not* scaled
 by `wave_density`, so Waves keeps owning the gust pattern alone. Skipped
@@ -533,7 +533,28 @@ on varying material; that is inherent to any auto-trim.
 
 ---
 
-#### 7 · Test Noise  `test`
+#### 7 · Mix  `mix`
+**0…1 · default 1.0 · Global**
+
+| Assigns | `mix_amount_`, applied in the per-sample loop |
+|---|---|
+
+**What it does.** Dry/wet. `1` is fully processed, `0` is bypass.
+
+```
+out = dry + Mix·(wet − dry)      then → F9
+```
+
+**Interactions.** Sits **after the bank and before the Leveler**, so the
+Leveler trims what you actually hear rather than the wet path alone. Its
+minimum is genuinely neutral, so it takes the standard `kPowerToMin` power
+mode. **The curve does not dim with it** — the display still shows the EQ the
+bank is applying, which is what the wet path does; at Mix 0.5 you are hearing
+half of it.
+
+---
+
+#### 8 · Test Noise  `test`
 **0…1 · default 0 · Global**
 
 | Assigns | `test_on = (value > 0.5)` |
@@ -549,7 +570,7 @@ no audio wiring.
 
 ---
 
-#### 8 · Damping  `damping`
+#### 9 · Damping  `damping`
 **0.05…18 /s · default 1.5 · String**
 
 | Assigns | `sim_->damping_` via `set_damping()` |
@@ -569,7 +590,7 @@ dominates dissipation. It still governs how a *deposit* settles. The old
 
 ---
 
-#### 9 · Stiffness  `stiffness`
+#### 10 · Stiffness  `stiffness`
 **0…20 /s² · default 4 · String**
 
 | Assigns | `sim_->stiffness_` via `set_stiffness()` |
@@ -589,7 +610,7 @@ prime candidate for rescaling.
 
 ---
 
-#### 10 · Tension  `tension`
+#### 11 · Tension  `tension`
 **50…600 nodes/s · default 300 · String**
 
 | Assigns | Used by |
@@ -648,7 +669,7 @@ curvature response, wrinkle tuning and settling together. Tune it early.
 
 ---
 
-#### 11 · Velocity  `velocity`
+#### 12 · Velocity  `velocity`
 **0…1 · default 0 · String**
 
 | Assigns | `vel_amt` in **F7** |
@@ -684,7 +705,7 @@ Velocity 0.5 is `u` and `v` being roughly 90° out of phase.
 
 ---
 
-#### 12 · Motion  `motion`
+#### 13 · Motion  `motion`
 **0…1 · default 0.45 · Cloth**
 
 | Assigns | Via |
@@ -734,7 +755,7 @@ rate, scale or geometry.
 
 ---
 
-#### 13 · Character  `character`
+#### 14 · Character  `character`
 **0…1 · default 0.0 · Cloth**
 
 | Assigns | The split of `target_peak` between `wind_speed` and `shed_gain` |
@@ -758,7 +779,7 @@ knowledge behind it.
 
 ---
 
-#### 14 · Wind  `wind`
+#### 15 · Wind  `wind`
 **0…1 · default 0.50 · Cloth**
 
 | Assigns | `sim_->wind_phase_speed = 0.12·25^Wind · Tension` nodes/s |
@@ -795,11 +816,34 @@ by `f0`.
 motion frequency by 4%, because drag dominates dissipation (ruled out by
 measurement before the re-range).
 
-**Mid-band ripples ride this knob (added 2026-10-02).** Wind also sets the
-**size** of a mid-wavenumber ripple set, 6 → 20 waves across the cloth
-(`sim_->mid_waves = 6·(20/6)^Wind`); the amount follows Motion through
-`wind_speed`, and Wind's power LED gates it because these are gusts. See
-**F3d**.
+**Mid-band ripples ride this knob (added 2026-10-02).** Wind sets two things
+about them, and nothing about their level:
+
+- **size** — `mid_waves = 6·(20/6)^Wind`, i.e. 6 → 20 waves across the cloth;
+- **travel speed** — `mid_travel = 0.55·(1.25/0.55)^Wind`, a 2.3× range.
+
+The amount follows Motion through `wind_speed`, and Wind's power LED gates
+them because they are gusts. See **F3d**.
+
+**Why travel is limited to 2.3×.** The ripples are *resonant* — that is the
+only reason they are excitable at all — so their natural travel speed is the
+string's own wave speed, and detuning away from it costs amplitude. Measured
+normalized response against the travel multiplier:
+
+| travel | 0.35 | 0.50 | 0.65 | 0.80 | **1.00** | 1.20 | 1.45 | 1.80 | 2.40 |
+|---|---|---|---|---|---|---|---|---|---|
+| R | 0.286 | 0.346 | 0.476 | 0.794 | **1.000** | 0.593 | 0.286 | 0.166 | 0.114 |
+
+Asymmetric: a *slower* forcing still pushes the string quasi-statically,
+while a faster one outruns it. `mid_resonance_compensation()` divides R out
+so Wind stays a speed control.
+
+**The compensation clamp is tight, deliberately.** That table measures
+**detail** (curvature), but a slow-travelling forcing produces large
+*displacement* while producing little detail — so compensating detail fully
+inflated peak to **1.98×** the no-mid baseline at Wind 0. `[0.80, 1.25]`
+holds peak to **≤ 1.28×** across the dial while still roughly doubling the
+low-Wind detail against no compensation.
 
 **Honest limitation.** Amplitude across the dial is still *non-monotonic*, and
 the per-node motion frequency does not rise cleanly with the knob at 512
@@ -809,7 +853,7 @@ should not be trusted for fine judgements; the peak figures are solid.
 
 ---
 
-#### 15 · Flutter Hz  `flutter_hz`
+#### 16 · Flutter Hz  `flutter_hz`
 **0.1…20 Hz · default 3.0 · Cloth**
 
 | Assigns | Value |
@@ -849,7 +893,7 @@ boost clamp binding, which is honest — very fast flutter genuinely is subtle.
 
 ---
 
-#### 16 · Waves  `waves`
+#### 17 · Waves  `waves`
 **0…1 · default 0.4 · Cloth**
 
 | Assigns | `sim_->wave_density = 0.5 + 4.5·Waves` |
@@ -881,7 +925,7 @@ compensated**: Motion is the amplitude control and absorbs it.
 
 ---
 
-#### 17 · Wrinkle  `wrinkle`
+#### 18 · Wrinkle  `wrinkle`
 **0…1 · default 0 · Cloth**
 
 | Assigns | `sim_->wrinkle = 3.9 · Wrinkle` |
@@ -925,7 +969,7 @@ essentially nothing for exactly this reason.
 
 ---
 
-#### 18 · Direction  `direction`
+#### 19 · Direction  `direction`
 **0/1 step 1 · default 0 · Cloth**
 
 | Assigns | `sim_->set_wind_origin(value > 0.5 ? 1 : 0)` |
@@ -942,7 +986,7 @@ direction flips with the geometry.
 
 ---
 
-#### 19 · Walls  `wall_lo` / `wall_hi`
+#### 20 · Walls  `wall_lo` / `wall_hi`
 **0…1 each · defaults 0.0 and 1.0 · dragged on the canvas, not knobs**
 
 | Assigns | `sim_->set_walls(lo, hi)` |
@@ -998,7 +1042,7 @@ knobs can fight.
 | `stiffness_` | Stiffness | — |
 | `wind_phase_speed` | Wind, **Tension** | normalized: the dial is a multiple of `c` |
 | `wave_density` | Waves | — |
-| `mid_waves`, `mid_ripple` | Wind, Motion | size from Wind, amount from Motion |
+| `mid_waves`, `mid_travel`, `mid_ripple` | Wind, Motion | size + travel from Wind, amount from Motion |
 | `shed_freq_hz` | Flutter Hz | — |
 | `wall_lo` / `wall_hi` | Walls (canvas) | hard; blockers windowed to match |
 | `wind_origin` | Direction | — |
@@ -1007,6 +1051,7 @@ knobs can fight.
 | `smooth_alpha_` (control one-pole) | Smoothing, Precision (tick rate) | — |
 | `bank_.steady_amount_` | Steady | — |
 | `leveler_.amount_` | Leveler | — |
+| `mix_amount_` | Mix | dry/wet, pre-Leveler |
 | `n_nodes_`, `sim_divisor_` | Precision | — |
 | *(all of the above)* | the per-knob **power / magnitude** modifiers | §2b |
 
