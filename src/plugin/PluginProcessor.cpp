@@ -12,6 +12,49 @@ double node_frequency(int i, int n, double f_min, double f_max) {
 }
 }  // namespace
 
+// ---- Flutter rate compensation ------------------------------------------
+// Flutter Hz was measured swinging amplitude ~50x across its range: the
+// shedding drives the string's fundamental resonantly near f0 = c/span, and
+// above that the string's own mass and tension lowpass it away. That made
+// the rate dial behave as much like a volume control as a rate control.
+//
+// The response shape is approximately UNIVERSAL in f/f0 (measured across
+// tension 150/300/600 and 256/512 nodes: three of four configurations agree
+// within 0.19 of each other once normalized, and the outlier deviates mostly
+// below the reachable dial range). So one normalized table, evaluated at
+// f/f0, adapts automatically to Tension, node count and cloth length.
+//
+// Table is peak-normalized response vs f/f0, log-interpolated.
+namespace {
+constexpr double kRateRatio[] = {0.15, 0.30, 0.50, 0.75, 1.00,
+                                 1.50, 2.50, 4.00, 7.00, 12.0, 25.0};
+constexpr double kRateResp[]  = {0.23, 0.43, 0.75, 0.93, 1.00,
+                                 0.93, 0.63, 0.34, 0.117, 0.043, 0.010};
+constexpr int kRateN = 11;
+// Response at the DEFAULT operating point (3 Hz, tension 300, 512 nodes ->
+// f/f0 = 5.11). Normalizing to this leaves the default feel untouched.
+constexpr double kRateRef = 0.213;
+// Boost is clamped: fully flattening the top would need ~100x, which is
+// forcing the string cannot use. 8x gets the working range flat and lets the
+// extreme top stay quiet, which is honest - fast flutter IS subtle.
+constexpr double kRateCompMin = 0.25, kRateCompMax = 8.0;
+
+double flutter_rate_compensation(double ratio) {
+    const double r = std::clamp(ratio, kRateRatio[0], kRateRatio[kRateN - 1]);
+    double resp = kRateResp[kRateN - 1];
+    for (int i = 0; i + 1 < kRateN; ++i) {
+        if (r > kRateRatio[i + 1])
+            continue;
+        const double t = std::log(r / kRateRatio[i]) /
+                         std::log(kRateRatio[i + 1] / kRateRatio[i]);
+        resp = std::exp(std::log(kRateResp[i]) +
+                        t * std::log(kRateResp[i + 1] / kRateResp[i]));
+        break;
+    }
+    return std::clamp(kRateRef / std::max(resp, 1e-9), kRateCompMin, kRateCompMax);
+}
+}  // namespace
+
 CurvesAudioProcessor::CurvesAudioProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -247,7 +290,18 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // 0.876 / 1.096. So the upper half of the dial will clamp when Force is
     // also up - the shared-budget characteristic noted above, now with more
     // room to push into deliberately.
-    sim_->shed_gain = 90.0 * flutter_->get();
+    // Flutter amount, with the rate dial's amplitude swing compensated out so
+    // Flutter Hz is a RATE control rather than a rate-and-volume control.
+    // f0 is the string's fundamental and moves with Tension, node count and
+    // cloth length, so it is computed live rather than baked in.
+    {
+        const double span = std::max(1.0, (n_nodes_ - 1.0) *
+                                              static_cast<double>(length_->get()));
+        const double f0 = std::max(1e-6, static_cast<double>(tension_->get()) / span);
+        const double comp = flutter_rate_compensation(
+            static_cast<double>(flutter_hz_->get()) / f0);
+        sim_->shed_gain = 90.0 * flutter_->get() * comp;
+    }
     // Wrinkle 0..1 -> 0..3. Measured tip/pole detail ratio 1.11 (off) ->
     // 1.45 at 1.5 -> 1.82 at 3.0, with the POLE end unchanged (0.83 ->
     // 0.87), i.e. the effect stays where it was asked for.

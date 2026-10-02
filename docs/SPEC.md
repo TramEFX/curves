@@ -521,27 +521,49 @@ Nominal wake shedding frequency, set directly in Hz because in Curves this
 derived from a Strouhal number — the x-axis is log-frequency, not space, so
 no real Strouhal number exists here.
 
-**Measured — and the dial does not compensate for this:** amplitude swings
-roughly **50×** across the range.
+**Rate–amplitude compensation (added 2026-10-02).** Raw, this dial swung
+amplitude ~130× across its range: the shedding drives the string's
+fundamental resonantly near `f0 = c/span`, and above that the string's own
+mass and tension lowpass it away. It behaved as much like a volume control
+as a rate control.
 
-| Rate | Relative peak |
-|---|---|
-| 0.1 Hz | 1.49 |
-| **0.45 Hz** | **4.35  ← resonance** |
-| 1 Hz | 2.99 |
-| 3 Hz | 0.88 |
-| 12 Hz | 0.08 |
-| 20 Hz | 0.03 |
+The response shape is approximately **universal in `f/f0`** — measured
+across tension 150/300/600 and 256/512 nodes, three of four configurations
+agree within 0.19 once peak-normalized, and the outlier deviates mostly
+below the reachable dial range. So a single normalized table, evaluated at
+`f/f0`, adapts automatically to Tension, node count and cloth length:
 
-The peak near 0.45 Hz is the shedding resonantly driving the string's
-fundamental (`ω = c·2π/span` lands about there). **Damping barely touches
-it** — 4.37 at damping 0.5 versus 3.48 at damping 12 — so it is not a
-damping problem to solve. Above ~12 Hz the string's own mass and tension
-lowpass it away.
+```
+f0   = Tension / span,   span = (N−1) · Length
+comp = clamp( kRef / R(f/f0), 0.25, 8.0 )
+shed_gain = 90 · Flutter · comp
+```
 
-**Tuning note:** this is the strongest candidate for gain compensation in
-the whole plugin. Left physical so far because the big slow flapping may be
-wanted; compensating it is a one-line change.
+`R` is the peak-normalized response table, log-interpolated; `kRef` is `R`
+at the default operating point so **the default setting is left untouched**
+(measured 0.877 → 0.876, i.e. no change to any tuning already done by ear).
+The 8× boost ceiling is deliberate — fully flattening the top would need
+~100×, which is forcing the string cannot use.
+
+Lives in the **plugin mapping layer**, not the engine, so the validated
+physics and every CSV baseline are untouched by it.
+
+**Measured, before → after:**
+
+| Rate | before | after | comp |
+|---|---|---|---|
+| 0.10 Hz | 0.96 | 0.78 | 0.83 |
+| 0.45 Hz | 3.98 | 0.99 | 0.25 |
+| 0.70 Hz | 3.76 | 1.36 | 0.25 |
+| 3.00 Hz | 0.88 | 0.88 | 1.00 |
+| 8.00 Hz | 0.17 | 0.71 | 6.38 |
+| 20.0 Hz | 0.03 | 0.20 | 8.00 |
+
+Full-range swing **133× → 6.8×**; across the working band 0.3–8 Hz,
+**23× → 2.03×**. The residual at the extremes is the boost clamp binding,
+which is honest: very fast flutter genuinely is subtle.
+
+---
 
 ---
 
@@ -552,8 +574,9 @@ knob-by-knob pass:
 
 1. **Shared amplitude budget** (Force + Flutter + Wrinkle). The biggest
    open question. Options: compensate, cap, or keep and document.
-2. **Flutter Hz behaves like a volume knob** — ~50× swing, resonant peak at
-   0.45 Hz.
+2. ~~**Flutter Hz behaves like a volume knob**~~ — **done 2026-10-02.**
+   Rate–amplitude compensation added in the plugin mapping; swing across the
+   working band 23× → 2.03×, default setting unchanged. See its entry above.
 3. **Range dB at 18** gives a 36 dB peak-to-trough span; likely too hot a
    default.
 4. **Stiffness feels weaker than its range** now that DC and tilt are
