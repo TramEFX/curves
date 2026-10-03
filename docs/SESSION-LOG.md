@@ -18,7 +18,7 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `722b3dc` |
+| Head | `2f3e954` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 22, across 21 controls |
 | Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
@@ -575,6 +575,34 @@ at 512 nodes. Latency is now constant and independent of the host.
 > `f0`. The pattern: when a knob "doesn't do much" or "does too much at every
 > setting", measure what *else* is acting on the same quantity before
 > touching the knob's range.
+
+### Which line am I hearing?
+
+**The bright one.** It is `FilterBank::gains()` — the gains the audio is
+going through. The faint line is raw `u`, a *control signal*, not the EQ.
+What separates them, measured at 512 nodes:
+
+| source | max | rms |
+|---|---|---|
+| Smoothing 2 ms (off) | 0.016 | 0.003 |
+| Smoothing 15 ms (default) | 0.081 | 0.013 |
+| Smoothing 100 ms (max) | 0.190 | 0.033 |
+| Steady 0.35, loud input | 0.036 | 0.006 |
+| **Velocity 0.5** | **0.400** | 0.066 |
+| **Velocity 1.0** | **0.812** | 0.133 |
+
+Only **Velocity** makes the faint line a different *shape* rather than a
+lagged copy — the bright line then follows a position/velocity blend while
+the faint stays pure position. That is what "a mutated version of it" looks
+like. Steady's share is content-dependent, so it moves with the material.
+
+> **A violation I introduced and did not notice.** Answering this turned up
+> that the curve ignored **Mix** entirely — at Mix 0.5 it drew the full EQ
+> depth while half was applied. Live for the few hours between Mix landing
+> and the question being asked. Folded in exactly: the bank emits
+> `x + Σ v1·big` and Mix scales only the added part, so the effective gain
+> is `1 + Mix·(g − 1)`. **Adding any new stage after the bank needs the same
+> check** — the anchor is only as good as the last thing bolted on.
 
 ---
 

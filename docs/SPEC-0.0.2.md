@@ -225,6 +225,25 @@ makes the knob independent of the host's buffer size.
 
 `G_i` is the block **target**; **F8** walks there.
 
+**The two drawn lines.** The **bright** line is `FilterBank::gains()` — the
+gains the audio is going through, and therefore what you hear. The **faint**
+line is `sim_->positions()`, raw `u`: a *control signal*, not the EQ. Four
+things separate them, measured at 512 nodes:
+
+| source of difference | max | rms |
+|---|---|---|
+| Smoothing 2 ms (off) | 0.016 | 0.003 |
+| Smoothing 15 ms (default) | 0.081 | 0.013 |
+| Smoothing 100 ms (max) | 0.190 | 0.033 |
+| Steady 0.35, loud input | 0.036 | 0.006 |
+| **Velocity 0.5** | **0.400** | 0.066 |
+| **Velocity 1.0** | **0.812** | 0.133 |
+
+Only **Velocity** makes the faint line a genuinely *different shape* rather
+than a lagged copy — above 0 the bright line follows a blend of position and
+velocity while the faint line stays pure position. Steady's contribution is
+content-dependent, so it moves with the material rather than the knobs.
+
 ### F8 · `FilterBank::process_frame(l, r, stereo)`
 
 The bank holds **no time constant of its own**. Given a block target it
@@ -557,9 +576,17 @@ out = dry + Mix·(wet − dry)      then → F9
 **Interactions.** Sits **after the bank and before the Leveler**, so the
 Leveler trims what you actually hear rather than the wet path alone. Its
 minimum is genuinely neutral, so it takes the standard `kPowerToMin` power
-mode. **The curve does not dim with it** — the display still shows the EQ the
-bank is applying, which is what the wet path does; at Mix 0.5 you are hearing
-half of it.
+mode.
+
+**The curve follows it, exactly** (fixed 2026-10-02 — it did not, for the
+few hours between Mix landing and this being noticed, which was a live
+WYSIWYG violation). The bank emits `x + Σ v1_b·big_b` and Mix scales only
+the added part, so the effective per-band gain is **exactly**
+`1 + Mix·(g − 1)`. For a band sitting at +18 dB:
+
+| Mix | 1.00 | 0.75 | 0.50 | 0.25 | 0.00 |
+|---|---|---|---|---|---|
+| applied | 18.00 dB | 15.86 | 13.01 | 8.74 | 0.00 |
 
 ---
 
