@@ -490,6 +490,50 @@ void scenario_mid(const fs::path& out) {
               << "   finite: " << (finite ? "yes" : "NO - BLEW UP") << "\n";
 }
 
+void scenario_random(const fs::path& out) {
+    std::cout << "scenario: random (seeded spread on both gust and wake)" << "\n";
+    StringParams p;
+    p.tick_rate = kTickRate;
+    p.wave_speed = 300.0;
+    p.damping = 1.2;
+    p.stiffness = 2.0;
+    const int kRN = 256;
+    StringSim sim(kRN, p);
+    sim.anchor_high = true;
+    sim.force_model = StringSim::kClothAero;
+    sim.set_cloth_aero(192.0 * kRN / 128.0, (double)kRN, 1.5);
+    sim.wind_speed = 25.0 * std::pow(128.0 / kRN, 0.25);
+    sim.aero_rho_cd = 0.6;
+    sim.set_density_taper(2.0);
+    sim.set_cloth_length(1.0);
+    sim.shed_gain = 30.0;
+    sim.shed_freq_hz = 3.0;
+    // the point of the scenario: both spreads non-zero, so the perturbed
+    // constant sets and the per-node wake frequencies are exercised in BOTH
+    // engines. At spread 0 this path is identical to the old one and the
+    // frozen baselines prove nothing about it.
+    sim.gust_spread = 0.7;
+    sim.gust_seed = 20260103;
+    sim.shed_spread = 0.6;
+    sim.shed_seed = 7;
+    std::vector<std::pair<double, std::vector<double>>> frames;
+    double peak = 0.0;
+    bool finite = true;
+    for (int s = 0; s < 6000; ++s) {
+        sim.tick();
+        if (s % 100 == 0) frames.emplace_back(s / kTickRate, sim.positions());
+        if (s / kTickRate < 2.0) continue;
+        const auto& u = sim.positions();
+        for (int i = 0; i < kRN; ++i) {
+            if (!std::isfinite(u[i])) finite = false;
+            peak = std::max(peak, std::abs(u[i]));
+        }
+    }
+    save_frames(out, "cpp_random", frames);
+    std::cout << "  late peak|u| " << peak
+              << "   finite: " << (finite ? "yes" : "NO - BLEW UP") << "\n";
+}
+
 int main(int argc, char** argv) {
     fs::path out = (argc > 1) ? fs::path(argv[1]) : fs::path("..") / "prototype";
     fs::create_directories(out);
@@ -505,6 +549,7 @@ int main(int argc, char** argv) {
     scenario_shed(out);
     scenario_wrinkle(out);
     scenario_mid(out);
+    scenario_random(out);
     std::cout << "done.\n";
     return 0;
 }

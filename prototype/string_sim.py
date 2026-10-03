@@ -117,6 +117,21 @@ class StringSim:
         # forced at the tip. env = bump + flap*d^2*(1-bump); flap = 0 is
         # exactly the old envelope.
         self.mid_flap = 0.0
+        # ---- randomisation (see src/string_sim.h) ----
+        # The wake bank and the gust field are built from FIXED constant
+        # sets. A spread perturbs those from a seed, so a new seed is
+        # different WEATHER rather than a different amount. spread = 0
+        # reproduces the constants exactly.
+        self.shed_spread = 0.0
+        self.shed_seed = 1
+        self.gust_spread = 0.0
+        self.gust_seed = 1
+        self._shed_amp = None
+        self._shed_jit = None
+        self._rnd_gust_spread = -1.0
+        self._rnd_gust_seed = -1
+        self._rnd_shed_spread = -1.0
+        self._rnd_shed_seed = -1
         self._mid_cos = None
         self._mid_sin = None
         self._mid_phase = np.zeros(4)
@@ -228,8 +243,10 @@ class StringSim:
         # spatial scales — rich, smooth-traveling wind detail.
         self._site_pos = np.array([0.12, 0.32, 0.52, 0.72, 0.9]) * (self.n - 1)
         self._site_phase = np.zeros(8)
-        self._site_mult = np.array([1.0, 0.787, 1.618, 1.264, 0.755, 1.414, 2.236, 0.9])
-        self._site_k = np.array([1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6])
+        self.SITE_MULT0 = np.array([1.0, 0.787, 1.618, 1.264, 0.755, 1.414, 2.236, 0.9])
+        self.SITE_K0 = np.array([1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6])
+        self._site_mult = self.SITE_MULT0.copy()
+        self._site_k = self.SITE_K0.copy()
         self._recompute_cloth()
 
     def is_wind_model(self):
@@ -249,8 +266,10 @@ class StringSim:
         self._wind_k = 2 * np.pi / max(8.0, wavelength_nodes)
         self._site_pos = np.array([0.08, 0.22, 0.38, 0.52, 0.66, 0.78, 0.88, 0.96]) * (self.n - 1)
         self._site_phase = np.zeros(8)
-        self._site_mult = np.array([1.0, 0.787, 1.618, 1.264, 0.755, 1.414, 2.236, 0.9])
-        self._site_k = np.array([1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6])
+        self.SITE_MULT0 = np.array([1.0, 0.787, 1.618, 1.264, 0.755, 1.414, 2.236, 0.9])
+        self.SITE_K0 = np.array([1.0, 1.21, 0.83, 1.55, 0.72, 2.05, 1.35, 2.6])
+        self._site_mult = self.SITE_MULT0.copy()
+        self._site_k = self.SITE_K0.copy()
         self._recompute_cloth()
 
     def set_walls(self, lo, hi):
@@ -337,6 +356,50 @@ class StringSim:
         # the explicit-integration stability guard is sized against.
         self._m_inv_max = max(1.0, float(np.max(minv)))
 
+    @staticmethod
+    def hash_pm1(seed, i):
+        """lowbias32, matching StringSim::hash_pm1 in C++ bit for bit."""
+        m = 0xFFFFFFFF
+        h = (int(seed) * 2654435761 + int(i) * 2246822519 + 0x9e3779b9) & m
+        h ^= h >> 16
+        h = (h * 0x7feb352d) & m
+        h ^= h >> 15
+        h = (h * 0x846ca68b) & m
+        h ^= h >> 16
+        return h * (2.0 / 4294967296.0) - 1.0
+
+    def rebuild_randomisation(self):
+        """Perturb the fixed constant sets from the seed. At spread 0 every
+        value equals its constant exactly, so the baselines are untouched."""
+        for s in range(8):
+            self._site_mult[s] = self.SITE_MULT0[s] * (
+                1.0 + self.gust_spread * 0.6 * self.hash_pm1(self.gust_seed, s))
+            self._site_k[s] = self.SITE_K0[s] * (
+                1.0 + self.gust_spread * 0.6 * self.hash_pm1(self.gust_seed, s + 64))
+        self._rnd_gust_spread = self.gust_spread
+        self._rnd_gust_seed = self.gust_seed
+        # Amplitude and a STATIC phase offset, never frequency: outward
+        # travel relies on the oscillators being identical, so a frequency
+        # spread steepens the ramp with time until the direction inverts
+        # (measured +0.269 -> -0.43). A static offset simply persists.
+        CP = 8
+        sa = (self.shed_seed + 977) & 0xFFFFFFFF
+        sj = (self.shed_seed + 5501) & 0xFFFFFFFF
+        ca = [self.hash_pm1(sa, c) for c in range(CP + 1)]
+        cj = [self.hash_pm1(sj, c) for c in range(CP + 1)]
+        self._shed_amp = np.ones(self.n)
+        self._shed_jit = np.zeros(self.n)
+        for i in range(self.n):
+            x = (i * CP / (self.n - 1)) if self.n > 1 else 0.0
+            c0 = min(CP - 1, int(x))
+            f = x - c0
+            self._shed_amp[i] = 1.0 + self.shed_spread * 0.55 * (
+                ca[c0] * (1.0 - f) + ca[c0 + 1] * f)
+            self._shed_jit[i] = self.shed_spread * 1.1 * (
+                cj[c0] * (1.0 - f) + cj[c0 + 1] * f)
+        self._rnd_shed_spread = self.shed_spread
+        self._rnd_shed_seed = self.shed_seed
+
     def rebuild_gust_tables(self):
         """Tabulate the time-invariant spatial part of the gust field. Cheap
         but not free (8*n sin + 8*n cos), so it runs only when the geometry
@@ -399,7 +462,9 @@ class StringSim:
             r = np.maximum(r, self.SHED_SEED)   # never seed below the seed
         else:
             r = np.full(self.n, self.SHED_SEED)
-        phi = -k * p
+        jit = self._shed_jit if (self._shed_jit is not None
+                                 and len(self._shed_jit) == self.n) else 0.0
+        phi = -k * p + jit
         self._q = r * np.cos(phi)
         self._qd = -r * w * np.sin(phi)
 
@@ -415,6 +480,14 @@ class StringSim:
             self._aero_vrel_max = 0.5 / denom if denom > 1e-12 else 1e9
         # wave_density is live (the Waves knob), so the tables follow it -
         # but only on change, never per tick.
+        if (self._rnd_gust_spread != self.gust_spread
+                or self._rnd_gust_seed != self.gust_seed
+                or self._rnd_shed_spread != self.shed_spread
+                or self._rnd_shed_seed != self.shed_seed
+                or self._shed_amp is None):
+            self.rebuild_randomisation()
+            self.seed_wake_phase(True)
+            self._tables_density = -1.0   # site wavenumbers moved
         if (self._site_cos is None or self._tables_density != self.wave_density
                 or self._tables_mid != self.mid_waves
                 or self._tables_mid_env != self.mid_env
@@ -478,13 +551,17 @@ class StringSim:
         # force. Skipped at shed_gain 0 so the frozen scenarios are
         # bit-identical and the stage costs nothing.
         if self.shed_gain != 0.0:
+            # per-node frequency: the randomiser spreads the wake bank so it
+            # is no longer one coherent oscillator. 1.0 everywhere at
+            # shed_spread 0, which keeps the frozen scenarios bit-identical.
             wi = 2 * np.pi * self.shed_freq_hz
             q, qd = self._q, self._qd
             qdd = (-self.shed_eps * wi * (q * q - 1.0) * qd
                    - wi * wi * q + self.shed_coupling * self.v)
             self._qd = qd + self.dt * qdd
             self._q = q + self.dt * self._qd
-            self.force[:] += self.shed_gain * self._q * self._wind_env
+            self.force[:] += (self.shed_gain * self._shed_amp
+                              * self._q * self._wind_env)
 
     def clear_forces(self):
         self.force[:] = 0.0

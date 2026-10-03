@@ -387,6 +387,42 @@ def scenario_mid():
     print(f"  late peak|u| {peak:.6f}   finite: {'yes' if np.all(np.isfinite(sim.u)) else 'NO - BLEW UP'}")
 
 
+def scenario_random():
+    """Seeded spread on both the gust sites and the wake bank. At spread 0
+    the randomiser is identity, so the frozen baselines say nothing about
+    this path -- it needs its own scenario in both engines."""
+    print("scenario: random (seeded spread on both gust and wake)")
+    RN = 256
+    sim = StringSim(n_nodes=RN, tick_rate=TICK_RATE,
+                    wave_speed=300.0, damping=1.2, stiffness=2.0)
+    sim.anchor_high = True
+    sim.force_model = 2
+    sim.set_cloth_aero(phase_velocity_nodes_s=192.0 * RN / 128.0,
+                       wavelength_nodes=float(RN), envelope_exponent=1.5)
+    sim.wind_speed = 25.0 * (128.0 / RN) ** 0.25
+    sim.aero_rho_cd = 0.6
+    sim.set_density_taper(2.0)
+    sim.set_cloth_length(1.0)
+    sim.shed_gain = 30.0
+    sim.shed_freq_hz = 3.0
+    sim.gust_spread = 0.7
+    sim.gust_seed = 20260103
+    sim.shed_spread = 0.6
+    sim.shed_seed = 7
+    frames = []
+    peak = 0.0
+    for s in range(6000):
+        sim.tick()
+        t = s * sim.dt
+        if s % 100 == 0:
+            frames.append((t, sim.u.copy()))
+        if t < 2.0:
+            continue
+        peak = max(peak, float(np.max(np.abs(sim.u))))
+    save_frames("random", frames)
+    print(f"  late peak|u| {peak:.6f}   finite: {'yes' if np.all(np.isfinite(sim.u)) else 'NO - BLEW UP'}")
+
+
 if __name__ == "__main__":
     scenario_pluck()
     scenario_flagpole()
@@ -399,4 +435,5 @@ if __name__ == "__main__":
     scenario_shed()
     scenario_wrinkle()
     scenario_mid()
+    scenario_random()
     print("done.")

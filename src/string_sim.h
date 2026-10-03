@@ -319,6 +319,39 @@ public:
     // most consistent across cloth lengths (shorter cloths are reflection-
     // limited by the near-rigid tail, which is physics, not a bug).
     double shed_waves_per_cloth = 1.5;
+
+    // ---- RANDOMISATION ---------------------------------------------------
+    // Both the wake bank and the gust field are built from FIXED constant
+    // sets (kSiteMult_, kSiteK_, one shared shed frequency). That is why
+    // they are perfectly repeatable and, given long enough, perfectly
+    // regular. A spread dial perturbs those constants from a seed, so a new
+    // seed is different WEATHER rather than a different amount.
+    //
+    // spread = 0 reproduces the fixed set exactly, so the frozen baselines
+    // are untouched and this costs nothing when unused.
+    // Wake spread perturbs AMPLITUDE and the seeded PHASE, never frequency.
+    // Frequency spread was tried and had to be abandoned: outward travel
+    // comes from a seeded phase ramp that survives only because the
+    // oscillators are identical (van der Pol is phase-neutral). Give them
+    // different frequencies and the ramp steepens with time until the
+    // direction INVERTS -- measured +0.269 flipping to -0.43 at any spread.
+    // That is the same failure the 2026-10-01 direction work already fixed
+    // once; a frequency gradient cannot set a travel direction.
+    // A static phase offset, by contrast, simply persists.
+    double shed_spread = 0.0;
+    int shed_seed = 1;
+    double gust_spread = 0.0;   // gust site rate + wavenumber spread
+    int gust_seed = 1;
+
+    // lowbias32, written so C++ and Python agree bit for bit (Python masks
+    // to 32 bits after each step). Returns [-1, 1).
+    static double hash_pm1(unsigned int seed, unsigned int i) {
+        unsigned int h = seed * 2654435761u + i * 2246822519u + 0x9e3779b9u;
+        h ^= h >> 16; h *= 0x7feb352du;
+        h ^= h >> 15; h *= 0x846ca68bu;
+        h ^= h >> 16;
+        return static_cast<double>(h) * (2.0 / 4294967296.0) - 1.0;
+    }
     // q = qd = 0 is an unstable fixed point of the van der Pol oscillator, so
     // a deterministic nonzero seed is required or it never starts.
     static constexpr double kShedSeed = 0.01;
@@ -425,6 +458,17 @@ private:
     double tables_mid_env_ = -1.0;
     double tables_mid_lock_ = -1.0;
     double tables_mid_flap_ = -1.0;
+    // Perturbed copies of the fixed site sets, rebuilt only when the spread
+    // or seed changes. Identical to the constants at spread 0.
+    double site_mult_[8] = {};
+    double site_kk_[8] = {};
+    double rnd_gust_spread_ = -1.0;
+    int rnd_gust_seed_ = -1;
+    std::vector<double> shed_amp_;   // per-node wake amplitude multiplier
+    std::vector<double> shed_jit_;   // per-node static phase offset, rad
+    double rnd_shed_spread_ = -1.0;
+    int rnd_shed_seed_ = -1;
+    void rebuild_randomisation();
     std::vector<double> q_, qd_;    // wake-oscillator state per node
     std::vector<double> cloth_d_;   // normalized distance from the pole (0..1)
     void recompute_cloth();

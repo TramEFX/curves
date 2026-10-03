@@ -76,6 +76,15 @@ public:
                    kTestTone, kTestPulse, kNumTestSrc };
     static const char* test_src_name(int i);
 
+    // Randomiser seeds. Deliberately NOT AudioParameters: a seed is not a
+    // continuous quantity to automate, and two more automation entries for
+    // something you click is noise. They ride in the state tree, so they
+    // still save with the preset.
+    int flutter_seed() const { return flutter_seed_; }
+    int wind_seed() const { return wind_seed_; }
+    void reroll_flutter_seed() { flutter_seed_ = next_seed(flutter_seed_); }
+    void reroll_wind_seed() { wind_seed_ = next_seed(wind_seed_); }
+
     int active_nodes() const { return n_nodes_; }
     // Effective Range dB: the knob AFTER its magnitude modifier, which is
     // what the audio path actually uses. The canvas labels its dB axis from
@@ -236,6 +245,16 @@ private:
     juce::AudioParameterFloat* drive_ = nullptr;     // max gain dB
     juce::AudioParameterFloat* mix_ = nullptr;       // dry/wet
     juce::AudioParameterFloat* flap_ = nullptr;      // mid-band tip drive
+    juce::AudioParameterFloat* flutter_rnd_ = nullptr;
+    juce::AudioParameterFloat* wind_rnd_ = nullptr;
+    std::atomic<int> flutter_seed_{1};
+    std::atomic<int> wind_seed_{1};
+    static int next_seed(int cur) {
+        // any step that visits a lot of distinct values; the hash does the
+        // actual scrambling, this only needs to not repeat quickly
+        return static_cast<int>((static_cast<unsigned>(cur) * 1664525u
+                                 + 1013904223u) & 0x7fffffffu);
+    }
     juce::AudioParameterFloat* steady_ = nullptr;    // per-band dynamic EQ depth
     juce::AudioParameterFloat* leveler_amt_ = nullptr; // output RMS trim depth
     juce::AudioParameterFloat* test_src_ = nullptr;  // internal pink noise

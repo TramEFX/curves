@@ -344,6 +344,12 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // envelope is zero there by construction, so without this the ripples
     // fade out over the last fifth -- they were never forced, not damped.
     addParameter(flap_ = new APF("flap", "Flap", R{0.0f, 1.0f}, 0.45f));
+    // Randomisers. 0 = the fixed constant sets, i.e. exactly the regular
+    // behaviour; turning one up perturbs those constants from its seed.
+    addParameter(wind_rnd_ = new APF("wind_rnd", "Wind Random",
+                                     R{0.0f, 1.0f}, 0.0f));
+    addParameter(flutter_rnd_ = new APF("flutter_rnd", "Flutter Random",
+                                        R{0.0f, 1.0f}, 0.0f));
 
     // Capture each modifiable knob's minimum; "off" resolves to it.
     for (int k = 0; k < kNumModKnobs; ++k) {
@@ -519,6 +525,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         sim_->mid_lock_d = kMidLockD;
         sim_->mid_env = kMidEnv;
         sim_->mid_flap = knob(kFlap, flap_->get());
+        sim_->gust_spread = wind_rnd_->get();
+        sim_->gust_seed = wind_seed_.load(std::memory_order_relaxed);
         // Wind also sets how fast the ripples RUN DOWN the string, with the
         // detuning loss compensated so it stays a speed control.
         const double travel =
@@ -612,6 +620,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // +30% amplitude on user request: 3.0 -> 3.9 at the top of the dial.
     sim_->wrinkle = 3.9 * knob(kWrinkle, wrinkle_->get());
     sim_->shed_freq_hz = knob(kFlutterHz, flutter_hz_->get());
+    sim_->shed_spread = flutter_rnd_->get();
+    sim_->shed_seed = flutter_seed_.load(std::memory_order_relaxed);
     // Smoothing is now a one-pole on disp at the sim tick rate. Both of
     // these used the RAW knob and so quietly ignored their own magnitude
     // modifiers; they take knob() like every other control now.
@@ -809,6 +819,8 @@ void CurvesAudioProcessor::getStateInformation(juce::MemoryBlock& dest) {
     for (int k = 0; k < kNumModKnobs; ++k)
         mods << (knob_mods_[k].on ? "1" : "0") << juce::String(knob_mods_[k].mag);
     tree.setProperty("knobMods", mods, nullptr);
+    tree.setProperty("flutterSeed", (int)flutter_seed_, nullptr);
+    tree.setProperty("windSeed", (int)wind_seed_, nullptr);
     if (auto xml = tree.createXml())
         copyXmlToBinary(*xml, dest);
 }
@@ -818,6 +830,10 @@ void CurvesAudioProcessor::setStateInformation(const void* data, int size) {
         if (auto tree = juce::ValueTree::fromXml(*xml); tree.isValid()) {
             if (tree.hasProperty("uiTheme"))
                 ui_theme_ = (int)tree.getProperty("uiTheme");
+            if (tree.hasProperty("flutterSeed"))
+                flutter_seed_ = (int)tree.getProperty("flutterSeed");
+            if (tree.hasProperty("windSeed"))
+                wind_seed_ = (int)tree.getProperty("windSeed");
             if (tree.hasProperty("knobMods")) {
                 const juce::String m = tree.getProperty("knobMods").toString();
                 for (int k = 0; k < kNumModKnobs && 2 * k + 1 < m.length(); ++k) {

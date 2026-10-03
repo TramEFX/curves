@@ -60,6 +60,31 @@ private:
     const CurvesTheme* theme_ = nullptr;
 };
 
+// A small dial that does two jobs: DRAG sets the randomisation amount,
+// a plain CLICK re-rolls the seed. Distinguished by drag distance, so a
+// click that happens to wobble a pixel still counts as a click.
+class SeedSlider : public juce::Slider {
+public:
+    std::function<void()> on_reroll;
+    void mouseDown(const juce::MouseEvent& e) override {
+        dragged_ = false;
+        juce::Slider::mouseDown(e);
+    }
+    void mouseDrag(const juce::MouseEvent& e) override {
+        if (e.getDistanceFromDragStart() > 3)
+            dragged_ = true;
+        juce::Slider::mouseDrag(e);
+    }
+    void mouseUp(const juce::MouseEvent& e) override {
+        juce::Slider::mouseUp(e);
+        if (!dragged_ && on_reroll)
+            on_reroll();
+    }
+
+private:
+    bool dragged_ = false;
+};
+
 class CurvesAudioProcessorEditor : public juce::AudioProcessorEditor,
                                    private juce::Timer,
                                    private juce::Slider::Listener {
@@ -136,6 +161,12 @@ private:
     bool dirty_ = false;
     int last_mode_ = -1;  // physics mode the cloth panel was last styled for
     Knob* test_knob_ = nullptr;   // Test Src, so its label can name the texture
+    // Randomisers: small dials parked on the top-right of Wind and Flutter Hz.
+    SeedSlider rnd_wind_, rnd_flutter_;
+    Knob* wind_knob_ = nullptr;
+    Knob* flutter_knob_ = nullptr;
+    juce::Rectangle<int> rnd_wind_box_, rnd_flutter_box_;
+    void setup_randomiser(SeedSlider&, const char* param_id, bool is_wind);
     int last_test_src_ = -1;
     // Wall being dragged on the canvas: -1 none, 0 low edge, 1 high edge.
     int dragging_wall_ = -1;

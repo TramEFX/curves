@@ -242,6 +242,47 @@ void StringSim::recompute_cloth() {
 // per tick into 8 sin + 8 cos per TICK plus multiply-adds per node. At 512
 // nodes and a 24 kHz tick that is 98 million sin() calls per second
 // removed - the measured cause of dropouts in high precision.
+// Perturb the fixed constant sets from the seed. At spread 0 every value
+// comes out exactly equal to its constant, which is what keeps the frozen
+// baselines byte-identical.
+void StringSim::rebuild_randomisation() {
+    for (int s = 0; s < 8; ++s) {
+        site_mult_[s] = kSiteMult_[s]
+                        * (1.0 + gust_spread * 0.6 * hash_pm1(gust_seed, s));
+        site_kk_[s] = kSiteK_[s]
+                      * (1.0 + gust_spread * 0.6 * hash_pm1(gust_seed, s + 64));
+    }
+    rnd_gust_spread_ = gust_spread;
+    rnd_gust_seed_ = gust_seed;
+
+    // Smooth, spatially correlated fields from eight seeded control points:
+    // one for amplitude, one for a STATIC phase offset. Neither touches
+    // frequency, so the phase relationships the ramp sets up persist.
+    shed_amp_.assign(n_, 1.0);
+    shed_jit_.assign(n_, 0.0);
+    constexpr int kCP = 8;
+    double ca[kCP + 1], cj[kCP + 1];
+    for (int c = 0; c <= kCP; ++c) {
+        ca[c] = hash_pm1(static_cast<unsigned>(shed_seed) + 977u,
+                         static_cast<unsigned>(c));
+        cj[c] = hash_pm1(static_cast<unsigned>(shed_seed) + 5501u,
+                         static_cast<unsigned>(c));
+    }
+    for (int i = 0; i < n_; ++i) {
+        const double x = (n_ > 1)
+                             ? static_cast<double>(i) * kCP / (n_ - 1)
+                             : 0.0;
+        const int c0 = std::min(kCP - 1, static_cast<int>(x));
+        const double f = x - c0;
+        shed_amp_[i] = 1.0 + shed_spread * 0.55
+                                 * (ca[c0] * (1.0 - f) + ca[c0 + 1] * f);
+        shed_jit_[i] = shed_spread * 1.1
+                       * (cj[c0] * (1.0 - f) + cj[c0 + 1] * f);
+    }
+    rnd_shed_spread_ = shed_spread;
+    rnd_shed_seed_ = shed_seed;
+}
+
 void StringSim::rebuild_gust_tables() {
     site_cos_.assign(static_cast<std::size_t>(n_) * 8, 0.0);
     site_sin_.assign(static_cast<std::size_t>(n_) * 8, 0.0);
@@ -250,7 +291,7 @@ void StringSim::rebuild_gust_tables() {
         const double p_i = low_pole ? static_cast<double>(i)
                                     : static_cast<double>(n_ - 1 - i);
         for (int s = 0; s < 8; ++s) {
-            const double k_s = wind_k_ * wave_density * kSiteK_[s];
+            const double k_s = wind_k_ * wave_density * site_kk_[s];
             site_cos_[static_cast<std::size_t>(i) * 8 + s] = std::cos(k_s * p_i);
             site_sin_[static_cast<std::size_t>(i) * 8 + s] = std::sin(k_s * p_i);
         }
@@ -340,7 +381,13 @@ void StringSim::seed_wake_phase(bool preserve_amplitude) {
             r = std::sqrt(qv * qv + qdv * qdv);
             if (r < kShedSeed) r = kShedSeed;   // never seed below the seed
         }
-        const double phi = -k * p;
+        // static phase offset from the randomiser. It persists rather than
+        // accumulating, because every oscillator still runs at the same
+        // frequency -- which is exactly why this is safe where a frequency
+        // spread was not.
+        const double jit = (static_cast<int>(shed_jit_.size()) == n_)
+                               ? shed_jit_[i] : 0.0;
+        const double phi = -k * p + jit;
         q_[i] = r * std::cos(phi);
         qd_[i] = -r * w * std::sin(phi);
     }
@@ -360,6 +407,13 @@ void StringSim::update_wind_forces() {
     }
     // wave_density is live (the Waves knob), so the tables follow it - but
     // only on change, never per tick.
+    if (rnd_gust_spread_ != gust_spread || rnd_gust_seed_ != gust_seed
+        || rnd_shed_spread_ != shed_spread || rnd_shed_seed_ != shed_seed
+        || static_cast<int>(shed_amp_.size()) != n_) {
+        rebuild_randomisation();
+        seed_wake_phase(true);   // the static jitter lives in the ramp
+        tables_density_ = -1.0;   // site wavenumbers moved; tables must follow
+    }
     if (tables_density_ != wave_density || tables_mid_ != mid_waves ||
         tables_mid_env_ != mid_env || tables_mid_lock_ != mid_lock_d ||
         tables_mid_flap_ != mid_flap ||
@@ -367,12 +421,12 @@ void StringSim::update_wind_forces() {
         rebuild_gust_tables();
 
     for (int s = 0; s < 8; ++s)
-        site_phase_[s] += wind_k_ * wind_phase_speed * kSiteMult_[s] * dt_;
+        site_phase_[s] += wind_k_ * wind_phase_speed * site_mult_[s] * dt_;
     // The entire time-varying part of the gust field: 16 transcendental
     // calls per tick, independent of node count.
     double sp[8], cp[8];
     for (int s = 0; s < 8; ++s) {
-        const double k_s = wind_k_ * wave_density * kSiteK_[s];
+        const double k_s = wind_k_ * wave_density * site_kk_[s];
         const double psi = site_phase_[s] + k_s * site_pos_[s];
         sp[s] = std::sin(psi);
         cp[s] = std::cos(psi);
@@ -448,7 +502,7 @@ void StringSim::update_wind_forces() {
                                - wi * wi * q + shed_coupling * v_[i];
             qd_[i] = qd + dt_ * qdd;
             q_[i] = q + dt_ * qd_[i];
-            f_[i] += shed_gain * q_[i] * wind_env_[i];
+            f_[i] += shed_gain * shed_amp_[i] * q_[i] * wind_env_[i];
         }
     }
 }

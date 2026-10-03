@@ -93,6 +93,9 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     : AudioProcessorEditor(p), processor_(p) {
     theme_index_ = processor_.ui_theme();
     setSize(1000, 700);
+    setup_randomiser(rnd_wind_, "wind_rnd", true);
+    setup_randomiser(rnd_flutter_, "flutter_rnd", false);
+
     active_count_ = processor_.active_nodes();
     startTimerHz(30);
 
@@ -147,9 +150,15 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
             addAndMakeVisible(knob->slider);
             addAndMakeVisible(knob->label);
             const bool is_test = (rp->paramID == "test");
+            const bool is_wind = (rp->paramID == "wind");
+            const bool is_flut = (rp->paramID == "flutter_hz");
             knobs_.push_back(std::move(knob));
             if (is_test)
                 test_knob_ = knobs_.back().get();
+            if (is_wind)
+                wind_knob_ = knobs_.back().get();
+            if (is_flut)
+                flutter_knob_ = knobs_.back().get();
             break;
         }
     }
@@ -171,6 +180,8 @@ CurvesAudioProcessorEditor::~CurvesAudioProcessorEditor() {
     // Sliders must not outlive the LookAndFeel they point at.
     for (auto& k : knobs_)
         k->slider.setLookAndFeel(nullptr);
+    rnd_wind_.setLookAndFeel(nullptr);
+    rnd_flutter_.setLookAndFeel(nullptr);
 }
 
 void CurvesAudioProcessorEditor::cycle_display_scale() {
@@ -213,6 +224,33 @@ constexpr int kGlobalH = 104;
 constexpr int kPhysicsH = 188;
 constexpr int kPanelGap = 10;
 }  // namespace
+
+void CurvesAudioProcessorEditor::setup_randomiser(SeedSlider& sl,
+                                                  const char* param_id,
+                                                  bool is_wind) {
+    for (auto* p : processor_.getParameters()) {
+        auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p);
+        if (rp == nullptr || rp->paramID != juce::String(param_id))
+            continue;
+        sl.setNormalisableRange(juce::NormalisableRange<double>(0.0, 1.0));
+        sl.setValue(rp->convertFrom0to1(rp->getValue()),
+                    juce::dontSendNotification);
+        sl.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+        sl.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+        sl.setLookAndFeel(&knob_look_);
+        sl.addListener(this);
+        sl.setTooltip("drag: how much randomisation   |   click: new seed");
+        sl.on_reroll = [this, is_wind] {
+            if (is_wind)
+                processor_.reroll_wind_seed();
+            else
+                processor_.reroll_flutter_seed();
+            repaint();
+        };
+        addAndMakeVisible(sl);
+        break;
+    }
+}
 
 void CurvesAudioProcessorEditor::resized() {
     scale_button_.setBounds(getWidth() - 86, 12, 74, 24);
@@ -277,6 +315,22 @@ void CurvesAudioProcessorEditor::resized() {
     place(kGlobal, panel_[kGlobal], 8);
     place(kString, panel_[kString], 2);
     place(kCloth, panel_[kCloth], 4);
+
+    // Randomisers sit on the top-right corner of the knob they belong to,
+    // overlapping it slightly so the pairing reads at a glance.
+    auto park = [](SeedSlider& sl, Knob* host, juce::Rectangle<int>& box) {
+        if (host == nullptr)
+            return;
+        const auto hb = host->slider.getBounds();
+        // Half the host's diameter. A third was tried first and rendered as
+        // a 13 px ring with a 3 px stroke -- present, but far too small to
+        // aim at, which matters because a CLICK on it re-rolls the seed.
+        const int d = juce::jmax(26, hb.getWidth() / 2);
+        box = {hb.getRight() - 8, hb.getY() - 6, d, d};
+        sl.setBounds(box);
+    };
+    park(rnd_wind_, wind_knob_, rnd_wind_box_);
+    park(rnd_flutter_, flutter_knob_, rnd_flutter_box_);
 }
 
 // ---- geometry -------------------------------------------------------------
@@ -517,11 +571,28 @@ void CurvesAudioProcessorEditor::timerCallback() {
                 k->slider.setEnabled(cloth_live);
                 k->label.setAlpha(cloth_live ? 1.0f : 0.4f);
             }
+        rnd_wind_.setEnabled(cloth_live);
+        rnd_flutter_.setEnabled(cloth_live);
     }
     repaint();
 }
 
 void CurvesAudioProcessorEditor::sliderValueChanged(juce::Slider* s) {
+    // The randomisers are not in knobs_ (they are positioned by hand rather
+    // than by the grid), so they need their own route to their parameters.
+    if (s == &rnd_wind_ || s == &rnd_flutter_) {
+        const char* id = (s == &rnd_wind_) ? "wind_rnd" : "flutter_rnd";
+        for (auto* p : processor_.getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+                if (rp->paramID == juce::String(id)) {
+                    rp->beginChangeGesture();
+                    rp->setValueNotifyingHost(
+                        rp->convertTo0to1((float)s->getValue()));
+                    rp->endChangeGesture();
+                    break;
+                }
+        return;
+    }
     for (auto& k : knobs_) {
         if (&k->slider != s || k->param == nullptr)
             continue;
@@ -746,7 +817,8 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour(t.text_dim));
     g.setFont(12.0f);
     g.drawText("bright = the EQ being applied   |   faint = the string   |   "
-               "drag to draw   |   right-click to flatten   |   drag the posts to wall off",
+               "drag to draw   |   right-click to flatten   |   drag the posts to "
+               "wall off   |   small dial: drag = random amount, click = new seed",
                int(b.getX()), int(b.getBottom()) + 4, int(b.getWidth()), 18,
                juce::Justification::centred);
 
