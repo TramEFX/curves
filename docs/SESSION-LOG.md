@@ -647,6 +647,43 @@ genuinely stops. Default knob 0.40 → 0.24 keeps the shipped density at 2.3.
 > Checking the *level* across a control's sweep is now the first thing to do
 > when one feels weak.
 
+### The big slow arc: what owns its rate vs its size
+
+Asked of a specific patch (low Tension, low Waves, Flutter powered off,
+Motion/Wind on High magnitude, Velocity well up, Range 3 dB). `patch_test`
+reconstructs it and sweeps each suspect:
+
+| change | centroid | period | arc swing |
+|---|---|---|---|
+| that patch (Ten ~110) | 8.40 | **1.87 s** | 0.507 |
+| Tension -> 300 | 8.20 | **0.72 s** | 0.350 |
+| Tension -> 600 | 8.13 | **0.37 s** | 0.289 |
+| Waves -> 1.0 | **11.98** | 1.76 s | **0.182** |
+| Wind -> 0.30 | 7.05 | **6.26 s** | 0.726 |
+| Flutter ON | 8.41 | 0.55 s | **1.017** |
+
+**It is the string's own lowest surviving mode** (mode 2 — DC and tilt are
+blocked). Theoretical period `span/(2c)`: 2.32 s at Tension 110, 0.85 s at
+300, 0.43 s at 600, against 1.87 / 0.72 / 0.37 measured. Consistently ~80%
+of theory because the measurement includes higher modes too.
+
+Division of labour, now measured rather than assumed:
+
+- **Tension owns the RATE.** 5x across its range, and it is the only control
+  that moves the rate without also moving the size.
+- **Waves owns the SIZE.** Centroid 8.4 -> 12.0, and it cuts the arc's swing
+  **2.8x** (0.507 -> 0.182) — the same "phases the blooms out" effect, seen
+  from the other side.
+- **Wind moves both**, and in the same direction: lower Wind is slower *and*
+  bigger (6.26 s, swing 0.726).
+- **Flutter adds to it rather than breaking it up** — turning shedding on
+  *doubles* the low-mode swing (0.507 -> 1.017). Worth knowing: it is not a
+  way to add detail without touching the big arc.
+
+Separately: at that patch the two drawn lines differ in *shape*, not just
+lag, because **Velocity is well up** — exactly the case isolated in the
+"which line am I hearing" measurement.
+
 ---
 
 ## Measurements worth not re-deriving

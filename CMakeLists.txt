@@ -44,6 +44,9 @@ target_link_libraries(lines_test PRIVATE curves_string)
 add_executable(waves_test src/waves_test_main.cpp)
 target_link_libraries(waves_test PRIVATE curves_string)
 
+add_executable(patch_test src/patch_test_main.cpp)
+target_link_libraries(patch_test PRIVATE curves_string)
+
 # ---- JUCE / CLAP plugin shell (M0 second half) ----
 # enable via -DCURVES_BUILD_PLUGIN=ON; FetchContent pulls JUCE so the repo
 # stays light. CLAP comes from clap-juce-extensions (JUCE has no native CLAP).
