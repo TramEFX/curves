@@ -706,10 +706,18 @@ void CurvesAudioProcessor::publish_display() {
         display_buffer_[i] = static_cast<float>(u[i]);
     // The EQ curve of truth: the bank's smoothed per-band gains (post
     // smoothing, post Steady), normalized so +1 = Max gain dB.
+    //
+    // Mix is folded in EXACTLY, not approximately. The bank emits
+    // x + sum(v1_b * big_b) and Mix scales only the added part, so the
+    // effective per-band gain is 1 + Mix*(g - 1). Without this the curve
+    // drew the full EQ depth while Mix 0.5 applied half of it -- the same
+    // class of WYSIWYG violation Steady had, introduced when Mix was added.
     const auto& g = bank_.gains();
     const double range_db = max_gain_db_.load(std::memory_order_relaxed);
+    const double mix = mix_amount_;
     for (int i = 0; i < n_nodes_; ++i) {
-        const double db = 20.0 * std::log10(std::max(g[i], 1e-6));
+        const double g_eff = 1.0 + mix * (g[i] - 1.0);
+        const double db = 20.0 * std::log10(std::max(g_eff, 1e-6));
         display_eq_buffer_[i] =
             static_cast<float>(std::clamp(db / std::max(1.0, range_db), -1.0, 1.0));
     }
