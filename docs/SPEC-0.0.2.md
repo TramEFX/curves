@@ -578,6 +578,11 @@ Leveler trims what you actually hear rather than the wet path alone. Its
 minimum is genuinely neutral, so it takes the standard `kPowerToMin` power
 mode.
 
+**Power LED only — no magnitude.** "Half travel" and "double travel" are
+meaningless on a 0…100% blend, and a High setting would put 100% out of
+reach. `has_magnitude()` is per knob and returns false here; `knob()` then
+passes the raw value through.
+
 **The curve follows it, exactly** (fixed 2026-10-02 — it did not, for the
 few hours between Mix landing and this being noticed, which was a live
 WYSIWYG violation). The bank emits `x + Σ v1_b·big_b` and Mix scales only
@@ -590,15 +595,32 @@ the added part, so the effective per-band gain is **exactly**
 
 ---
 
-#### 8 · Test Noise  `test`
-**0…1 · default 0 · Global**
+#### 8 · Test Src  `test`
+**0…5 step 1 · default 0 (off) · Global**
 
-| Assigns | `test_on = (value > 0.5)` |
+| Assigns | `test_src`, replacing the input when non-zero |
 |---|---|
 
-Replaces the input with internally generated pink noise (Paul Kellet). A
-switch, not a continuous control. Lets the standalone demo the string with
-no audio wiring.
+Six positions: **off / pink / white / brown / tone / pulse**. The knob's
+label names the live one. Chosen to probe different things about a *moving*
+EQ rather than just to make noise:
+
+| source | what it is for |
+|---|---|
+| **pink** | the reference, perceptually flat (Paul Kellet) |
+| **white** | bright — what the top octaves are doing |
+| **brown** | low-heavy — the bass end moving |
+| **tone** | sustained 24-harmonic stack near A1, channels detuned 55 / 55.37 Hz, so the EQ reads as **timbre and formant movement** on a pitched sound |
+| **pulse** | ~7 clicks/sec, short decaying burst — exposes **ringing, smoothing and transient** behaviour that steady noise hides |
+
+**Levels are measured, not eyeballed** — rms / peak: white 0.202 / 0.350,
+brown 0.180 / 0.719, tone 0.197 / 0.394, pulse 0.105 / 0.795 (sparse by
+design; its peak is the point). Brown was first written at gain 3.2, which
+measures **rms 0.806 / peak 3.968** — four times full scale. A leaky
+integrator with `a = 0.996` driven by `0.04·uniform` has `sigma = 0.2585`,
+so 0.70 is the correct gain.
+
+No modifiers — it is a switch.
 
 ---
 
@@ -1137,6 +1159,17 @@ operate on the **active window only**, which is what makes a wall hold.
 whichever end the wind origin selects) → **F5**, **F6**. The hard clamp runs
 in **F1** after the blockers, before `enforce_anchors`. The Flutter Hz `f0`
 span follows the window too.
+
+**Grab ergonomics, fixed 2026-10-02.** Reported as "we lost the ability to
+drag the left side wall in". The walls were never broken — they were
+*unhittable*. `wall_at()` rejected anything outside `plot_bounds` expanded
+only **vertically**, so a wall parked at an edge sits exactly on the
+boundary with half its 12 px grab zone outside the test, and the dB axis
+labels added the same day sit on precisely that spot. Verified by driving
+the UI: dragging from inside the plot worked throughout, from just outside
+did nothing. Now expanded horizontally too, reach **12 → 18 px**, and parked
+posts dim to 0.60 instead of 0.35 so they stay visible against the dB
+numbers.
 
 **Measured — walls hold exactly.** Peak displacement outside the window is
 **0.00e+00** at every setting tested (windows of 100%, 80%, 40%, 30%, 10%).

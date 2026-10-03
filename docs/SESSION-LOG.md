@@ -18,7 +18,7 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `9720258` |
+| Head | `29d4f0c` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 22, across 21 controls |
 | Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
@@ -683,6 +683,43 @@ Division of labour, now measured rather than assumed:
 Separately: at that patch the two drawn lines differ in *shape*, not just
 lag, because **Velocity is well up** — exactly the case isolated in the
 "which line am I hearing" measurement.
+
+### Test textures, Mix LED, and the wall that was never broken
+
+**Five test textures** replace the pink-noise on/off: off / pink / white /
+brown / tone / pulse, chosen to probe a *moving* EQ rather than just make
+noise — tone is a 24-harmonic stack so the EQ reads as timbre movement on a
+pitched sound, pulse is ~7 clicks/sec so it exposes ringing and smoothing
+that steady noise hides completely.
+
+> **Levels measured, not eyeballed.** Brown was first written at gain 3.2.
+> Measured: **rms 0.806, peak 3.968** — four times full scale, and it would
+> have shipped clipping. A leaky integrator with `a = 0.996` driven by
+> `0.04*uniform` has `sigma = 0.2585`, so 0.70 is correct. Final set, rms /
+> peak: white 0.202/0.350, brown 0.180/0.719, tone 0.197/0.394, pulse
+> 0.105/0.795. **Any generator written by eye needs its level measured
+> before it ships.**
+
+**Mix** loses its magnitude LED — "half travel" is meaningless on a 0…100%
+blend and High would put 100% out of reach. `has_magnitude()` is per knob now.
+
+**The left wall was never broken — it was unhittable.** `wall_at()` rejected
+anything outside `plot_bounds` expanded only *vertically*, so a wall parked
+at an edge had half its 12 px grab zone outside the test, and the dB axis
+labels added the same day sit exactly there. Dragging from *inside* the plot
+worked the whole time. Expanded horizontally, reach 12 -> 18 px, parked
+posts dim to 0.60 rather than 0.35.
+
+> **The harness was lying, and nearly produced a wrong diagnosis.** The
+> first synthetic test showed *neither* wall moving, which looked like
+> confirmation they were dead. Sanity-checking against the theme button —
+> which has an unmistakable effect — showed that too did nothing: no click
+> was landing at all. Cause: `mouse_event` absolute coordinates are
+> **primary-monitor-relative** unless `MOUSEEVENTF_VIRTUALDESK` is set and
+> they are normalised against the virtual desktop, whose origin here is
+> **x = -1920**. Every click had been going to the wrong screen while the
+> script reported success. **Always validate a UI harness against a control
+> with an obvious effect before trusting a negative result from it.**
 
 ---
 
