@@ -17,15 +17,16 @@ using namespace curves;
 int main() {
     const int n = 512, div = 2;
     const double fs = 48000.0, tick = fs / div, range_db = 18.0;
-    const int block = 128;
+    int block = 128;
 
     std::printf("Faint line = sim u. Bright line = what publish_display() draws.\n");
     std::printf("With smoothing at minimum they should coincide.\n\n");
-    std::printf("%10s %8s %12s %12s %12s %12s\n", "Smoothing", "Steady",
-                "max|sim-eq|", "rms diff", "sim peak", "eq peak");
+    std::printf("%8s %10s %12s %12s\n", "block", "Smoothing", "max|sim-eq|", "rms diff");
 
-    for (double sm : {2.0, 10.0, 30.0}) {
-        for (double steady : {0.0, 0.35}) {
+    for (int blk : {32, 64, 128, 256, 512}) {
+      block = blk;
+      for (double sm : {2.0, 15.0}) {
+        for (double steady : {0.0}) {
             StringParams p;
             p.tick_rate = tick; p.wave_speed = 300.0;
             p.damping = 1.2; p.stiffness = 2.0;
@@ -40,7 +41,10 @@ int main() {
             sim.wind_speed = 25.0 * 0.596 * std::pow(128.0 / n, 0.25) * 0.913;
             sim.wrinkle_speed = sim.wind_speed;
             sim.wave_density = 0.5 + 4.5 * 0.4;
-            sim.wind_phase_speed = (10.0 + 490.0 * 0.37) * (double(n) / 128.0);
+            sim.wind_phase_speed = 0.6 * 300.0;
+            sim.mid_waves = 11.0; sim.mid_ripple = 1.19;
+            sim.mid_lock_d = 0.65; sim.mid_env = 1.4;
+            sim.mid_travel = 0.829; sim.mid_flap = 0.45;
 
             FilterBank bank;
             bank.prepare(n, fs, 2);
@@ -51,17 +55,20 @@ int main() {
             const double alpha = 1.0 - std::exp(-1.0 / ((sm * 1e-3) * tick));
             std::vector<double> sd(n, 0.0), tg(n, 1.0);
             int counter = 0;
-            double maxd = 0.0, sumsq = 0.0, simpk = 0.0, eqpk = 0.0;
+            double maxd = 0.0, sumsq = 0.0;
             long cnt = 0;
             unsigned int rng = 12345;
-            const int blocks = int(14.0 * fs / block);
-            for (int blk = 0; blk < blocks; ++blk) {
+            const int blocks = int(10.0 * fs / block);
+            constexpr int kGainChunk = 32;   // matches PluginProcessor
+            for (int bi = 0; bi < blocks; ++bi) {
+              for (int base = 0; base < block; base += kGainChunk) {
+                const int len = std::min(kGainChunk, block - base);
                 for (int i = 0; i < n; ++i) {
                     const double db = std::clamp(sd[i], -1.0, 1.0) * range_db;
                     tg[i] = std::exp2(db * (1.0 / 6.020599913279624));
                 }
-                bank.set_block_targets(tg.data(), block);
-                for (int s = 0; s < block; ++s) {
+                bank.set_block_targets(tg.data(), len);
+                for (int s2 = 0; s2 < len; ++s2) {
                     if (++counter >= div) {
                         counter = 0;
                         sim.tick();
@@ -73,7 +80,8 @@ int main() {
                     float r = l;
                     bank.process_frame(l, r, true);
                 }
-                if (blk < blocks / 4) continue;
+              }
+                if (bi < blocks / 4) continue;
                 const auto& u = sim.positions();
                 const auto& g = bank.gains();
                 for (int i = 0; i < n; ++i) {
@@ -83,13 +91,13 @@ int main() {
                     const double d = std::fabs(faint - bright);
                     maxd = std::max(maxd, d);
                     sumsq += d * d; ++cnt;
-                    simpk = std::max(simpk, std::fabs(u[i]));
-                    eqpk = std::max(eqpk, std::fabs(bright));
                 }
             }
-            std::printf("%8.0fms %8.2f %12.4f %12.4f %12.4f %12.4f\n",
-                        sm, steady, maxd, std::sqrt(sumsq / cnt), simpk, eqpk);
+            std::printf("%8d %8.0fms %12.4f %12.4f%s", blk, sm, maxd,
+                        std::sqrt(sumsq / cnt), "\n");
         }
+      }
     }
+
     return 0;
 }

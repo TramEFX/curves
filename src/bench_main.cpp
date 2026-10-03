@@ -88,6 +88,26 @@ int main(int argc, char** argv) {
             std::printf("sim tick  n=%-4d + mid band       %8.0f  %8.0f   %8.2f\n",
                         n, ns, tick_rate, ns * 1e-9 * tick_rate * 100.0);
         }
+        // --- gain re-aim, per 32-sample chunk ---
+        // exp2 per node + one pow per band inside set_block_targets. This is
+        // what buys buffer-independent latency.
+        {
+            FilterBank bank;
+            bank.prepare(n, fs, 2);
+            for (int b = 0; b < n; ++b)
+                bank.set_band_frequency(b, 30.0 * std::pow(600.0, (double)b / (n - 1)));
+            std::vector<double> sd(n, 0.21), tg(n, 1.0);
+            const int reps = 4000;
+            const double t = seconds([&] {
+                for (int i = 0; i < n; ++i)
+                    tg[i] = std::exp2(sd[i] * 18.0 * (1.0 / 6.020599913279624));
+                bank.set_block_targets(tg.data(), 32);
+            }, reps);
+            const double ns = t / reps * 1e9;
+            const double rate = fs / 32.0;   // chunks per second
+            std::printf("retarget  n=%-4d per 32-sample chk %8.0f  %8.0f   %8.2f\n",
+                        n, ns, rate, ns * 1e-9 * rate * 100.0);
+        }
         // --- control smoother: the one-pole on disp, at the TICK rate ---
         // This is the smoothing system now. It moved off the linear gain
         // (where Range dB leaked into it) onto the string control signal.

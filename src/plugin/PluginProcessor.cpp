@@ -597,16 +597,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     vel_amt_ = knob(kVelocity, velocity_->get());
     vel_scale_ = kVelScale / std::max(1.0, tension_v);
     const double range_db = max_gain_db_.load(std::memory_order_relaxed);
-    // disp has already been smoothed, at the tick rate, in its own (log)
-    // domain. Range therefore enters exactly once and memorylessly, which is
-    // what makes the drawn curve independent of it.
-    for (int i = 0; i < n_nodes_; ++i) {
-        const double db = std::clamp(smoothed_disp_[i], -1.0, 1.0) * range_db;
-        // 10^(db/20) == 2^(db/6.0206). exp2 is markedly cheaper than pow and
-        // this runs once per node per block (512 calls at high precision).
-        gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
-    }
-    bank_.set_block_targets(gain_targets_.data(), buffer.getNumSamples());
+    // Targets are re-aimed per CHUNK inside the audio loop below, not once
+    // per block -- see kGainChunk.
 
     // 3b. Reset request from the UI: flatten the string, touch nothing else.
     //     Wind, flutter and every knob stay exactly as they are, so the
@@ -624,7 +616,36 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     float* ch0 = buffer.getWritePointer(0);
     float* ch1 = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
     const bool stereo = ch1 != nullptr;
-    for (int s = 0; s < n; ++s) {
+    // Re-aim the gain ramp every kGainChunk samples rather than once per
+    // host block.
+    //
+    // With one aim per block, the target was computed from the control
+    // signal as it stood at the START of the block and the bank only
+    // reached it at the END -- so the pipeline carried roughly a block and
+    // a half of lag ON TOP OF the Smoothing knob, and that lag grew with
+    // the host's buffer size. Measured max|sim - drawn| at Smoothing 2 ms
+    // ("off"): 0.0164 at a 32-sample buffer rising to 0.0771 at 512, i.e.
+    // most of the smoothing you could hear at a big buffer was not the knob
+    // (user: "a hell of a lot of smoothing going on, even when smoothing is
+    // off"). Worse, it made the plugin sound different at different buffer
+    // sizes.
+    //
+    // A fixed chunk decouples it: one exp2 per node and one pow per band
+    // per chunk, which at 32 samples is 1500 chunks/s -- cheap, and the
+    // behaviour no longer depends on the host.
+    constexpr int kGainChunk = 32;
+    for (int base = 0; base < n; base += kGainChunk) {
+      const int len = std::min(kGainChunk, n - base);
+      // Targets from the control signal as it stands RIGHT NOW. disp was
+      // already smoothed at the tick rate in its own (log) domain, so Range
+      // enters exactly once and memorylessly.
+      for (int i = 0; i < n_nodes_; ++i) {
+          const double db = std::clamp(smoothed_disp_[i], -1.0, 1.0) * range_db;
+          // 10^(db/20) == 2^(db/6.0206); exp2 is markedly cheaper than pow.
+          gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
+      }
+      bank_.set_block_targets(gain_targets_.data(), len);
+      for (int s = base; s < base + len; ++s) {
         if (++sim_counter_ >= sim_divisor_) {
             sim_->tick();
             sim_counter_ = 0;
@@ -657,6 +678,7 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         ch0[s] = l;
         if (ch1)
             ch1[s] = r;
+      }
     }
 
     // 5. GUI is a reader: publish positions for display, throttled to ~60 Hz.
