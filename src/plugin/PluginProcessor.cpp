@@ -144,6 +144,46 @@ constexpr double kMidRef = 0.82;   // R at the default Wind, so 0.5 is a no-op
 // still roughly doubling the low-Wind detail against no compensation.
 constexpr double kMidCompMin = 0.80, kMidCompMax = 1.25;
 
+// --- Waves: amplitude compensation ---------------------------------------
+// Finer gust patterns couple to the string less efficiently, so turning
+// Waves up used to drain it. Measured rms |u| against wave_density, 40 s
+// per point at 512 nodes (rms, not peak -- peak over a short window is far
+// too noisy to tune on):
+//
+//   density  0.5    1.0    2.3    3.5    5.0    7.0    9.5    13.0   18.0
+//   rms      0.139  0.126  0.090  0.057  0.039  0.032  0.029  0.029  0.027
+//
+// i.e. 2.3x quieter from the default to the old top of the dial, which is
+// why the knob needed "way, way up" before its texture change read as
+// anything (user). The loss is divided out here so Waves changes CHARACTER
+// at roughly constant level and Motion keeps owning amount.
+//
+// Note also that past density ~7 every band flattens: the knob is simply
+// exhausted there, which is why the range stops at 8 rather than going
+// further. What still moves above that is the mid band, which is
+// deliberately independent of wave_density.
+constexpr double kWaveD[] = {0.5, 1.0, 2.3, 3.5, 5.0, 7.0, 9.5, 13.0, 18.0};
+constexpr double kWaveR[] = {1.548, 1.397, 1.000, 0.636, 0.431,
+                             0.359, 0.325, 0.321, 0.304};
+constexpr int kWaveN = 9;
+constexpr double kWaveCompMin = 0.7, kWaveCompMax = 2.2;
+
+// Returns a multiplier on the WIND DIAL. peak ~ dial^kWindP, so recovering a
+// response ratio R needs the dial multiplied by R^(1/kWindP).
+double wave_density_compensation(double density) {
+    const double d = std::clamp(density, kWaveD[0], kWaveD[kWaveN - 1]);
+    double r = kWaveR[kWaveN - 1];
+    for (int i = 0; i + 1 < kWaveN; ++i) {
+        if (d > kWaveD[i + 1])
+            continue;
+        const double f = std::log(d / kWaveD[i]) / std::log(kWaveD[i + 1] / kWaveD[i]);
+        r = std::exp(std::log(kWaveR[i]) + f * std::log(kWaveR[i + 1] / kWaveR[i]));
+        break;
+    }
+    return std::clamp(std::pow(1.0 / std::max(r, 1e-9), 1.0 / kWindP),
+                      kWaveCompMin, kWaveCompMax);
+}
+
 double mid_resonance_compensation(double travel) {
     const double t = std::clamp(travel, kMidTv[0], kMidTv[kMidTN - 1]);
     double resp = kMidTr[kMidTN - 1];
@@ -257,7 +297,7 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     addParameter(precision_ = new APF("precision", "Precision", R(0.0f, 2.0f, 1.0f), 0.0f));
     addParameter(velocity_ = new APF("velocity", "Velocity", R{0.0f, 1.0f}, 0.0f));
     addParameter(wind_ = new APF("wind", "Wind", R{0.0f, 1.0f}, 0.50f));
-    addParameter(waves_ = new APF("waves", "Waves", R{0.0f, 1.0f}, 0.4f));
+    addParameter(waves_ = new APF("waves", "Waves", R{0.0f, 1.0f}, 0.24f));
     // Motion = total string excitation, calibrated so peak displacement
     // tracks the dial linearly regardless of Character. Default chosen to
     // match the previous Force 0.6 wind-only feel (peak ~0.37).
@@ -496,7 +536,11 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // Side effect, deliberately not compensated: finer forcing couples into
     // the string less efficiently, so peak falls ~1.7x across the new range.
     // Motion is the amplitude control and absorbs it.
-    sim_->wave_density = 0.5 + 4.5 * knob(kWaves, waves_->get());
+    // Range extended 5.0 -> 8.0 (user asked for more). Measured, every band
+    // flattens past ~7, so 8 is where it genuinely stops doing anything
+    // rather than an arbitrary stop. The default knob moved 0.40 -> 0.24
+    // so the shipped density stays 2.3 and the stock character is intact.
+    sim_->wave_density = 0.5 + 7.5 * knob(kWaves, waves_->get());
     sim_->set_wind_origin(direction_->get() > 0.5f ? 1 : 0);
     // Walls: only rebuild the geometry when they actually move.
     const double wlo = wall_lo_->get(), whi = wall_hi_->get();
@@ -534,7 +578,8 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // at all, which is what "turn the wind off" has to mean. Previously
     // only its rate dropped to minimum and the gusts kept blowing slowly.
     const double gust_speed = 25.0 * wind_dial * tension_norm * node_norm
-                              * kNodeWindGain[prec_idx];
+                              * kNodeWindGain[prec_idx]
+                              * wave_density_compensation(sim_->wave_density);
     sim_->wind_speed = mechanism_on(kWind) ? gust_speed : 0.0;
     // Wrinkle keeps its own amplitude reference, so turning the gust field
     // off does not silence it as well - it is a separate mechanism with its
