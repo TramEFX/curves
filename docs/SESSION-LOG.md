@@ -18,10 +18,10 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `29d4f0c` |
+| Head | `ba7ecc0` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
-| Parameters | 22, across 21 controls |
-| Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
+| Parameters | 24, across 23 controls |
+| Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
 | Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
 
@@ -720,6 +720,53 @@ posts dim to 0.60 rather than 0.35.
 > **x = -1920**. Every click had been going to the wrong screen while the
 > script reported success. **Always validate a UI harness against a control
 > with an obvious effect before trusting a negative result from it.**
+
+### Seeded randomisers — and a bug this project had already fixed once
+
+Two small dials on Wind and Flutter Hz: drag for amount, click for a new
+seed. Both mechanisms are built from **fixed constant sets**, which is why
+they are regular; a seed perturbs those constants, so it is different
+*weather* rather than a different amount.
+
+**Wind** re-rolls the gust sites' rate and wavenumber — i.e. the beat
+structure behind the big blooms. Peak across seeds at spread 0.5: 0.417 /
+0.578 / 0.685.
+
+**Flutter took two attempts, and the first repeated a known bug.**
+
+| spread | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
+|---|---|---|---|---|---|
+| frequency spread — direction | +0.269 | **−0.180** | **−0.273** | **−0.267** | **−0.251** |
+| frequency spread — peak | 0.602 | 0.156 | 0.204 | 0.252 | 0.280 |
+| **shipped** (amplitude + static phase) | +0.269 | **+0.281** | **+0.288** | **+0.289** | **+0.286** |
+| **shipped** — peak | 0.602 | 0.579 | 0.555 | 0.529 | 0.501 |
+
+Per-node frequency spread **inverted the outward travel** and collapsed the
+flutter. Making it spatially smooth did not help (−0.43) — the gradient is
+the problem, not the roughness. This is verbatim the 2026-10-01 finding:
+*a frequency gradient cannot set a travel direction, because it makes a
+phase ramp that steepens with time.* The fix then was identical
+oscillators; I reintroduced exactly what that fix removed. Shipped version
+perturbs **amplitude and a static phase offset only** — a static offset
+persists instead of accumulating, so direction degrades gracefully and
+never flips.
+
+> **The metric check earned its keep twice in one sitting.** `rnd_test`
+> reproduces `scenario_shed` and refuses to be believed unless it returns
+> its recorded **+0.372**. First run: a hardcoded `dpdi = +1` where the
+> convention is `-1` at `wind_origin = 0` — every direction reading
+> inverted. Second: the validation block itself did not match the scenario
+> (it added `anchor_high` and used gain 30 instead of 60) and read
+> **−0.511**, so the check flagged SUSPECT. Only after it printed +0.3722
+> were any of the numbers above trustworthy. Without that gate I would have
+> reported the *opposite* conclusion — which is the third time a direction
+> metric has tried to do that on this project.
+
+Seeds ride in the state tree rather than being AudioParameters. Both
+engines mirrored; `hash_pm1` (lowbias32) verified identical across 15
+probes, and a new `random` scenario runs both spreads non-zero in both —
+at spread 0 the frozen baselines say nothing about this path. **12
+scenarios, 119,936 cells, 0 mismatches.**
 
 ---
 

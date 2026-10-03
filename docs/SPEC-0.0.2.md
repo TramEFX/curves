@@ -2,8 +2,8 @@
 
 **Status: current.** Supersedes `SPEC-0.0.1.md`, which is kept for history.
 
-An exhaustive knob-by-knob reference covering all **22 parameters** across
-**21 controls** (the two Walls share one entry). For every control it states:
+An exhaustive knob-by-knob reference covering all **24 parameters** across
+**23 controls** (the two Walls share one entry). For every control it states:
 
 1. **Assigned parameters** — the exact engine variables it writes.
 2. **What it does** — the effect, in plain language.
@@ -1112,7 +1112,54 @@ Motion — peak 0.55 against the ±1 clamp — but it will clip near Motion 1.
 
 ---
 
-#### 20 · Direction  `direction`
+#### 20 · Randomisers  `wind_rnd` / `flutter_rnd`
+**0…1 each · default 0 · small dials on the top-right of Wind and Flutter Hz**
+
+| Assigns | `sim_->gust_spread` / `sim_->shed_spread`, plus their seeds |
+|---|---|
+
+**Drag** sets how much; a plain **click re-rolls the seed**. 0 is the fixed,
+perfectly regular behaviour.
+
+**What they perturb.** Both mechanisms are built from **fixed constant
+sets** — `kSiteMult_`/`kSiteK_` for the gust, one shared frequency for the
+wake — which is exactly why they are repeatable and, given long enough,
+regular. A seed perturbs those constants, so a new seed is different
+**weather**, not a different amount. At spread 0 every perturbed value
+equals its constant, so the frozen baselines are untouched.
+
+**Wind** re-rolls the eight gust sites' rate and wavenumber, which re-rolls
+the beat structure behind the big slow blooms. Peak across seeds at spread
+0.5: 0.417 / 0.578 / 0.685 — different weather, no runaway.
+
+**Flutter perturbs amplitude and a STATIC phase offset, never frequency**,
+and the reason is load-bearing:
+
+| spread | 0.00 | 0.25 | 0.50 | 0.75 | 1.00 |
+|---|---|---|---|---|---|
+| frequency spread — direction | +0.269 | **−0.180** | **−0.273** | **−0.267** | **−0.251** |
+| frequency spread — peak | 0.602 | 0.156 | 0.204 | 0.252 | 0.280 |
+| **shipped** — direction | +0.269 | **+0.281** | **+0.288** | **+0.289** | **+0.286** |
+| **shipped** — peak | 0.602 | 0.579 | 0.555 | 0.529 | 0.501 |
+
+Outward travel comes from a seeded phase ramp that survives only because
+the oscillators are **identical** and van der Pol is phase-neutral. Give
+them different frequencies and the ramp steepens with time until the
+direction **inverts** — the same finding already on record from
+2026-10-01: *a frequency gradient cannot set a travel direction*. Making
+the spread spatially smooth did not help (−0.43); the gradient is the
+problem, not the roughness. A **static** phase offset persists instead of
+accumulating, so it degrades direction gracefully and never flips it.
+
+**Seeds are not AudioParameters** — a seed is not a continuous quantity to
+automate — but they ride in the state tree, so they save with the preset.
+
+**Functions.** → `rebuild_randomisation()`, then **F3a** (gusts) and
+**F3c** (wake). Build-time only; measured cost at 512 nodes is unchanged.
+
+---
+
+#### 21 · Direction  `direction`
 **0/1 step 1 · default 0 · Cloth**
 
 | Assigns | `sim_->set_wind_origin(value > 0.5 ? 1 : 0)` |
@@ -1129,7 +1176,7 @@ direction flips with the geometry.
 
 ---
 
-#### 21 · Walls  `wall_lo` / `wall_hi`
+#### 22 · Walls  `wall_lo` / `wall_hi`
 **0…1 each · defaults 0.0 and 1.0 · dragged on the canvas, not knobs**
 
 | Assigns | `sim_->set_walls(lo, hi)` |
@@ -1264,7 +1311,7 @@ feature to be built deliberately, not something that should fall out of
 per-channel followers by accident.
 
 **Bit-exact cross-validation.** The C++ engine is validated against the
-Python spec cell by cell: **11 scenarios, 104,576 cells, 0 mismatches**. Every
+Python spec cell by cell: **12 scenarios, 119,936 cells, 0 mismatches**. Every
 physics change must land in both with identical arithmetic order, and the
 pre-existing scenario CSVs must stay byte-identical.
 
@@ -1276,5 +1323,6 @@ build/Release/gain_test.exe              # Range invariance, dB symmetry, Steady
 build/Release/tension_test.exe 0.85 0 9  # Tension vs amplitude (self-validating)
 build/Release/display_test.exe           # does the drawn curve track the string
 build/Release/wind_test.exe              # Wind sweeps, old vs shipped mapping
+build/Release/rnd_test.exe               # randomisers + the direction invariant
 build/Release/spatial_test.exe           # spatial spectrum by wavenumber band
 ```
