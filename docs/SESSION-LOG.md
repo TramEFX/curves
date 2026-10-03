@@ -18,7 +18,7 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `4bbbe3c` |
+| Head | `722b3dc` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 22, across 21 controls |
 | Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
@@ -547,6 +547,34 @@ and `flap = 0` reproduces the old envelope exactly so the baselines hold.
 - **Unbudgeted, like Wrinkle** — 1.45× peak across its range, on top of the
   Motion budget rather than inside it. Fine at default Motion (peak 0.55
   against the ±1 clamp), will clip near Motion 1.
+
+### "A hell of a lot of smoothing, even when smoothing is off"
+
+Not the knob. The gain targets were aimed **once per host block**, from the
+control signal as it stood at the *start* of the block, and the bank only
+reached them by the *end* — roughly a block and a half of lag stacked on top
+of Smoothing, growing with the buffer. Measured max |sim − drawn| at
+Smoothing 2 ms, the knob fully off:
+
+| buffer | 32 | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|
+| before | 0.0164 | 0.0206 | 0.0288 | 0.0451 | **0.0771** |
+| after | 0.0164 | 0.0164 | 0.0164 | 0.0164 | **0.0164** |
+
+At a 512-sample buffer **most of the audible smoothing with the knob off was
+the pipeline** — 4.7× the residual. It also meant the plugin sounded
+different at different buffer sizes, a defect on its own.
+
+Fixed by re-aiming the ramp every **32 samples** rather than once per block:
+one `exp2` per node and one `pow` per band per chunk, **1.49% of one core**
+at 512 nodes. Latency is now constant and independent of the host.
+
+> **Worth generalising.** This is the third time a control has turned out to
+> be fighting something structural rather than being mistuned — after the
+> smoother living in the wrong domain and Wind being mis-ranged against
+> `f0`. The pattern: when a knob "doesn't do much" or "does too much at every
+> setting", measure what *else* is acting on the same quantity before
+> touching the knob's range.
 
 ---
 

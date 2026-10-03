@@ -467,15 +467,23 @@ modifier.
 smoothing at any setting, so 30 ms lagged twice as far as that number used to;
 15 ms restores the previous stereo feel.
 
-**This lag is the only thing separating the two drawn lines.** Measured
-max |sim − drawn| over 14 s at 512 nodes:
+**This lag is the only thing separating the two drawn lines** — as of
+2026-10-02 it is also the only thing setting it. The gain targets used to be
+aimed **once per host block**, from the control signal as it stood at the
+*start* of the block, with the bank arriving only at the *end*: roughly a
+block and a half of lag on top of this knob, growing with the buffer.
+Measured max |sim − drawn| at Smoothing 2 ms (the knob fully off):
 
-| Smoothing | 2 ms | 10 ms | 30 ms |
-|---|---|---|---|
-| max divergence | **0.019** | 0.050 | 0.119 |
+| buffer | 32 | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|
+| before | 0.0164 | 0.0206 | 0.0288 | 0.0451 | **0.0771** |
+| after | 0.0164 | 0.0164 | 0.0164 | 0.0164 | **0.0164** |
 
-At the minimum the faint and bright lines coincide (rms 0.0024), which is the
-check that the display path itself is sound.
+The ramp is re-aimed every **32 samples** (`kGainChunk`) instead of once per
+block — one `exp2` per node and one `pow` per band per chunk, measured at
+**1.49% of one core** at 512 nodes. Latency is now constant and
+buffer-independent. Before the fix the plugin audibly **sounded different at
+different buffer sizes**.
 
 **Interactions.** The only lag between string and displayed curve, accepted
 by design. Highest-leverage under-the-hood control in the plugin.
