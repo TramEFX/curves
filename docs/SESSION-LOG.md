@@ -18,7 +18,7 @@ log that runs to 2026-10-02).
 | | |
 |---|---|
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `2f3e954` |
+| Head | `9720258` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 22, across 21 controls |
 | Validation | 11 scenarios, **104,576 cells, 0 mismatches** Python↔C++ |
@@ -603,6 +603,49 @@ like. Steady's share is content-dependent, so it moves with the material.
 > `x + Σ v1·big` and Mix scales only the added part, so the effective gain
 > is `1 + Mix·(g − 1)`. **Adding any new stage after the bank needs the same
 > check** — the anchor is only as good as the last thing bolted on.
+
+### Where the big blooms come from, and why Waves felt weak
+
+**The blooms are the eight gust sites beating.** Their temporal multipliers
+are deliberately incommensurate, so at the default operating point they run
+at 0.265–0.786 Hz and the pairwise differences land at **11.6, 13.4, 13.9,
+19.0, 19.6, 25.2, 28.4 and 88.9 s**. Measured over 150 s, the signed
+low-mode amplitude swings −0.108 … +0.069 with large excursions every 10–25 s
+and never repeats. **Quasi-periodic, not random**, and it swings both ways
+because it is a sum of sinusoids, not a rectified envelope. The two
+lowest-wavenumber sites (1.66 and 1.91 waves across the cloth) put that beat
+into the 1–2 band — which is exactly why raising Waves phases the blooms
+out: it moves those sites up out of that band.
+
+**Waves felt weak because it drained the string, not because of its range.**
+
+| density | 0.5 | **2.3** | 5.0 | 9.5 | 18.0 |
+|---|---|---|---|---|---|
+| rms, before | 0.139 | **0.090** | 0.039 | 0.029 | 0.027 |
+
+2.3x quieter from default to the old top. And the 6–12 band stayed *flat*
+across the entire sweep — what held it up was the **mid band**, which is
+independent of `wave_density` by design, while the gust contribution died
+underneath it. So the knob's apparent effect was mostly "everything gets
+quieter".
+
+Compensated (a multiplier on the wind dial, `R^(1/kWindP)`):
+
+| density | 0.5 | **2.3** | 5.0 | 8.0 |
+|---|---|---|---|---|
+| rms | 0.088 | **0.090** | 0.087 | 0.080 |
+| 6–12 band | 0.0118 | 0.0163 | 0.0318 | **0.0373** |
+
+Level flat to 1.14x (was 4.3x) and the 6–12 band **triples**. Range extended
+5.0 → 8.0 — measured, every band flattens past ~7, so that is where it
+genuinely stops. Default knob 0.40 → 0.24 keeps the shipped density at 2.3.
+
+> **Fourth instance of the same pattern.** After the smoother in the wrong
+> domain, Wind mis-ranged against `f0`, and Smoothing competing with a
+> buffer-sized pipeline: a knob that "needs turning way up" was not short of
+> range, it was fighting an uncompensated side-effect on the same quantity.
+> Checking the *level* across a control's sweep is now the first thing to do
+> when one feels weak.
 
 ---
 

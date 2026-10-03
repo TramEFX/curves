@@ -930,9 +930,9 @@ boost clamp binding, which is honest — very fast flutter genuinely is subtle.
 ---
 
 #### 17 · Waves  `waves`
-**0…1 · default 0.4 · Cloth**
+**0…1 · default 0.24 · Cloth**
 
-| Assigns | `sim_->wave_density = 0.5 + 4.5·Waves` |
+| Assigns | `sim_->wave_density = 0.5 + 7.5·Waves`, plus a gust-dial compensation |
 |---|---|
 
 **What it does.** Spatial **density** of the gust pattern — how many waves
@@ -952,6 +952,50 @@ coherent.
 
 The old top of 3.0 sat well short of the usable range, which reverses past
 ~8. Medium now reaches 5.0, High magnitude about 9.5.
+
+**Amplitude-compensated and extended 2026-10-02.** Finer gust patterns
+couple to the string less efficiently, so the knob used to *drain* it —
+measured rms |u| against density, 40 s per point:
+
+| density | 0.5 | 1.0 | **2.3** | 3.5 | 5.0 | 7.0 | 9.5 | 18.0 |
+|---|---|---|---|---|---|---|---|---|
+| rms, before | 0.139 | 0.126 | **0.090** | 0.057 | 0.039 | 0.032 | 0.029 | 0.027 |
+
+**2.3x quieter** from the default to the old top of the dial, which is why
+it needed turning "way, way up" before the texture change read as anything.
+Worse, the 6–12 band stayed *flat* across the whole sweep — what held it up
+was the **mid band** (deliberately independent of `wave_density`) while the
+gust contribution died away underneath it.
+
+`wave_density_compensation()` divides the loss out, as a multiplier on the
+wind dial (`peak ~ dial^kWindP`, so a response ratio `R` needs
+`dial x R^(1/kWindP)`). After:
+
+| density | 0.5 | **2.3** | 5.0 | 8.0 |
+|---|---|---|---|---|
+| rms | 0.088 | **0.090** | 0.087 | 0.080 |
+| 1–2 band (blooms) | 0.0488 | 0.0482 | 0.0363 | 0.0301 |
+| 6–12 band | 0.0118 | 0.0163 | 0.0318 | **0.0373** |
+
+Level flat to **1.14x** across the dial (was 4.3x), and the 6–12 band now
+**triples**: Waves moves energy from the big blooms up into mid detail at
+roughly constant level, instead of just fading everything out.
+
+**Range 5.0 → 8.0.** Measured, every band flattens past ~7, so 8 is where
+the knob genuinely stops doing anything rather than an arbitrary stop.
+Default knob **0.40 → 0.24**, keeping the shipped density at 2.3 so the stock
+character is unchanged.
+
+**Where the big slow blooms come from.** Not Waves — the **eight gust sites
+beating**. Their temporal multipliers are deliberately incommensurate, so at
+the default operating point they run at 0.265–0.786 Hz and the pairwise
+differences land at 11.6, 13.4, 13.9, 19.0, 19.6, 25.2, 28.4 and 88.9 s.
+Measured over 150 s the signed low-mode amplitude swings −0.108 … +0.069
+with large excursions every 10–25 s and never repeats — quasi-periodic, not
+random, and it goes *both* ways because it is a sum of sinusoids rather than
+a rectified envelope. The two lowest-wavenumber sites (1.66 and 1.91 waves
+across the cloth) are what put that beat into the 1–2 band, which is why
+raising Waves phases the blooms out: it moves those sites up out of it.
 
 **Honest limitation:** Waves is inherently a *modest* control — the string's
 own dynamics dominate its spatial content, so the centroid spans only ~1.6×
