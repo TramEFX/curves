@@ -292,7 +292,8 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     addParameter(mix_ = new APF("mix", "Mix", R{0.0f, 1.0f}, 1.0f));
     addParameter(steady_ = new APF("steady", "Steady (per-band)", R{0.0f, 1.0f}, 0.35f));
     addParameter(leveler_amt_ = new APF("leveler", "Leveler (output)", R{0.0f, 1.0f}, 0.5f));
-    addParameter(test_src_ = new APF("test", "Test noise", R{0.0f, 1.0f}, 0.0f));
+    addParameter(test_src_ = new APF("test", "Test source",
+                                     R(0.0f, 5.0f, 1.0f), 0.0f));
     addParameter(physics_ = new APF("physics", "Physics", R(0.0f, 3.0f, 1.0f), 0.0f));
     addParameter(precision_ = new APF("precision", "Precision", R(0.0f, 2.0f, 1.0f), 0.0f));
     addParameter(velocity_ = new APF("velocity", "Velocity", R{0.0f, 1.0f}, 0.0f));
@@ -656,7 +657,10 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // 4. Audio: tick the sim on its divisor grid, process per sample.
     //    When the internal test source is on, broadband pink noise replaces
     //    the input — the standalone then demos the string with no wiring.
-    const bool test_on = test_src_->get() > 0.5f;
+    const int test_src =
+        juce::jlimit(0, (int)kNumTestSrc - 1,
+                     static_cast<int>(std::lround(test_src_->get())));
+    const bool test_on = test_src != kTestOff;
     const int n = buffer.getNumSamples();
     float* ch0 = buffer.getWritePointer(0);
     float* ch1 = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
@@ -705,9 +709,9 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             }
         }
         if (test_on) {
-            ch0[s] = pink_noise(0);
+            ch0[s] = test_sample(test_src, 0);
             if (ch1)
-                ch1[s] = pink_noise(1);
+                ch1[s] = test_sample(test_src, 1);
         }
         const float dry_l = ch0[s];
         const float dry_r = stereo ? ch1[s] : dry_l;
@@ -835,6 +839,63 @@ juce::AudioProcessorEditor* CurvesAudioProcessor::createEditor() {
 
 // Paul Kellet's economical pink-noise approximation (~ -3 dB/oct), ±1 range
 // scaled to a sane listening level.
+const char* CurvesAudioProcessor::test_src_name(int i) {
+    static const char* kNames[kNumTestSrc] = {"off", "pink", "white",
+                                              "brown", "tone", "pulse"};
+    return kNames[juce::jlimit(0, (int)kNumTestSrc - 1, i)];
+}
+
+float CurvesAudioProcessor::test_sample(int src, int ch) {
+    switch (src) {
+        case kTestWhite:
+            return (random_.nextFloat() * 2.0f - 1.0f) * 0.35f;
+        case kTestBrown: {
+            // leaky integrator: -6 dB/oct, with the leak keeping it centred
+            const float w = random_.nextFloat() * 2.0f - 1.0f;
+            brown_[ch] = 0.996f * brown_[ch] + 0.04f * w;
+            // 0.70, not an eyeballed number: a leaky integrator with a=0.996
+            // driven by 0.04*uniform has sigma = 0.2585, so 3.2 would have
+            // been rms 0.81 / peak 3.97 -- four times full scale. All five
+            // textures are matched to rms ~0.18-0.20 (pulse lower by design,
+            // it is sparse; its PEAK is what matters).
+            return brown_[ch] * 0.70f;
+        }
+        case kTestTone: {
+            // Sustained harmonic stack near A1, amplitudes 1/n so the
+            // spectrum is sawtooth-like and every band has something in it.
+            // The two channels are detuned slightly so stereo is not a
+            // perfect mono sum.
+            const double f0 = (ch == 0) ? 55.0 : 55.37;
+            tone_phase_[ch] += f0 / fs_;
+            if (tone_phase_[ch] >= 1.0)
+                tone_phase_[ch] -= 1.0;
+            double acc = 0.0;
+            const int kHarm = 24;
+            for (int n = 1; n <= kHarm; ++n) {
+                if (f0 * n > 0.45 * fs_)
+                    break;
+                acc += std::sin(6.283185307179586 * tone_phase_[ch] * n) / n;
+            }
+            return static_cast<float>(acc * 0.22);
+        }
+        case kTestPulse: {
+            // ~7 clicks/sec, each a short decaying burst so it excites the
+            // whole band without being a raw unit impulse.
+            const int period = std::max(1, static_cast<int>(fs_ / 7.0));
+            if (++pulse_count_[ch] >= period) {
+                pulse_count_[ch] = 0;
+                pulse_env_[ch] = 1.0f;
+            }
+            pulse_env_[ch] *= 0.9993f;
+            const float w = random_.nextFloat() * 2.0f - 1.0f;
+            return w * pulse_env_[ch] * pulse_env_[ch] * 0.8f;
+        }
+        case kTestPink:
+        default:
+            return pink_noise(ch);
+    }
+}
+
 float CurvesAudioProcessor::pink_noise(int channel) {
     auto& b = pink_[channel];
     const float white = random_.nextFloat() * 2.0f - 1.0f;

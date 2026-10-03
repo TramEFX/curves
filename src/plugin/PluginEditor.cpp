@@ -103,7 +103,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"physics", "Physics", kGlobal},    {"precision", "Precision", kGlobal},
         {"drive", "Range dB", kGlobal},     {"smoothing", "Smoothing", kGlobal},
         {"steady", "Steady", kGlobal},      {"leveler", "Leveler", kGlobal},
-        {"mix", "Mix", kGlobal},            {"test", "Test Noise", kGlobal},
+        {"mix", "Mix", kGlobal},            {"test", "Test Src", kGlobal},
         // STRING
         {"damping", "Damping", kString},    {"stiffness", "Stiffness", kString},
         {"tension", "Tension", kString},    {"velocity", "Velocity", kString},
@@ -146,7 +146,10 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
                 }
             addAndMakeVisible(knob->slider);
             addAndMakeVisible(knob->label);
+            const bool is_test = (rp->paramID == "test");
             knobs_.push_back(std::move(knob));
+            if (is_test)
+                test_knob_ = knobs_.back().get();
             break;
         }
     }
@@ -338,12 +341,19 @@ void CurvesAudioProcessorEditor::set_wall(int which, float x_px) {
 
 int CurvesAudioProcessorEditor::wall_at(juce::Point<int> p) const {
     const auto b = plot_bounds();
-    if (!b.expanded(0.0f, 10.0f).contains(p.toFloat()))
+    // Expanded HORIZONTALLY as well as vertically. A wall parked at an edge
+    // sits exactly on the plot boundary, so with a vertical-only expansion
+    // half its grab zone fell outside the test and clicks just beyond the
+    // edge -- the natural place to aim -- did nothing. That read as the wall
+    // being undraggable (user: "we lost the ability to drag the left side
+    // wall in"). It was always reachable, just only from one side, and the
+    // dB axis labels now sit on exactly that spot.
+    if (!b.expanded(18.0f, 10.0f).contains(p.toFloat()))
         return -1;
     // Grab whichever edge is within reach; the nearer one wins a tie.
     const float dlo = std::abs(float(p.x) - wall_x(0));
     const float dhi = std::abs(float(p.x) - wall_x(1));
-    const float reach = 12.0f;
+    const float reach = 18.0f;
     if (dlo > reach && dhi > reach)
         return -1;
     return (dlo <= dhi) ? 0 : 1;
@@ -369,7 +379,8 @@ void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
                 repaint();
                 return;
             }
-            if (k->magnitude.expanded(4).contains(pt)) {
+            if (CurvesAudioProcessor::has_magnitude(k->mod)
+                && k->magnitude.expanded(4).contains(pt)) {
                 processor_.set_knob_mag(k->mod,
                                         (processor_.knob_mag(k->mod) + 1) % 3);
                 repaint();
@@ -483,6 +494,20 @@ void CurvesAudioProcessorEditor::timerCallback() {
     }
     // Cloth & Wind only does anything in Flagpole, so grey it out elsewhere
     // rather than leaving nineteen live-looking knobs on screen.
+    // Test Src is a six-position switch; name the position on its label so
+    // the knob angle is not the only indication of which texture is live.
+    if (test_knob_ != nullptr) {
+        const int src = juce::jlimit(
+            0, CurvesAudioProcessor::kNumTestSrc - 1,
+            (int)std::lround(test_knob_->slider.getValue()));
+        if (src != last_test_src_) {
+            last_test_src_ = src;
+            test_knob_->label.setText(
+                juce::String("Test: ")
+                    + CurvesAudioProcessor::test_src_name(src),
+                juce::dontSendNotification);
+        }
+    }
     const int mode = processor_.physics_mode();
     if (mode != last_mode_) {
         last_mode_ = mode;
@@ -662,7 +687,7 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
             const float x = (w == 0) ? xl : xh;
             const bool at_edge = (w == 0) ? (xl <= b.getX() + 0.5f)
                                           : (xh >= b.getRight() - 0.5f);
-            const float a = at_edge ? 0.35f : 1.0f;   // dim when parked
+            const float a = at_edge ? 0.60f : 1.0f;   // dim when parked
             g.setColour(juce::Colour(t.anchor).withAlpha(0.18f * a));
             g.fillRect(x - 3.0f, b.getY(), 6.0f, b.getHeight());
             g.setColour(juce::Colour(t.anchor).withAlpha(a));
@@ -746,8 +771,9 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
         const bool has_power =
             CurvesAudioProcessor::power_mode(k->mod) != CurvesAudioProcessor::kPowerNone;
         // Magnitude stays lit when there is no power switch to dim it.
-        draw_led(g, k->magnitude, kMagCol[juce::jlimit(0, 2, mag)],
-                 has_power ? on : true);
+        if (CurvesAudioProcessor::has_magnitude(k->mod))
+            draw_led(g, k->magnitude, kMagCol[juce::jlimit(0, 2, mag)],
+                     has_power ? on : true);
         if (has_power)
             draw_led(g, k->power, juce::Colour(0xffffd21f), on);
     }

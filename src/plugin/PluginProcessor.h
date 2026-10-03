@@ -63,6 +63,19 @@ public:
                       std::array<float, kMaxNodes>& out_eq,
                       int& count) const;
     // Display helpers.
+    // Test source: off plus five textures, chosen to probe different things
+    // about a MOVING EQ rather than just to make noise.
+    //   Pink   - the reference, perceptually flat
+    //   White  - bright, shows what the top octaves are doing
+    //   Brown  - low-heavy, shows the bass end moving
+    //   Tone   - a sustained harmonic stack; the EQ reads as timbre/formant
+    //            movement on a pitched sound instead of as a noise filter
+    //   Pulse  - sparse clicks; exposes ringing, smoothing and transient
+    //            behaviour, which steady noise completely hides
+    enum TestSrc { kTestOff = 0, kTestPink, kTestWhite, kTestBrown,
+                   kTestTone, kTestPulse, kNumTestSrc };
+    static const char* test_src_name(int i);
+
     int active_nodes() const { return n_nodes_; }
     // Effective Range dB: the knob AFTER its magnitude modifier, which is
     // what the audio path actually uses. The canvas labels its dB axis from
@@ -88,6 +101,10 @@ public:
     // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
     // exceed the nominal maximum - that is the point of it.
     static constexpr double kMagScale[3] = {0.5, 1.0, 2.0};
+    // Not every knob wants a magnitude selector. Mix is a plain 0..100%
+    // blend -- "half travel" and "double travel" are meaningless on it, and
+    // 100% has to stay reachable -- so it carries the power LED only.
+    static bool has_magnitude(int k) { return k != kMix; }
     // What "power off" MEANS depends on the knob, and getting this wrong was
     // a real bug: a blanket "off = the knob's minimum" rule left Character
     // off = 0 = ALL GUST WIND, Wind off = the slowest rate (0.091 Hz, an
@@ -134,6 +151,7 @@ private:
     static constexpr int kPrecisionNodes[3] = {128, 256, 512};
     static constexpr int kPrecisionDivisor[3] = {4, 2, 2};
 
+    float test_sample(int src, int channel);
     float pink_noise(int channel);
     void rebuild(int precision);
     void apply_physics(int mode);
@@ -154,6 +172,8 @@ private:
         // keep their value and are silenced at the mechanism instead.
         if (!m.on && power_mode(k) == kPowerToMin)
             return m.lo;
+        if (!has_magnitude(k))
+            return raw;
         return m.lo + (raw - m.lo) * kMagScale[juce::jlimit(0, 2, m.mag)];
     }
     bool mechanism_on(int k) const {
@@ -235,6 +255,10 @@ private:
 
     // Paul Kellet pink-noise filter state, per channel.
     std::array<float, 7> pink_[2]{};
+    float brown_[2]{};          // leaky integrator state
+    double tone_phase_[2]{};    // harmonic stack phase
+    int pulse_count_[2]{};      // samples since the last click
+    float pulse_env_[2]{};
     juce::Random random_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CurvesAudioProcessor)

@@ -135,6 +135,8 @@ private:
     bool drawing_ = false;
     bool dirty_ = false;
     int last_mode_ = -1;  // physics mode the cloth panel was last styled for
+    Knob* test_knob_ = nullptr;   // Test Src, so its label can name the texture
+    int last_test_src_ = -1;
     // Wall being dragged on the canvas: -1 none, 0 low edge, 1 high edge.
     int dragging_wall_ = -1;
     float wall_x(int which) const;
