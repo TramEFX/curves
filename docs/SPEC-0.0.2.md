@@ -19,6 +19,21 @@ bug.
 
 **Session history, measurements and open threads:** `SESSION-LOG.md`.
 
+### Scope note — two axes, and what this document covers
+
+Curves is a **physics sandbox for spectral control**: a physics-driven string
+whose shape is read off as a parameter across the frequency axis. It
+generalises two ways, and the control set below is divided by it.
+
+| Axis | Today | Where it lives below |
+|---|---|---|
+| **What drives the string** (physics mode) | Free, **Flagpole** (deep), Gust, Elastic | Physics selects it. The eight **CLOTH & WIND** controls belong to *Flagpole specifically* and are inert elsewhere. |
+| **What the string drives** (subscriber) | EQ gain only | **F7**/**F8**. Stereo width, per-node Q and cutoff modulation are planned subscribers on the same control signal. |
+
+So: **GLOBAL** and **STRING** are generic; **CLOTH & WIND** is one mode's
+panel. The cloth is not the product — it is the first mode developed in
+depth. See `ORCHESTRATION.md` §1.
+
 ---
 
 ## §0 — Notation
@@ -55,10 +70,16 @@ Everything a knob does happens in exactly one of five places:
 | Stage | Where | Runs at |
 |---|---|---|
 | **A** String physics | `StringSim` | every sim tick (`fs/divisor`) |
-| **B** Node → gain map | `processBlock` | once per node per block |
+| **B** Node → gain map | `processBlock` | once per node per chunk |
 | **C** Filter bank | `FilterBank` | every sample, per band |
 | **D** Output stage | `OutputLeveler` | every sample |
 | **E** Structure | `rebuild` / `apply_physics` | on change only |
+
+Stage **A** is swapped by the **physics mode**; stage **B** is the *first and
+only built subscriber*. The boundary between them is the whole architecture:
+`StringSim` publishes nodes and knows nothing about filters, so a second
+subscriber (stereo width, per-node Q) attaches at **B** without touching
+**A**, and a new physics mode replaces **A** without touching **B**.
 
 ---
 
@@ -409,8 +430,15 @@ Elastic = tight spring-back via knob values only.
 
 **Interactions.** Overwrites three STRING knobs on selection, so it stomps
 manual edits. **All eight CLOTH & WIND knobs are inert outside Flagpole**,
-which is why that panel disables itself. Modes 2 and 3 are thin — three knob
-values plus, for Gust, a static field.
+which is why that panel disables itself.
+
+**This is meant to be the sandbox axis.** Modes 2 and 3 are thin — three knob
+values plus, for Gust, a static field — so Physics is not yet a real switch
+between *different simulations*, which is the intent. Candidates that fit the
+same node-bus: fluid/current flow, granular or particle impacts, magnetic
+repulsion between nodes, coupled or multi-string systems. Each would bring
+its own control panel; the editor currently hard-codes a Flagpole-shaped one,
+so a new mode is UI work as well as physics.
 
 ---
 

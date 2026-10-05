@@ -13,12 +13,13 @@ log that runs to 2026-10-02).
 
 ---
 
-## State at a glance — end of 2026-10-02
+## State at a glance — 2026-10-04
 
 | | |
 |---|---|
+| What it is | **A physics sandbox for spectral control.** Physics mode and subscriber are both axes; the cloth is one mode, EQ gain is one subscriber |
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `ba7ecc0` |
+| Head | `c3a5817` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 24, across 23 controls |
 | Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
@@ -767,6 +768,42 @@ engines mirrored; `hash_pm1` (lowbias32) verified identical across 15
 probes, and a new `random` scenario runs both spreads non-zero in both —
 at spread 0 the frozen baselines say nothing about this path. **12
 scenarios, 119,936 cells, 0 mismatches.**
+
+## 2026-10-04 · Framing corrected — the cloth is one mode
+
+Not a code change. Writing a summary for Notion surfaced that the project's
+own documents described **cloth-in-wind as if it were the product**. The
+owner corrected it:
+
+> "the cloth is just one mode there will be multiple modes with different
+> physics applying to play around with like a physics sandbox. The whole
+> product is a physics-based string driving the EQ or other Spectrum ratio
+> parameters"
+
+So Curves is **a physics sandbox for spectral control**, generalising along
+two axes that are both first-class:
+
+| Axis | Today | Open |
+|---|---|---|
+| **What drives the string** — physics mode | Flagpole deep, Free works, Gust + Elastic thin | Physics is not yet a switch between *distinct simulations*. Candidates: fluid/current flow, granular or particle impacts, magnetic repulsion between nodes, coupled/multi-string |
+| **What the string drives** — subscriber | EQ gain only | Stereo width per band, per-node Q, cutoff modulation — all attach to the same control signal |
+
+**Why this is worth recording rather than just rewording.** It changes where
+future work belongs. `StringSim` publishes nodes and knows nothing about
+filters, so a new mode replaces the physics without touching the bank, and a
+new subscriber attaches without touching the physics — the engine already
+assumes both axes.
+
+> **A debt the reframing exposed.** The *editor* does not assume them. The
+> CLOTH & WIND panel is a Flagpole-shaped control set hard-coded alongside
+> the generic ones, so **adding a physics mode is UI work as well as
+> physics**. That was not previously written down anywhere, and it is the
+> main cost of axis 1.
+
+Updated: `ORCHESTRATION.md` §1 (with the correction stated explicitly rather
+than quietly rewritten), `SPEC-0.0.2.md` (scope note, §1 dataflow, the
+Physics entry), `CLAUDE.md` (lead paragraph). Also corrected stale figures in
+`CLAUDE.md` — it still said 11 scenarios / 104,576 cells and 22 parameters.
 
 ---
 

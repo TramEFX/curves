@@ -1,7 +1,24 @@
 # Curves — working notes for Claude
 
-A JUCE/CLAP plugin: a 1D damped wave-equation string drives a multiband
-filter bank. The string pushes the parameters.
+A JUCE/CLAP plugin. **A physics sandbox for spectral control**: a
+physics-driven string is simulated continuously and its shape is read off as
+a parameter across the frequency axis. The string pushes the parameters.
+
+It generalises two ways, and both are first-class — keep them in mind before
+assuming where a change belongs:
+
+- **What drives the string** is a selectable *physics mode*. Cloth-in-wind
+  ("Flagpole") is deep, Free works, Gust and Elastic are thin. The cloth is
+  **not the product**, it is the first mode built in depth.
+- **What the string drives** is a *subscriber*. EQ gain is the only one
+  built and is not privileged; stereo width, per-node Q and cutoff
+  modulation are planned on the same control signal.
+
+`StringSim` publishes nodes and knows nothing about filters. A new mode
+replaces the physics without touching the bank; a new subscriber attaches
+without touching the physics. The **editor** does not yet honour this — the
+CLOTH & WIND panel is Flagpole-shaped and hard-coded, so a new mode is UI
+work too. See `ORCHESTRATION.md` §1.
 
 ## This is a SHARED machine — the owner is usually using it
 
@@ -17,7 +34,8 @@ doing, and a stray click of theirs lands in the test and corrupts it.
 - **Default to headless verification.** The test binaries under
   `build/Release/` cover almost everything: `scenarios`, `gain_test`,
   `display_test`, `wind_test`, `spatial_test`, `mid_test`, `waves_test`,
-  `patch_test`, `bench`. Prefer these over driving the GUI, always.
+  `patch_test`, `tension_test`, `lines_test`, `rnd_test`, `hash_probe`,
+  `bench`. Prefer these over driving the GUI, always.
 - **Screenshots are safe; clicks are not.** `PrintWindow(hwnd, dc,
   PW_RENDERFULLCONTENT)` grabs the window without taking focus or touching
   the cursor. Use it freely. Synthetic *input* should be announced first and
@@ -59,7 +77,7 @@ build/Release/scenarios.exe prototype
 ```
 
 then cross-diff the **`value` column parsed as floats**. Currently
-**11 scenarios, 104,576 cells, 0 mismatches**.
+**12 scenarios, 119,936 cells, 0 mismatches**.
 
 > A naive byte diff of those CSVs reports ~156,000 mismatches and means
 > nothing: Python writes `0.0` where C++ writes `0.000000`, and the scenario
@@ -79,7 +97,8 @@ the plugin never uses.
 2. **Bit-exact cross-validation** — above.
 3. **Channel coherence** — one instance is one string; nothing inside a
    single instance may treat L and R differently. Stereo comes from running
-   separate instances.
+   separate instances. (This is also what keeps a per-band *stereo width*
+   subscriber coherent when it arrives.)
 
 ## Habits that have paid off
 
@@ -98,6 +117,6 @@ the plugin never uses.
 | file | role |
 |---|---|
 | `docs/SESSION-LOG.md` | running log: what was measured, what was decided, what is open |
-| `docs/SPEC-0.0.2.md` | current control reference, all 22 parameters |
+| `docs/SPEC-0.0.2.md` | current control reference, all 24 parameters |
 | `docs/SPEC-0.0.1.md` | superseded, kept |
 | `ORCHESTRATION.md` | architecture and decision record |
