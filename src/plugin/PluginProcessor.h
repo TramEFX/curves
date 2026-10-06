@@ -98,8 +98,12 @@ public:
     double display_depth_db() const {
         return display_depth_.load(std::memory_order_relaxed);
     }
-    bool display_is_width() const {
-        return display_width_.load(std::memory_order_relaxed);
+    // 0 = mid gain (dB), 1 = side gain (dB), 2 = placement (%), 3 = nothing
+    // applied. Ordered fallback: whichever subscriber is actually carrying
+    // the shape. Enumerating these one at a time is how the curve went
+    // missing twice, so this is exhaustive by construction.
+    int display_src() const {
+        return display_src_.load(std::memory_order_relaxed);
     }
     int physics_mode() const { return last_physics_; }
 
@@ -233,7 +237,7 @@ private:
     // torn double would print a nonsense label.
     std::atomic<double> max_gain_db_{18.0};
     std::atomic<double> display_depth_{18.0};
-    std::atomic<bool> display_width_{false};
+    std::atomic<int> display_src_{0};
 
     // draw mailbox (GUI -> audio); fixed max size, first n_nodes_ active
     juce::SpinLock draw_lock_;

@@ -698,11 +698,24 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // off the curve falls back to the WIDTH shape, which is still being
     // driven. Without this the canvas flatlined while the stereo image was
     // visibly moving -- the shape was in the side gain and nothing read it.
-    const bool show_width = !mechanism_on(kRangeDb) && width_db > 1e-6;
-    display_width_.store(show_width, std::memory_order_relaxed);
-    display_depth_.store(show_width ? width_db
-                                    : max_gain_db_.load(std::memory_order_relaxed),
-                         std::memory_order_relaxed);
+    // Ordered fallback to whichever subscriber is carrying the shape. The
+    // EQ wins when on, because dB is the meaning the axis was built for;
+    // then width, then placement. Only when NOTHING is applied is a flat
+    // curve the honest answer.
+    int src = 3;
+    double depth = 1.0;
+    if (mechanism_on(kRangeDb)) {
+        src = 0;
+        depth = max_gain_db_.load(std::memory_order_relaxed);
+    } else if (width_db > 1e-6) {
+        src = 1;
+        depth = width_db;
+    } else if (pan_amt > 1e-6) {
+        src = 2;
+        depth = 100.0 * pan_amt;   // placement reads as a percentage
+    }
+    display_src_.store(src, std::memory_order_relaxed);
+    display_depth_.store(depth, std::memory_order_relaxed);
     if (spatial_on) {
         if (side_targets_.size() != (std::size_t)n_nodes_) {
             side_targets_.assign(n_nodes_, 1.0);
@@ -848,15 +861,25 @@ void CurvesAudioProcessor::publish_display() {
     // effective per-band gain is 1 + Mix*(g - 1). Without this the curve
     // drew the full EQ depth while Mix 0.5 applied half of it -- the same
     // class of WYSIWYG violation Steady had, introduced when Mix was added.
-    const bool show_width = display_width_.load(std::memory_order_relaxed);
-    const auto& g = show_width ? bank_.side_gains() : bank_.gains();
-    const double range_db = display_depth_.load(std::memory_order_relaxed);
+    const int src = display_src_.load(std::memory_order_relaxed);
+    const double depth = display_depth_.load(std::memory_order_relaxed);
     const double mix = mix_amount_;
-    for (int i = 0; i < n_nodes_; ++i) {
-        const double g_eff = 1.0 + mix * (g[i] - 1.0);
-        const double db = 20.0 * std::log10(std::max(g_eff, 1e-6));
-        display_eq_buffer_[i] =
-            static_cast<float>(std::clamp(db / std::max(1.0, range_db), -1.0, 1.0));
+    if (src == 2) {
+        // Placement is linear and signed, and is not Steady-ducked, so it
+        // needs its own normalisation rather than the dB path.
+        const auto& p = bank_.pans();
+        const double amt = std::max(1e-9, depth * 0.01);
+        for (int i = 0; i < n_nodes_; ++i)
+            display_eq_buffer_[i] =
+                static_cast<float>(std::clamp(mix * p[i] / amt, -1.0, 1.0));
+    } else {
+        const auto& g = (src == 1) ? bank_.side_gains() : bank_.gains();
+        for (int i = 0; i < n_nodes_; ++i) {
+            const double g_eff = 1.0 + mix * (g[i] - 1.0);
+            const double db = 20.0 * std::log10(std::max(g_eff, 1e-6));
+            display_eq_buffer_[i] =
+                static_cast<float>(std::clamp(db / std::max(1.0, depth), -1.0, 1.0));
+        }
     }
     display_count_ = n_nodes_;
     display_version_.fetch_add(1, std::memory_order_release);

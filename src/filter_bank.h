@@ -60,6 +60,10 @@ public:
     // carries no shape, but the spatial subscriber is still driving this --
     // so this is what the curve must be drawn from in that case.
     const std::vector<double>& side_gains() const { return gs_eff_; }
+    // And placement. With the EQ off AND width at zero, this is the only
+    // carrier left holding the shape -- the mid and side gains are both
+    // flat. Nothing read it, so the curve vanished a second time.
+    const std::vector<double>& pans() const { return pan_; }
     bool spatial_active() const { return spatial_; }
 
     // One sample FRAME. The gain advances exactly once here, not once per
