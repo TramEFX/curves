@@ -92,6 +92,15 @@ public:
     double range_db() const {
         return max_gain_db_.load(std::memory_order_relaxed);
     }
+    // What the canvas axis should be labelled in. With the EQ gated off but
+    // the spatial subscriber running, the curve is the WIDTH shape and the
+    // axis means width dB, not EQ dB.
+    double display_depth_db() const {
+        return display_depth_.load(std::memory_order_relaxed);
+    }
+    bool display_is_width() const {
+        return display_width_.load(std::memory_order_relaxed);
+    }
     int physics_mode() const { return last_physics_; }
 
     // ---- per-knob modifiers (on/off + magnitude) ------------------------
@@ -223,6 +232,8 @@ private:
     // Read by the GUI thread for the dB axis; relaxed atomic because a
     // torn double would print a nonsense label.
     std::atomic<double> max_gain_db_{18.0};
+    std::atomic<double> display_depth_{18.0};
+    std::atomic<bool> display_width_{false};
 
     // draw mailbox (GUI -> audio); fixed max size, first n_nodes_ active
     juce::SpinLock draw_lock_;

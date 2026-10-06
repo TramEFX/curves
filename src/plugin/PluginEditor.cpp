@@ -705,7 +705,9 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     // from the EFFECTIVE Range (knob after its magnitude modifier) times the
     // zoom, so the axis stays truthful whatever magnitude is selected: at
     // High on an 18 dB knob the canvas really is +-36 dB and says so.
-    const double range_db = processor_.range_db();
+    // Axis follows whichever subscriber the curve is showing.
+    const bool ax_width = processor_.display_is_width();
+    const double range_db = processor_.display_depth_db();
     const double full_db = range_db * double(display_scale_);
     // smallest step giving at most 4 lines per side
     static constexpr double kSteps[] = {1, 2, 3, 6, 12, 24, 48};
@@ -756,7 +758,7 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setFont(10.0f);
     g.setColour(juce::Colour(t.text));
     g.drawText(juce::String::formatted(
-                   "+/-%.3g dB", full_db),
+                   ax_width ? "+/-%.3g dB width" : "+/-%.3g dB", full_db),
                int(b.getRight()) - 92, int(b.getY()) + 4, 86, 13,
                juce::Justification::centredRight);
 

@@ -15,6 +15,7 @@ void FilterBank::prepare(int num_bands, double sample_rate, int num_channels) {
     ramp_.assign(num_bands, 1.0);
     g_eff_.assign(num_bands, 1.0);
     gs_.assign(num_bands, 1.0);
+    gs_eff_.assign(num_bands, 1.0);
     ramp_s_.assign(num_bands, 1.0);
     pan_.assign(num_bands, 0.0);
     pan_step_.assign(num_bands, 0.0);

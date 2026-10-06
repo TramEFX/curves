@@ -56,6 +56,11 @@ public:
     // Truth for the display: effective per-band linear gain, INCLUDING the
     // Steady duck. This is what the EQ is applying right now.
     const std::vector<double>& gains() const { return g_eff_; }
+    // The SIDE equivalent. With the EQ gated off the mid gain is flat and
+    // carries no shape, but the spatial subscriber is still driving this --
+    // so this is what the curve must be drawn from in that case.
+    const std::vector<double>& side_gains() const { return gs_eff_; }
+    bool spatial_active() const { return spatial_; }
 
     // One sample FRAME. The gain advances exactly once here, not once per
     // channel — the previous per-channel entry point double-stepped the
@@ -132,6 +137,7 @@ public:
                 }
             }
             g_eff_[b] = 1.0 + bigm;
+            gs_eff_[b] = 1.0 + bigs;
 
             ym += v1m * bigm;
             if (stereo)
@@ -162,7 +168,7 @@ private:
     // Spatial subscriber state. gs_ ramps geometrically like g_; pan_ ramps
     // LINEARLY because it is signed and passes through zero.
     bool spatial_ = false;
-    std::vector<double> gs_, ramp_s_, pan_, pan_step_;
+    std::vector<double> gs_, ramp_s_, pan_, pan_step_, gs_eff_;
     std::vector<std::vector<double>> s1_, s2_;  // integrator state [channel][band]
 };
 

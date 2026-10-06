@@ -693,6 +693,16 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const double width_db = knob(kWidth, width_->get());
     const double pan_amt = knob(kPanDepth, pan_depth_->get());
     const bool spatial_on = (width_db > 1e-6 || pan_amt > 1e-6);
+    // Which subscriber the canvas is showing. The EQ wins when it is on,
+    // because that is the one with an absolute dB meaning; with it gated
+    // off the curve falls back to the WIDTH shape, which is still being
+    // driven. Without this the canvas flatlined while the stereo image was
+    // visibly moving -- the shape was in the side gain and nothing read it.
+    const bool show_width = !mechanism_on(kRangeDb) && width_db > 1e-6;
+    display_width_.store(show_width, std::memory_order_relaxed);
+    display_depth_.store(show_width ? width_db
+                                    : max_gain_db_.load(std::memory_order_relaxed),
+                         std::memory_order_relaxed);
     if (spatial_on) {
         if (side_targets_.size() != (std::size_t)n_nodes_) {
             side_targets_.assign(n_nodes_, 1.0);
@@ -838,8 +848,9 @@ void CurvesAudioProcessor::publish_display() {
     // effective per-band gain is 1 + Mix*(g - 1). Without this the curve
     // drew the full EQ depth while Mix 0.5 applied half of it -- the same
     // class of WYSIWYG violation Steady had, introduced when Mix was added.
-    const auto& g = bank_.gains();
-    const double range_db = max_gain_db_.load(std::memory_order_relaxed);
+    const bool show_width = display_width_.load(std::memory_order_relaxed);
+    const auto& g = show_width ? bank_.side_gains() : bank_.gains();
+    const double range_db = display_depth_.load(std::memory_order_relaxed);
     const double mix = mix_amount_;
     for (int i = 0; i < n_nodes_; ++i) {
         const double g_eff = 1.0 + mix * (g[i] - 1.0);
