@@ -2,8 +2,8 @@
 
 **Status: current.** Supersedes `SPEC-0.0.1.md`, which is kept for history.
 
-An exhaustive knob-by-knob reference covering all **24 parameters** across
-**23 controls** (the two Walls share one entry). For every control it states:
+An exhaustive knob-by-knob reference covering all **28 parameters** in
+**26 entries** (the two Walls share one, as do the two Randomisers). For every control it states:
 
 1. **Assigned parameters** — the exact engine variables it writes.
 2. **What it does** — the effect, in plain language.
@@ -271,22 +271,42 @@ The bank holds **no time constant of its own**. Given a block target it
 precomputes one geometric step per band, `r_b = (G_b / g_b)^(1/n)`, then per
 **sample frame** — once, not once per channel:
 
+**Runs in MID/SIDE** since 2026-10-06. Verified identical to the L/R form
+at **3.3e-16** while mid and side share a gain, so the move was free; the
+SVF count is unchanged and the M/S conversion is 4 ops per *frame* rather
+than per band, which is what makes stereo nearly free.
+
 ```
-g_b  *= r_b                                   exactly linear in dB
-v1    = bandpass(x)                           TPT SVF, Q = 1.0 fixed
-big   = g_b − 1
+m, s  = (l+r)/2, (l−r)/2                      once per FRAME
+g_b  *= r_b                                   mid gain, linear in dB
+gs_b *= rs_b                                  side gain  ─┐
+pan_b += pan_step_b                           placement ──┘ spatial only
+v1m   = bandpass(m)                           TPT SVF, Q = 1.0 fixed
+v1s   = bandpass(s)
+bigm  = g_b − 1 ;  bigs = gs_b − 1
                                               ── Steady, if amount > 0 ──
-mag   = max(|v1_L|, |v1_R|)                   MONO detector
-env_b += (mag > env_b ? atk : rel)·(mag − env_b)    5 ms / 150 ms
-if env_b > 0.25:  big /= 1 + Steady·(env_b/0.25 − 1)
-g_eff_b = 1 + big                             ← what the display draws
-y     += v1 · big
+env_b += (|v1m| > env_b ? atk : rel)·(|v1m| − env_b)   5 ms / 150 ms
+if env_b > 0.25:  bigm, bigs ÷= 1 + Steady·(env_b/0.25 − 1)
+g_eff_b, gs_eff_b = 1 + bigm, 1 + bigs        ← display candidates
+ym   += v1m · bigm
+ys   += v1s · bigs + v1m · pan_b
+l, r  = ym + ys, ym − ys                      once per FRAME
 ```
+
+Three per-band coefficients: **mid gain** (the EQ), **side gain** (width is
+their difference in dB) and **mid→side cross-feed** (placement). All three
+come from the control surface and are drawable, which is what **image
+provenance** (§6) requires.
 
 Output is `x + Σ_b v1_b·big_b` — a dry path plus summed peaking bands. This
 can **boost or cut** a band but cannot **move** one. Steady is
 **feedforward** (the follower reads the input-side bandpass), so it cannot
-oscillate.
+oscillate, and it ducks **mid and side by the same factor** — a
+content-driven width change is exactly what image provenance forbids.
+
+> **⚠ The bands OVERLAP and their contributions ADD.** See §5: the effective
+> gain is `1 + K·(g−1)` with `K ≈ 0.152·N`, so every per-band depth in this
+> document is **nominal, not actual**.
 
 **Geometric, not linear.** `g *= r` lands on the target exactly after `n`
 frames and every intermediate value is linear in dB, for one multiply. A
@@ -303,6 +323,26 @@ duck from `max(|v1_L|,|v1_R|)` and applies it identically to both channels,
 so there is exactly one true curve to draw. `gains()` returns `g_eff`,
 Steady included.
 
+
+### F8b · Which curve is drawn
+
+`publish_display()` picks the subscriber that is **actually carrying the
+shape**, in this order. Enumerating these one at a time is how the curve
+went missing twice, so the set is exhaustive by construction:
+
+| # | condition | source | axis |
+|---|---|---|---|
+| 0 | EQ powered on | `gains()` (mid, Steady-inclusive) | ± EQ dB |
+| 1 | else, Width > 0 | `side_gains()` (Steady-inclusive) | ± dB width |
+| 2 | else, Place > 0 | `pans()` (linear, signed, **not** ducked) | ± % place |
+| 3 | else | — | "no subscriber on" |
+
+Row 3 is the one case where a flat curve is correct: nothing is applied, so
+drawing a shape would itself be the WYSIWYG violation. It is labelled rather
+than left ambiguous, because a silently vanishing curve is what the bug
+looked like.
+
+Mix is folded in exactly on every path (`1 + Mix·(g−1)`).
 
 ### F9 · `OutputLeveler::process(l, r)`
 
@@ -463,8 +503,8 @@ everything scales linearly with sample rate.
 
 ---
 
-#### 3 · Range dB  `drive`
-**3…24 dB · default 18 · Global**
+#### 3 · EQ dB  `drive`
+**3…24 dB · default 18 · SUBSCRIBERS panel** (was GLOBAL until 2026-10-06)
 
 | Assigns | `max_gain_db_` |
 |---|---|
@@ -478,6 +518,10 @@ curve and audio identically and cannot break WYSIWYG.
 **Interactions.** Master depth for the whole effect. At 18 dB a full-scale
 swing is a **36 dB peak-to-trough** EQ — set this before tuning anything
 physical, or you will tune the physics around a too-hot master.
+
+**Power LED gates the EQ entirely** (`kPowerGate`, changed 2026-10-06). Off
+means the mid gain is flat — not "3 dB" — so the EQ and the spatial
+subscriber can genuinely run independently.
 
 **It does not touch the physics, and it does not move the picture.** It has
 one writer and two readers (the gain map and the display normalization),
@@ -1256,6 +1300,77 @@ scenarios bit-identical.
 
 ---
 
+### SUBSCRIBERS — what the one control signal drives
+
+Each subscriber reads the **same** smoothed control signal and carries its
+own depth and limits. EQ dB (**#3**) is the first; the spatial pair is the
+second. Per-node Q and cutoff modulation slot in here without a redesign.
+
+---
+
+#### 23 · Width  `width`
+**0…24 dB · default 0 · Subscribers**
+
+| Assigns | side gain target, `exp2((d·EQdB + d·Width·w)/6.0206)` |
+|---|---|
+
+**What it does.** How far the **side** gain departs from the mid at full
+deflection — in the same dB unit as EQ dB, because that is literally what it
+is. The width ratio is `2^(d·Width/6.0206)`.
+
+Since mid and side are the same shape at different depths, **one curve is
+honest for both**, which is what the dual-labelled axis relies on.
+
+**Measured.** Tracks the EQ's own behaviour to **0.18%** at the reference
+point. Zero is exactly neutral, and the stage is skipped outright when both
+Width and Place are zero, so it costs nothing unused.
+
+**Needs stereo input.** Side is zero on a mono source, so width does
+nothing there. A decorrelator is the only real fix — deferred, see §5.
+
+---
+
+#### 24 · Place  `pan_depth`
+**0…1 · default 0 · Subscribers**
+
+| Assigns | `pan` target, `d · Place · w`; the bank adds `pan · v1m` to the side |
+|---|---|
+
+**What it does.** Per-band **placement**. Unlike width, it works on a mono
+source, and it is **mono-safe**: measured `rms(L+R)` is unchanged to
+**1.000×** across the whole range, so it is a balance change rather than a
+cancellation.
+
+> **⛔ BLOCKED — not usable at its stated range.** Band overlap (§5) means
+> ~0.15·N bands contribute at any frequency and their pan contributions add,
+> so a hard pan arrives at roughly `Place = 0.014` at 512 nodes. The whole
+> visible travel is past the end of its useful range. Width and EQ are
+> unaffected because they inherit the factor *equally* and stay consistent
+> with each other; placement has an **absolute** meaning and does not.
+
+---
+
+#### 25 · Low Hz  `stereo_lo`
+**20…2000 Hz · default 120 · Subscribers**
+
+#### 26 · High Hz  `stereo_hi`
+**1000…18000 Hz · default 12000 · Subscribers**
+
+| Assigns | `spatial_w_[i]`, a per-band taper on the spatial **deviation** |
+|---|---|
+
+**What they do.** Damp width and placement outside the window, leaving the
+EQ alone. **A taper on the deviation, not a filter on the audio**: outside
+it, width goes to 1 and pan to 0, i.e. those bands are simply left as they
+were. One octave of smoothstep at each edge, so the drawn curve stays
+continuous.
+
+Widening the bass is almost always wrong and the log axis puts bass at the
+left end, which is why this exists. Cached — it only rebuilds when the cuts
+or the band map move.
+
+---
+
 ## §4 — Reverse Index: which knobs write each parameter
 
 The entanglement map. A parameter written by more than one knob is where
@@ -1282,6 +1397,9 @@ knobs can fight.
 | `bank_.steady_amount_` | Steady | — |
 | `leveler_.amount_` | Leveler | — |
 | `mix_amount_` | Mix | dry/wet, pre-Leveler |
+| side gain (per band) | **Width**, EQ dB | width = their difference in dB |
+| pan (per band) | **Place** | mid→side cross-feed |
+| `spatial_w_` | **Low Hz**, **High Hz** | taper on the spatial deviation only |
 | `n_nodes_`, `sim_divisor_` | Precision | — |
 | *(all of the above)* | the per-knob **power / magnitude** modifiers | §2b |
 
@@ -1290,35 +1408,109 @@ though each consumer normalizes against it deliberately.
 
 ---
 
-## §5 — Known Defects and Tuning Targets
+## §5 — Status: blocked, pending, open
 
-1. **Wrinkle is outside the excitation budget** — 1.57× peak multiplier at
-   Character 0. The last piece of the Motion/Character work. **Flap is
-   outside it too** (1.45× across its range), for the same reason.
-2. **Range dB default 18** gives a 36 dB peak-to-trough span. Probably too
-   hot; set it before tuning physics.
-3. **Stiffness is weaker than its range** now that DC and tilt are blocked.
-   Needs rescaling or a redefined job.
-4. ~~**Velocity is unexplored**~~ — **fixed 2026-10-02.** Was contributing
-   3.4% at full; now a position/velocity blend with the constant corrected.
-5. **Physics modes 2 and 3 are thin** — knob values plus, for Gust, a static
-   field. Candidates for becoming presets, freeing Physics to be a real mode
-   switch.
-6. **Three stepped parameters are rotaries** (Physics, Precision, Direction).
+Reorganised 2026-10-06 by what each item *demands*, rather than as a flat
+list. Fixed items are kept with a date so a defect is not rediscovered.
 
-10. ~~**Steady's ducking was hidden from the curve**~~ — **fixed 2026-10-02**
-    (up to 4.52 dB of real gain reduction was invisible; mono detector now,
-    `gains()` is Steady-inclusive).
-11. ~~**Range dB leaked into the drawn curve**~~ — **fixed 2026-10-02**
-    (smoother moved onto the control signal; 0.298 → 4.95e-14).
-12. ~~**Stereo smoothed at half the set time**~~ — **fixed 2026-10-02**
-    (the gain advanced once per channel instead of once per frame).
-13. **Smoothing's default is now un-tuned.** Fixing the double-step made
-    stereo 2× slower at the same setting. 30 ms is inherited, not chosen.
-7. **Precision rebuild allocates on the audio thread.**
-8. **Per-node Q is unimplemented.** `Q = 1.0` fixed for every band, despite
-   per-node Q being a recorded architectural decision.
-9. **96 kHz halves the headroom** — 512 nodes ≈ 85 % of one core.
+### ⛔ BLOCKED — needs a decision before the work can continue
+
+**B1 · Band overlap: every per-band depth is nominal, not actual.**
+
+`out = x + Σ bp_b·(g_b − 1)`. With **Q = 1** the bands are ~1.4 octaves wide
+while the spacing is `9.23/N` octaves, so **~0.15·N bands overlap** at any
+frequency and their contributions **add**:
+
+```
+actual = 1 + K·(g − 1),    K ≈ 0.152·N
+```
+
+| bands | nominal | actual | fitted K |
+|---|---|---|---|
+| 48 | +6 dB | +17.14 dB | 6.23 |
+| 128 | +6 dB | +25.12 dB | 17.11 |
+| **512** | **+6 dB** | **+36.92 dB** | **69.47** |
+
+Three consequences:
+
+1. At 512 nodes the EQ is ~70× deeper than the knob says. Already
+   compensated by ear — the owner runs EQ dB at **3.74** against a default
+   of 18.
+2. **Cuts invert.** Once `K·(1−g) > 1` the effective gain goes negative: a
+   nominal −3 dB at 512 nodes returns **+25.85 dB** with flipped polarity.
+3. **Precision cross-couples with depth** — K runs 17 → 69 from 128 to 512
+   nodes, so changing resolution changes EQ depth ~4×.
+
+This is **the unimplemented per-node Q (O4) coming due**. Width and EQ
+inherit the factor *equally* and stay consistent, so both remain usable;
+**Place does not** (see B2).
+
+Two routes, neither taken: **normalise by `1/K`** (one scalar, keeps the
+smooth Q = 1 response, makes the dB knobs honest, removes the Precision
+coupling) or **per-node Q matched to spacing** (`Q ≈ 0.16·N`, ~80 at 512 —
+architecturally intended but will sound resonant, and a far larger change).
+**Both reshuffle every sound already tuned by ear**, which is why this is a
+decision and not a fix.
+
+**B2 · Place is unusable at its stated range.** Direct consequence of B1:
+with `K ≈ 69` a hard pan arrives at roughly `Place = 0.014`, so the entire
+visible travel is past the end. Unblocks the moment B1 does.
+
+### ⏳ PENDING — decided, waiting on ears or a later pass
+
+- **P1 · M2 feel gate.** Flagpole "physical, not animated", zipper-free.
+  Still the formal milestone exit.
+- **P2 · Smoothing's default is un-tuned.** Fixing the per-channel
+  double-step made stereo 2× slower at the same number; 15 ms is a
+  restoration, not a choice.
+- **P3 · Decorrelator.** Width does nothing on a mono source because the
+  side is zero. The only real fix, and a genuine piece of work rather than a
+  parameter. Deferred deliberately.
+- **P4 · Magnitude multipliers `{0.5, 1.0, 2.0}`** remain a guess. Medium is
+  calibrated; Low and High are untested by ear.
+- **P5 · Motion budget under-delivers ~37%** at the default operating point
+  (0.371 predicted, 0.234 measured) — the power law is likely stale since
+  the Waves range extension and the wall/blocker windowing. Needs a re-fit.
+- **P6 · Shedding has no Tension compensation** — peak falls 80.7× across the
+  Tension dial at Character 1. Belongs with the Character work.
+
+### 🔧 OPEN — known, costed, nobody blocked
+
+- **O1 · Wrinkle and Flap sit outside the excitation budget** (1.57× and
+  1.45×) — they add on top rather than inside it.
+- **O2 · Physics modes 2 and 3 are thin.** Physics is not yet a real switch
+  between distinct simulations, which is axis 1 of the product.
+- **O3 · Adding a physics mode is UI work too.** CLOTH & WIND is a
+  Flagpole-shaped panel hard-coded alongside the generic ones.
+- **O4 · Per-node Q unimplemented.** `Q = 1.0` fixed, despite being a
+  recorded architectural decision. See B1 — this is the root of it.
+- **O5 · Stiffness is weaker than its range** now that DC and tilt are
+  blocked.
+- **O6 · Precision rebuild allocates on the audio thread.**
+- **O7 · Three stepped parameters are rotaries** (Physics, Precision,
+  Direction).
+- **O8 · 96 kHz halves the headroom** — 512 nodes ≈ 85% of one core.
+- **O9 · CLAP has no deploy step** — build tree only.
+
+### ✅ FIXED — kept so they are not rediscovered
+
+- ~~Velocity inert~~ (2026-10-02) — was 3.4% at full; now a position/velocity
+  blend with the constant corrected.
+- ~~Steady's duck hidden from the curve~~ (2026-10-02) — up to 4.52 dB
+  invisible; mono detector, `gains()` Steady-inclusive.
+- ~~Range dB leaked into the drawn curve~~ (2026-10-02) — smoother moved onto
+  the control signal; 0.298 → 4.95e-14.
+- ~~Stereo smoothed at half the set time~~ (2026-10-02) — gain advanced once
+  per channel instead of once per frame.
+- ~~Gain latency scaled with the host buffer~~ (2026-10-02) — targets aimed
+  once per block; now re-aimed every 32 samples, constant 0.0164.
+- ~~Mix ignored by the drawn curve~~ (2026-10-02) — folded in exactly.
+- ~~Wind mis-ranged against f0~~ (2026-10-02) — now a multiple of the wave
+  speed.
+- ~~Waves drained the string~~ (2026-10-02) — 2.3× quieter across the dial;
+  compensated, now flat to 1.14×.
+- ~~Curve vanished with the EQ gated off~~ (2026-10-06) — display now follows
+  the active subscriber (F8b).
 
 ---
 
@@ -1330,13 +1522,34 @@ Two rules that constrain all future work:
 same ±1 clamp the audio path uses — never from the sim. Any amplitude
 mechanism must keep the string inside ±1 in normal use, or the EQ flat-tops.
 
-**Channel coherence.** One instance is one string: no process inside a
-single instance may treat L and R differently. Stereo interest comes from
-running separate *instances* per channel — the sandbox design — so internal
-divergence is a dynamic image-mover and therefore a defect. Driving a
-*different spectrum* (stereo width alone, or alongside EQ) is a wanted
-feature to be built deliberately, not something that should fall out of
-per-channel followers by accident.
+**Image provenance** — the stereo image moves only when told to. *(Renamed
+and reworded from "channel coherence" 2026-10-06: the old name described a
+mechanism we deliberately left behind, and would have made every stereo
+feature look like a violation.)*
+
+One instance is one string. Every per-band coefficient the bank applies —
+**mid gain, side gain, and mid→side cross-feed** — must be a deterministic
+function of the control surface and the knobs, and therefore **drawable as a
+curve**. That is the sharp test: *if you cannot draw it, its provenance is
+wrong.*
+
+**Forbidden:** any detector that measures the channels separately and lets
+the result change the balance between them. That is how the image starts
+drifting as a side effect of program material, and it is why Steady's
+per-channel follower was removed — no single curve was correct, so the
+display showed none of it.
+
+**Permitted:** deliberate stereo transforms driven by the control surface —
+per-band width and placement — because they are intended, reproducible,
+automatable and fully described by a curve.
+
+**Content-driven gain reduction stays channel-linked.** The Leveler's
+control signal is `max(|L|,|R|)` and Steady's detector is the mid, both for
+this reason. Those are the rule still applying, not legacy.
+
+Stereo has **two routes**: instancing (separate instances per channel →
+decorrelated motion) and the spatial subscriber (one instance → controlled
+placement). Complementary, not competing.
 
 **Bit-exact cross-validation.** The C++ engine is validated against the
 Python spec cell by cell: **12 scenarios, 119,936 cells, 0 mismatches**. Every
@@ -1352,5 +1565,8 @@ build/Release/tension_test.exe 0.85 0 9  # Tension vs amplitude (self-validating
 build/Release/display_test.exe           # does the drawn curve track the string
 build/Release/wind_test.exe              # Wind sweeps, old vs shipped mapping
 build/Release/rnd_test.exe               # randomisers + the direction invariant
+build/Release/stereo_test.exe            # width, placement, mono-safety
+build/Release/overlap_probe.exe          # the band-overlap factor K (B1)
+build/Release/display_src.exe            # every subscriber config is drawable
 build/Release/spatial_test.exe           # spatial spectrum by wavenumber band
 ```

@@ -13,18 +13,22 @@ log that runs to 2026-10-02).
 
 ---
 
-## State at a glance — 2026-10-04
+## State at a glance — 2026-10-06
 
 | | |
 |---|---|
 | What it is | **A physics sandbox for spectral control.** Physics mode and subscriber are both axes; the cloth is one mode, EQ gain is one subscriber |
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `b6d696f` |
+| Head | `24ba49f` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
-| Parameters | 28, across 27 controls |
+| Parameters | 28, in 26 spec entries |
 | Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
 | Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
+
+> **Status lives in `SPEC-0.0.2.md` §5** — blocked / pending / open, with
+> numbered items (B1, P3, O4 …). One item is **blocked on an owner
+> decision**: band overlap (B1), which gates the Place control (B2).
 
 **Three invariants that constrain everything:**
 
@@ -867,6 +871,40 @@ Two routes, both affecting everything already tuned by ear:
 
 Left for the owner to decide; not fixed unilaterally, because either route
 changes every sound currently dialled in.
+
+## 2026-10-06 · Spatial subscriber shipped; the curve found twice
+
+Built the stereo subscriber on a **mid/side** bank — verified identical to
+L/R at 3.3e-16 while mid and side share a gain, so the move was free. Width
+is a depth on the side in the same dB unit as EQ, so the two read one curve
+and differ only in how hard they drive it. Placement is `S += pan·v1m`,
+measured **mono-safe** (rms(L+R) unchanged to 1.000×). New SUBSCRIBERS panel;
+EQ dB moved into it and now gates the EQ entirely. 28 parameters.
+
+**The invariant was renamed and reworded**, not bent: "channel coherence"
+described a mechanism we deliberately left behind. It is now **image
+provenance** — every per-band coefficient must be a deterministic function of
+the control surface and therefore *drawable*. Sharp test: if you cannot draw
+it, its provenance is wrong. That still forbids the Steady bug while
+permitting string-driven stereo.
+
+> **The curve went missing twice, from the same mistake.** First with the EQ
+> gated off (shape was in the side gain, unread); then with Width also at
+> zero (shape was in `pan_`, unread). Both times I *enumerated* display
+> sources and missed one. It is now an exhaustive ordered fallback
+> (SPEC §F8b) verified as a **set** across all five configurations, not case
+> by case. The lesson is the method, not the cases: a fallback chain over a
+> growing number of subscribers must be tested exhaustively or it will keep
+> losing one.
+>
+> Also worth keeping: the final state, all three subscribers at zero, draws
+> a flat curve — which is **correct**, nothing is applied — but looked
+> identical to the bug. The axis now says "no subscriber on".
+
+**And a defect the stereo work exposed** — band overlap (B1 in §5). It is
+pre-existing, it makes every per-band depth nominal rather than actual, and
+it is the unimplemented per-node Q coming due. Blocked on an owner decision
+because either fix reshuffles everything tuned by ear.
 
 ---
 

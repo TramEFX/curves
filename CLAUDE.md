@@ -10,9 +10,9 @@ assuming where a change belongs:
 - **What drives the string** is a selectable *physics mode*. Cloth-in-wind
   ("Flagpole") is deep, Free works, Gust and Elastic are thin. The cloth is
   **not the product**, it is the first mode built in depth.
-- **What the string drives** is a *subscriber*. EQ gain is the only one
-  built and is not privileged; stereo width, per-node Q and cutoff
-  modulation are planned on the same control signal.
+- **What the string drives** is a *subscriber*. EQ gain and the spatial
+  pair (width + placement) are built, on a mid/side bank; per-node Q and
+  cutoff modulation are planned on the same control signal.
 
 `StringSim` publishes nodes and knows nothing about filters. A new mode
 replaces the physics without touching the bank; a new subscriber attaches
@@ -35,7 +35,8 @@ doing, and a stray click of theirs lands in the test and corrupts it.
   `build/Release/` cover almost everything: `scenarios`, `gain_test`,
   `display_test`, `wind_test`, `spatial_test`, `mid_test`, `waves_test`,
   `patch_test`, `tension_test`, `lines_test`, `rnd_test`, `hash_probe`,
-  `bench`. Prefer these over driving the GUI, always.
+  `stereo_test`, `overlap_probe`, `display_src`, `bench`. Prefer these over
+  driving the GUI, always.
 - **Screenshots are safe; clicks are not.** `PrintWindow(hwnd, dc,
   PW_RENDERFULLCONTENT)` grabs the window without taking focus or touching
   the cursor. Use it freely. Synthetic *input* should be announced first and
@@ -68,6 +69,12 @@ doing, and a stray click of theirs lands in the test and corrupts it.
   not** — build tree only, no copy step (known debt).
 - Reaper caches the parameter list. After adding or removing a parameter,
   tell the owner to rescan.
+
+## Before starting anything: read SPEC-0.0.2 §5
+
+It is the blocked / pending / open status. One item is **blocked on an owner
+decision** (band overlap, B1) and it gates the spatial subscriber's
+placement control — do not try to "fix" placement without reading it.
 
 ## The one check that must pass
 
@@ -123,6 +130,6 @@ the plugin never uses.
 | file | role |
 |---|---|
 | `docs/SESSION-LOG.md` | running log: what was measured, what was decided, what is open |
-| `docs/SPEC-0.0.2.md` | current control reference, all 24 parameters |
+| `docs/SPEC-0.0.2.md` | current control reference, all 28 parameters; **§5 is the blocked/pending/open status** |
 | `docs/SPEC-0.0.1.md` | superseded, kept |
 | `ORCHESTRATION.md` | architecture and decision record |
