@@ -95,10 +95,16 @@ the plugin never uses.
    stage added *after* the bank must be folded into the display too; this
    has been violated twice (Steady, then Mix).
 2. **Bit-exact cross-validation** — above.
-3. **Channel coherence** — one instance is one string; nothing inside a
-   single instance may treat L and R differently. Stereo comes from running
-   separate instances. (This is also what keeps a per-band *stereo width*
-   subscriber coherent when it arrives.)
+3. **Image provenance** — the stereo image moves only when told to. Every
+   per-band coefficient (mid gain, side gain, mid→side cross-feed) must be a
+   deterministic function of the control surface and the knobs, and
+   therefore **drawable**. Forbidden: any detector that measures the
+   channels separately and lets the result change the balance between them.
+   Permitted: deliberate stereo transforms driven by the control surface.
+   Content-driven gain reduction stays channel-linked — the Leveler's
+   control signal is `max(|L|,|R|)` and Steady's detector is the mid, both
+   for this reason. (Renamed from "channel coherence" 2026-10-06; the old
+   name described a mechanism, not the principle.)
 
 ## Habits that have paid off
 

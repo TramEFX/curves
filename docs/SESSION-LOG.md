@@ -19,9 +19,9 @@ log that runs to 2026-10-02).
 |---|---|
 | What it is | **A physics sandbox for spectral control.** Physics mode and subscriber are both axes; the cloth is one mode, EQ gain is one subscriber |
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `c3a5817` |
+| Head | `b6d696f` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
-| Parameters | 24, across 23 controls |
+| Parameters | 28, across 27 controls |
 | Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
 | Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
@@ -804,6 +804,69 @@ Updated: `ORCHESTRATION.md` §1 (with the correction stated explicitly rather
 than quietly rewritten), `SPEC-0.0.2.md` (scope note, §1 dataflow, the
 Physics entry), `CLAUDE.md` (lead paragraph). Also corrected stale figures in
 `CLAUDE.md` — it still said 11 scenarios / 104,576 cells and 22 parameters.
+
+## 2026-10-06 · Spatial subscriber, and a pre-existing defect it exposed
+
+### Built
+
+Bank moved to **mid/side** — verified identical to the L/R form at
+**3.3e-16** while mid and side share a gain, so the move was free. Three
+per-band coefficients: `gm` (EQ), `gs` (width = their difference in dB),
+`pan` (placement, `S += pan*v1m`). New **SUBSCRIBERS** panel. Width matches
+the EQ's own behaviour to **0.18%**; placement is **mono-safe** — `rms(L+R)`
+unchanged to 1.000× across the whole pan range.
+
+### The defect: band overlap, and it is pre-existing
+
+`out = x + Σ bp_b·(g_b − 1)`. With **Q = 1** the bands are ~1.4 octaves wide
+while the spacing is `9.23/N` octaves, so **~0.15·N bands overlap** at any
+frequency and their contributions **add**:
+
+```
+actual = 1 + K·(g − 1),    K ≈ 0.152 · N
+```
+
+| bands | nominal | **actual** | fitted K | 0.152·N |
+|---|---|---|---|---|
+| 8 | +6 dB | +5.56 dB | 0.90 | 1.2 |
+| 48 | +6 dB | +17.14 dB | 6.23 | 7.3 |
+| 128 | +6 dB | +25.12 dB | 17.11 | 19.5 |
+| 256 | +6 dB | +30.98 dB | 34.56 | 38.9 |
+| **512** | **+6 dB** | **+36.92 dB** | **69.47** | 77.8 |
+
+Three consequences, none of them previously written down:
+
+1. **Every per-band depth is nominal, not actual.** At 512 nodes the EQ is
+   ~70× deeper than the knob says. The owner had already compensated by ear
+   — running Range at **3.74 dB** against a default of 18.
+2. **Cuts invert.** Once `K·(1−g) > 1` the effective gain goes *negative*:
+   measured, a nominal −3 dB at 512 nodes comes back as **+25.85 dB** with
+   inverted polarity. A cut is not an attenuation.
+3. **Precision cross-couples with depth.** K runs 17 → 69 from 128 to 512
+   nodes, so changing resolution changes the EQ depth **~4×**.
+
+**This is the unimplemented per-node Q coming due.** Q = 1 is sensible for a
+handful of bands; with one band per node it guarantees the pile-up. Matching
+bandwidth to spacing needs `Q ≈ 0.16·N` — about 80 at 512 nodes.
+
+**Why it matters now:** width and the EQ inherit the factor *equally*, so
+they stay consistent with each other and the single-curve story holds. But
+**placement has an absolute meaning** — pan 1.0 should be hard left — and at
+K = 69 it is reached around pan 0.014. Measured at 48 bands, pan 1.0 gives
+an L/R ratio of 1.27 (degenerate, both channels huge) instead of the
+predicted ∞, and +16 dB of level. **Placement is unusable at its stated
+range until this is resolved.**
+
+Two routes, both affecting everything already tuned by ear:
+
+- **Normalise** the band contribution by `1/K` — one scalar, keeps the smooth
+  Q = 1 response, makes Range dB mean what it says and removes the Precision
+  coupling.
+- **Per-node Q** matched to spacing — the architecturally intended fix, but
+  high Q will sound resonant and is a much larger change.
+
+Left for the owner to decide; not fixed unilaterally, because either route
+changes every sound currently dialled in.
 
 ---
 
