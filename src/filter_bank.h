@@ -53,8 +53,31 @@ public:
     // structurally rather than by remembering to mirror it.
     void set_overlap_correction(bool on);
     double overlap_k() const { return overlap_k_; }
+    bool overlap_corrected() const { return overlap_on_; }
     // Sum of the Q-normalised bandpasses at f -- the overlap factor there.
     double overlap_factor(double f) const;
+
+    // THE TRUE RESPONSE of the summed bank at every band centre, given a
+    // per-band excess (g_b - 1). This is what the audio actually does:
+    //
+    //     out/in at f_i  =  1 + sum_b Hn_b(f_i) * big_b / K
+    //
+    // The drawn curve used big_i alone, which is the NOMINAL per-band gain
+    // and never was the response -- measured 31 dB out at 128 bands and
+    // 43 dB at 512 (q_test section I). Drawing this instead makes WYSIWYG
+    // true by construction at any Q, rather than only approaching truth as
+    // Q rises.
+    //
+    // Cheap because the bands are GEOMETRICALLY spaced and Q is uniform, so
+    // Hn_b(f_i) depends only on the lag i-b: the whole curve is one
+    // convolution with a kernel that changes only when Q or the band map
+    // does. No transcendentals per point, and `scale` folds in Mix.
+    //
+    // out_re/out_im must hold num_bands each. The caller adds the 1 (or
+    // not: placement is a cross-feed, not a gain, so it has no unity term).
+    void response_curve(const double* big, double scale,
+                        double* out_re, double* out_im) const;
+    int response_window() const { return resp_w_; }
 
     // Per-band dynamic EQ ("Steady"): bands whose bandpass energy exceeds
     // the threshold get their own contribution squeezed. amount 0 = off.
@@ -150,7 +173,14 @@ public:
                 // construction now. The duck multiplies mid and side by the
                 // SAME factor, so it cannot move the image: a content-driven
                 // width change is exactly what image provenance forbids.
-                const double mag = std::abs(v1m);
+                //
+                // NORMALISED by k, like every other use of v1. v1 peaks at
+                // Q, so against a fixed threshold the raw value would make
+                // the detector Q-SENSITIVE: at matched Q on 512 nodes it
+                // sees ~80x more signal and Steady would slam to full duck
+                // on almost anything. k*v1 has unity passband gain at any
+                // Q. Exact at Q = 1, where k is 1.
+                const double mag = std::abs(v1m) * k_;
                 double& env = steady_env_[b];
                 env += (mag > env ? atk_alpha_ : rel_alpha_) * (mag - env);
                 if (env > steady_threshold_) {
@@ -188,6 +218,7 @@ public:
 private:
     void recompute_coefficients();
     void refresh_overlap();
+    void rebuild_response_kernel();
 
     int num_bands_ = 0;
     double fs_ = 48000.0;
@@ -199,6 +230,9 @@ private:
     double atk_alpha_ = 0.0, rel_alpha_ = 0.0;
     std::vector<double> fc_;            // band center frequencies
     std::vector<double> gt_;            // tan(pi*fc/fs), independent of Q
+    // Response kernel, indexed by lag + resp_w_. 1/K is folded in.
+    int resp_w_ = 0;
+    std::vector<double> kern_re_, kern_im_;
     std::vector<double> a1_, a2_, a3_;  // SVF coefficients (g, k fixed per band)
     std::vector<double> g_;             // current linear gain per band
     std::vector<double> ramp_;          // per-frame geometric step toward target

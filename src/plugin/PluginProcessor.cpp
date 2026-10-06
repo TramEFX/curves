@@ -422,6 +422,11 @@ void CurvesAudioProcessor::rebuild(int precision) {
     bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
     rebuild_band_map();
     gain_targets_.assign(n_nodes_, 1.0);
+    // Display response scratch. Allocated here so publish_display never
+    // allocates on the audio thread.
+    resp_big_.assign(n_nodes_, 0.0);
+    resp_re_.assign(n_nodes_, 0.0);
+    resp_im_.assign(n_nodes_, 0.0);
     smoothed_disp_.fill(0.0);
     last_physics_ = -1;  // force re-apply on the current preset
 }
@@ -755,6 +760,25 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         src = 2;
         depth = 100.0 * pan_amt;   // placement reads as a percentage
     }
+    // With Band Q = Flat the bands add and are NOT corrected, so the true
+    // response reaches 1 + K*(g-1) rather than g -- about 44 dB when the
+    // knob says 18 at 128 nodes. Now that the curve draws the true response
+    // (O10), an axis labelled from the knob alone would leave it pegged at
+    // the clamp, and the default configuration would look broken rather
+    // than merely BE wrong. So the axis is widened by the same factor the
+    // bank applies. It is a static quantity -- it moves only with Range,
+    // node count and Q -- so the axis does not jitter with the string.
+    //
+    // In Matched mode the correction has already divided K out, so this is
+    // exactly the knob value and the axis is unchanged from before. The
+    // widening in Flat mode IS the defect, made legible: you asked for 18
+    // and the axis says 44.
+    if (src != 2 && !bank_.overlap_corrected() && n_nodes_ > 1) {
+        const double K = bank_.overlap_factor(band_fc_[n_nodes_ / 2]);
+        const double g = std::pow(10.0, depth / 20.0);
+        const double act = 1.0 + K * (g - 1.0);
+        if (act > 1.0) depth = 20.0 * std::log10(act);
+    }
     display_src_.store(src, std::memory_order_relaxed);
     display_depth_.store(depth, std::memory_order_relaxed);
     if (spatial_on) {
@@ -905,19 +929,36 @@ void CurvesAudioProcessor::publish_display() {
     const int src = display_src_.load(std::memory_order_relaxed);
     const double depth = display_depth_.load(std::memory_order_relaxed);
     const double mix = mix_amount_;
+    // O10. The curve is the bank's TRUE summed response, not the nominal
+    // per-band gain. The bands overlap and add, so the nominal value never
+    // was the response -- measured 31 dB out at 128 nodes and 43 dB at 512.
+    // response_curve() convolves the per-band excess with the bank's own
+    // kernel, which is exact and costs 12 us at 128 nodes / 193 us at 512
+    // per publish (0.07% / 1.17% of a core at the 60 Hz publish rate).
+    // Verified against the measured magnitude response to 0.12 dB worst
+    // case across every Band Q / Resonance setting -- q_test section J.
     if (src == 2) {
-        // Placement is linear and signed, and is not Steady-ducked, so it
-        // needs its own normalisation rather than the dB path.
+        // Placement is a mid->side CROSS-FEED, not a gain, so there is no
+        // unity term. The in-phase part is the coherent leak and keeps the
+        // sign the display needs; the quadrature part is a 90-degree-shifted
+        // leak and does not read as position.
         const auto& p = bank_.pans();
+        bank_.response_curve(p.data(), mix, resp_re_.data(), resp_im_.data());
         const double amt = std::max(1e-9, depth * 0.01);
         for (int i = 0; i < n_nodes_; ++i)
             display_eq_buffer_[i] =
-                static_cast<float>(std::clamp(mix * p[i] / amt, -1.0, 1.0));
+                static_cast<float>(std::clamp(resp_re_[i] / amt, -1.0, 1.0));
     } else {
+        // Mix scales only the added part, so it folds into the convolution
+        // exactly -- the sum is linear in the per-band excess.
         const auto& g = (src == 1) ? bank_.side_gains() : bank_.gains();
+        for (int i = 0; i < n_nodes_; ++i) resp_big_[i] = g[i] - 1.0;
+        bank_.response_curve(resp_big_.data(), mix, resp_re_.data(),
+                             resp_im_.data());
         for (int i = 0; i < n_nodes_; ++i) {
-            const double g_eff = 1.0 + mix * (g[i] - 1.0);
-            const double db = 20.0 * std::log10(std::max(g_eff, 1e-6));
+            const double re = 1.0 + resp_re_[i], im = resp_im_[i];
+            const double mag2 = std::max(re * re + im * im, 1e-12);
+            const double db = 10.0 * std::log10(mag2);
             display_eq_buffer_[i] =
                 static_cast<float>(std::clamp(db / std::max(1.0, depth), -1.0, 1.0));
         }

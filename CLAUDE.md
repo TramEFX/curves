@@ -23,7 +23,8 @@ work too. See `ORCHESTRATION.md` §1.
 ## This is a SHARED machine — the owner is usually using it
 
 **The owner is often doing other things on this PC while work is in
-progress.** That has two consequences, and both have already caused a wrong
+progress**, and is sometimes driving it remotely from a phone, in which case
+they cannot hear audio at all — ask before assuming an ear test is possible. That has two consequences, and both have already caused a wrong
 diagnosis.
 
 **Synthetic input is intrusive and unreliable here.** Driving the UI
@@ -107,8 +108,11 @@ the plugin never uses.
    The third is different in kind: not a missed stage but the bank's own
    summation, measured at **31–43 dB** of error with `Band Q = Flat`. The
    lesson is that the invariant needs *measuring* against the real response
-   and not just auditing against the signal chain — see `q_test` section I,
-   and O10 for the structural fix (draw the computed response).
+   and not just auditing against the signal chain — see `q_test` section I.
+   **Fixed the same day (O10):** the curve is now `response_curve()`, the
+   bank's exact summed response, verified to **0.12 dB** against measurement
+   at every Q. If you add a stage after the bank, it still has to be folded
+   in — but the bank's own summation is now handled structurally.
 2. **Bit-exact cross-validation** — above.
 3. **Image provenance** — the stereo image moves only when told to. Every
    per-band coefficient (mid gain, side gain, mid→side cross-feed) must be a

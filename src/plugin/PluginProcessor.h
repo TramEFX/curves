@@ -191,6 +191,7 @@ private:
     int display_accum_ = 0;          // samples since the last display publish
     int ui_theme_ = 0;               // editor colour theme (appearance only)
     std::array<KnobMod, kNumModKnobs> knob_mods_{};
+    std::vector<double> resp_big_, resp_re_, resp_im_;  // display scratch
     double last_q_ = -1.0;          // cached so set_q() is not called per block
     bool last_q_matched_ = false;
     std::atomic<bool> reset_request_{false};

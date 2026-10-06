@@ -1399,6 +1399,21 @@ reason in §5.
 **The title bar says which mode is live** (`SUBSCRIBERS (Matched Q)`),
 because a 0/1 rotary cannot carry something this consequential.
 
+**Two visible consequences in Flat, both expected** now that the curve draws
+the true response (O10):
+
+- **The bright curve goes blunt.** At `Q = 1` the bank really does smear
+  over ~1.4 octaves, so the curve loses nearly all the detail the faint
+  string line has. Switching to Matched makes it track the string again.
+  That contrast *is* the resolution finding, on screen.
+- **The dB axis widens.** It is labelled from `1 + K·(g−1)` when the
+  correction is off, so Range 18 reads about ±44 dB at 128 nodes — which is
+  what the bank is actually doing. Otherwise the honest curve would simply
+  peg at the clamp and the default would look broken rather than merely be
+  wrong. In Matched the correction has divided `K` out and the axis equals
+  the knob again. It is static — it moves only with Range, node count and Q
+  — so it does not jitter with the string.
+
 > **Not yet the default.** Every sound tuned so far was tuned against Flat,
 > and the measurements say nothing about how Matched *sounds*. See P7, and
 > expect EQ dB to need raising well above its current 3.74.
@@ -1657,14 +1672,106 @@ travel is honest. Needs an ear check at its current range (P7).
   Tension dial at Character 1. Belongs with the Character work.
 
 - **P7 · `Band Q = Matched` needs an ear test, and the default depends on
-  it.** Everything measurable says Flat is broken (31–43 dB WYSIWYG error,
-  17–67× full-scale output, zero spectral resolution, depth coupled to
-  Precision). Nothing measurable says it *sounds* better matched, and every
-  sound tuned so far was tuned against Flat. Flipping the default is an
-  owner call. Expect to re-tune **EQ dB** upward — 3.74 of 24 was
-  compensation for the ~24× overshoot and will be far too little once the
-  knob is honest — and to re-check **Steady**, **Leveler** and **Place**,
-  which were all calibrated against the old level.
+  it.** Everything measurable says Flat is broken — 31–43 dB WYSIWYG error,
+  17–67× full-scale output, **zero** spectral resolution, depth coupled to
+  Precision, cuts inverting. Nothing measurable says how Matched *sounds*,
+  and every sound tuned so far was tuned against Flat. Flipping the default
+  is an owner call, and it changes how projects saved before 2026-10-06
+  sound (old states carry no `q_mode`, so they take the constructor
+  default).
+
+  **Checklist, with what counts as a pass.** Work top to bottom; items 1–3
+  are expected-behaviour confirmations, not judgements, and getting them out
+  of the way first stops them being mistaken for faults later.
+
+  **1 · Flat mode now draws a much blunter curve. Expected, not a bug.**
+  The bright curve is the bank's true response as of O10, and at `Q = 1`
+  the bank genuinely smears over ~1.4 octaves. So in Flat the bright line
+  will lose nearly all the detail the faint string line has.
+  *Pass:* the bright line in Flat is visibly smooth/blunt while the faint
+  line wiggles; flipping to Matched makes the bright line track the faint
+  one closely. **That contrast is the resolution finding, visible.**
+
+  **2 · Flat mode's dB axis now reads much wider than the knob.** With
+  Range at 18 the axis will label around ±44 dB at 128 nodes, because that
+  is what the bank is really doing. In Matched the axis equals the knob
+  again.
+  *Pass:* axis label changes when `Band Q` is flipped, and in Matched it
+  matches the Range knob.
+
+  **3 · Matched should be dramatically quieter at the same settings.**
+  Measured 17× → 1.5× peak at 128 nodes, 67× → 1.5× at 512.
+  *Pass:* flipping to Matched drops the level hard, and the Leveler's gain
+  reduction falls with it. If Matched is *not* much quieter, something is
+  wrong — stop and say so.
+
+  **4 · Re-tune EQ dB.** 3.74 of 24 was compensation for a ~24× overshoot
+  that no longer exists.
+  *Check:* what value in Matched gives the depth 3.74 gave in Flat. Expect
+  it to land far higher. Record the number — it recalibrates the default.
+
+  **5 · Re-check Steady.** Its detector was Q-sensitive and is now
+  normalised (verified Q-invariant to 0.01 dB on a tone). But a *narrower*
+  band genuinely captures less broadband energy, so the same threshold
+  means something different against real material.
+  *Check:* does Steady still tame what it used to at the same setting? If
+  it now feels weak on broadband material, the threshold wants rescaling
+  with bandwidth — that is a real follow-up, not a bug.
+
+  **6 · Re-check the Leveler.** It was absorbing an enormous gain error and
+  will have far less to do.
+  *Check:* whether its default 0.5 is still right, or now over-works a
+  signal that no longer needs it.
+
+  **7 · Place (B2) is unblocked — check its travel.** The cross-feed is
+  corrected by the same scalar, so hard pan should arrive near the top of
+  the knob rather than at 0.014.
+  *Pass:* placement sweeps smoothly across most of the knob's range. Mono
+  compatibility is structural (`L+R = 2·mid` identically, so the cross-feed
+  cannot change it) and does not need testing again.
+
+  **8 · Width.** Inherits the same correction.
+  *Check:* Width in dB now means what it says against the EQ's dB.
+
+  **9 · Resonance sweep — the actual new sound.** At 0 the bank is a clean
+  EQ. Ring time is `6.91·Q/(π·f)`, so it is strongly bass-weighted.
+  *Listen at 0 / 0.33 / 0.67 / 1.0 for:* ring appearing on low content
+  first (754 ms at 58 Hz already at 0, 3 s at 0.67); the response turning
+  comb-like as the gaps stop being filled (ripple 0.93 → 3.24 → 5.73 dB);
+  and whether the texture is the shimmer the convolution trick produces.
+  *Pass:* it is musically useful somewhere in the range. If the ring is
+  only ever bass mud, the `1/f` weighting is the reason and a
+  frequency-dependent Q is the follow-up.
+
+  **10 · Precision should finally be audible.** At `Q = 1` it measured
+  **0.00 dB** of resolution difference at every scale, so 128 vs 512 was
+  inaudible. In Matched, resolution is set by node spacing.
+  *Pass:* in Matched, switching 128 → 512 audibly sharpens the spectral
+  detail. **If it does not, the resolution claim is wrong and I want to
+  know.** In Flat it should still sound the same at any Precision.
+
+  **11 · Smoothing against ring.** Ring is a *new* time constant that
+  Smoothing does not control — Smoothing governs how fast the curve moves,
+  not how long a band rings.
+  *Check:* at high Resonance, whether fast Smoothing plus long ring smears
+  into mush, and whether the two controls feel like they fight.
+
+  **12 · CPU and glitching.** The honest curve costs 1.17% of a core at 512
+  nodes (193 µs per publish at 60 Hz); the bank itself is unchanged at
+  11.74%. 512 nodes with wind was already ~101% of a core before any of
+  this.
+  *Check:* small buffer sizes (64/128) at 512 nodes for dropouts, and CPU
+  when the input goes **silent** at high Resonance — long ring-downs are
+  where denormals would bite if `ScopedNoDenormals` were not covering it.
+
+  **13 · Mix.** Folded into the response convolution exactly (the sum is
+  linear in the per-band excess).
+  *Pass:* at Mix 0.5 the drawn curve is still exactly what you hear.
+
+  **14 · The honest answer to "should Matched be the default".** It is a
+  sound judgement, not a measurement. The measurements only establish that
+  Flat is wrong in five independent ways — they say nothing about which one
+  you want to *make records with*.
 
 ### 🔧 OPEN — known, costed, nobody blocked
 
@@ -1674,22 +1781,23 @@ travel is honest. Needs an ear check at its current range (P7).
   between distinct simulations, which is axis 1 of the product.
 - **O3 · Adding a physics mode is UI work too.** CLOTH & WIND is a
   Flagpole-shaped panel hard-coded alongside the generic ones.
-- **O10 · The curve could be drawn from the TRUE response instead of the
-  nominal per-band gain.** `FilterBank::overlap_factor` already evaluates
-  the exact digital response of the summed bank in closed form; generalising
-  it to weight each band by its current gain would give a curve that is
-  honest by construction — no `1/K`, no quadrature residual, no reliance on
-  Q being high enough. That would retire the whole class of WYSIWYG bug
-  (three so far) rather than shrinking it, and it also makes the inter-band
-  comb ripple visible at high `Resonance`, which no per-band curve can show.
-  Cost is a UI-thread magnitude evaluation at ~30 Hz: `O(bands × pixels)`,
-  about 6M flops/s at 512 nodes. **This is the recommended next step.**
 - **O11 · Q is global; the string could drive it per node.** This is the
   original O4 vision and the harder half of it. `set_q` is already O(N) with
   `tan` cached precisely so per-band modulation is affordable (1 divide +
   3 multiplies per band per block). It needs a second control-signal
   subscriber and a decision about what drives Q — the same string shape as
   gain, its velocity, or an independent mode.
+- **O12 · The bank could be made to DELIVER the asked response, not just
+  draw it honestly.** O10 fixed the display; the audio still delivers the
+  summed response rather than the requested shape. Because the kernel is
+  fixed and the spacing geometric, the inverse is also a fixed kernel — a
+  deconvolution, precomputed per Q change and applied as one convolution per
+  block. That would give honest depth, honest shape **and** deep cuts next
+  to boosts, which no choice of Q can. Risk: inverse filtering is
+  ill-conditioned where the forward kernel has a near-null space, which at
+  `Q = 1` is most of the spectrum (§5 B1, resolution table), so it is
+  plausible only at matched Q or above, and it needs a stability bound and
+  ears. Recorded now because the kernel work for O10 is most of the setup.
 - **O4 · Per-node Q — the GLOBAL half is now built** (`Band Q`,
   `Resonance`; see B1). What remains is per-node modulation, tracked as
   O11. Previously read: `Q = 1.0` fixed, despite being a
@@ -1704,6 +1812,32 @@ travel is honest. Needs an ear check at its current range (P7).
 
 ### ✅ FIXED — kept so they are not rediscovered
 
+- ~~**O10 · The curve drew the nominal per-band gain, not the response**~~
+  (2026-10-06). The bands overlap and add, so the drawn value never was what
+  the audio did — **31 dB out at 128 nodes, 43 dB at 512**. The curve is now
+  `FilterBank::response_curve`, the bank's exact summed response. Verified
+  against the measured magnitude response at **0.12 dB worst case** across
+  every Band Q and Resonance setting, down from 31–43 dB (q_test J).
+  Because the bands are geometrically spaced and Q is uniform, the response
+  is a **convolution with a fixed kernel**, rebuilt only when Q or the band
+  map moves — no transcendentals per point. Costs 12 µs at 128 nodes and
+  193 µs at 512 per publish, i.e. 0.07% / 1.17% of a core at the 60 Hz
+  publish rate.
+  > **A narrower window was tried and measured wrong.** Sizing it by
+  > bandwidth-in-bands (7× the −3 dB width, 12 bands at matched Q) still
+  > left 3.95 dB of error at 128 nodes and 6.46 dB at 512 — barely better
+  > than the nominal curve. The real part of `Hn` falls off as
+  > `(BW/lag)²` and truncates happily; the **imaginary** part falls off as
+  > `k/u`, geometric in the frequency *ratio*, and `u` is only 1.16 twelve
+  > bands out. It is precisely that quadrature term that dominates a cut.
+  > The window is now the full band count.
+- ~~**Steady's detector was Q-sensitive**~~ (2026-10-06, found while building
+  Band Q and never shipped). The threshold is a fixed absolute level on the
+  bandpass, but the SVF's `v1` peaks at **Q** — so at matched Q on 512 nodes
+  the detector would have seen ~80× more signal and slammed to near-full
+  duck on almost any input. Normalised by `k = 1/Q` like every other use of
+  `v1`; now reads within **0.01 dB** across Q = 1, matched and matched×4
+  (q_test K). Exact at Q = 1.
 - ~~Velocity inert~~ (2026-10-02) — was 3.4% at full; now a position/velocity
   blend with the constant corrected.
 - ~~Steady's duck hidden from the curve~~ (2026-10-02) — up to 4.52 dB

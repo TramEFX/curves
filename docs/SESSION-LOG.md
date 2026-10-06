@@ -19,7 +19,7 @@ log that runs to 2026-10-02).
 |---|---|
 | What it is | **A physics sandbox for spectral control.** Physics mode and subscriber are both axes; the cloth is one mode, EQ gain is one subscriber |
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `c547496` (Band Q) |
+| Head | `c547496` (Band Q) + O10 |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 30, in 28 spec entries |
 | Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
@@ -817,6 +817,116 @@ Updated: `ORCHESTRATION.md` §1 (with the correction stated explicitly rather
 than quietly rewritten), `SPEC-0.0.2.md` (scope note, §1 dataflow, the
 Physics entry), `CLAUDE.md` (lead paragraph). Also corrected stale figures in
 `CLAUDE.md` — it still said 11 scenarios / 104,576 cells and 22 parameters.
+
+## 2026-10-06 · O10 — the curve is the response now, and a bug Band Q exposed
+
+Second pass on Band Q, pushing it as far as it goes **without an ear test**
+(owner remote, no audio). Two substantive changes, both audio-neutral or
+strictly corrective, plus the ear-test checklist written up as **P7**.
+
+### O10 — the drawn curve is the bank's true summed response
+
+The curve drew the nominal per-band gain. The bands overlap and add, so that
+never was the response: **31 dB out at 128 nodes, 43 dB at 512**. It now
+draws `FilterBank::response_curve`.
+
+| mode | OLD curve error | NEW curve error |
+|---|---|---|
+| Flat `Q = 1`, 128 nodes | 31.19 dB | **0.05 dB** |
+| Flat `Q = 1`, 512 nodes | 43.30 dB | **0.06 dB** |
+| Matched, 128 / 512 | 6.84 / 6.82 dB | **0.10 / 0.12 dB** |
+| Matched ×8, 128 / 512 | 0.67 / 0.68 dB | **0.01 / 0.01 dB** |
+
+**Why it is cheap.** The bands are geometrically spaced and Q is uniform, so
+`Hn_b(f_i)` depends only on the lag `i−b` — the whole curve is **one
+convolution with a fixed kernel**, rebuilt only when Q or the band map
+moves. No transcendentals per point. Measured **12 µs at 128 nodes, 193 µs
+at 512** per publish: 0.07% / 1.17% of a core at the 60 Hz publish rate.
+
+> **A narrower window was tried and measured wrong.** Sizing it by
+> bandwidth-in-bands (7× the −3 dB width → 12 bands at matched Q) still left
+> **3.95 dB** of error at 128 nodes and **6.46 dB** at 512 — barely better
+> than the nominal curve it replaced. The *real* part of `Hn` falls off as
+> `(BW/lag)²` and truncates happily; the **imaginary** part falls off as
+> `k/u`, which is geometric in the frequency **ratio**, not in bandwidths.
+> At matched Q on 512 bands `u` is only 1.16 twelve bands out, so `im` is
+> still ~4% there — and it is precisely that quadrature term that dominates
+> a cut (the section I finding). Window is now the full band count.
+>
+> The general lesson: **"a few bandwidths away is negligible" is true of the
+> magnitude and false of the phase.** I reasoned about the wrong component
+> and the measurement caught it.
+
+**Two visible consequences in Flat mode, both expected.** The bright curve
+goes blunt, because at `Q = 1` the bank really does smear over ~1.4 octaves
+— that contrast against the faint string line *is* the resolution finding,
+on screen. And the dB axis is now labelled from `1 + K·(g−1)` when the
+correction is off, so Range 18 reads about ±44 dB at 128 nodes. Without that
+the honest curve would simply peg at the clamp and the **default** config
+would look broken rather than merely be wrong. The axis is static — it moves
+only with Range, node count and Q — so it does not jitter. In Matched the
+correction has divided `K` out and the axis equals the knob again.
+
+### A Q-sensitivity bug in Steady, found before it shipped
+
+Steady's threshold is a fixed absolute level on the bandpass, but the SVF's
+`v1` **peaks at Q**. At matched Q on 512 nodes the detector would have seen
+~80× more signal and slammed to near-full duck on almost any input.
+
+Normalised by `k = 1/Q`, like every other use of `v1`. Verified Q-invariant
+on a tone at a band centre — 12 dB asked, Steady 0.6:
+
+| input | Q = 1 | matched | matched ×4 |
+|---|---|---|---|
+| 0.05 | 12.00 dB | 12.00 dB | 12.00 dB |
+| 0.20 | 12.00 dB | 12.00 dB | 12.00 dB |
+| 0.60 | 8.66 dB | 8.66 dB | 8.66 dB |
+
+Exact at `Q = 1`, so nothing shipped changes. This is the **same root cause**
+as the main Band Q trap — `v1` is the Q-scaled bandpass — showing up in a
+second place. Worth remembering that when a convention changes, every
+consumer of the old convention needs auditing, not just the obvious one.
+
+*Caveat for the ear test:* a narrower band genuinely captures less broadband
+energy, so the same threshold means something different against real
+material even though it is now Q-invariant on a tone. P7 item 5.
+
+### Verified unchanged
+
+12 scenarios / 119,936 cells / 0 mismatches; `overlap_probe` and `gain_test`
+reproduce their recorded numbers (Range invariance 4.95e-14, Steady hidden
+0.00 dB); `display_src` still exhaustive with exactly one FLAT row. Bank
+inner loop untouched at 11.74% of a core at 512 nodes.
+
+### Recorded, not built
+
+**O12 — make the bank DELIVER the asked response, not just draw it
+honestly.** O10 fixed the display; the audio still delivers the summed
+response. The forward kernel is fixed and the spacing geometric, so the
+inverse is also a fixed kernel — a deconvolution, precomputed per Q change
+and applied as one convolution per block. That would give honest depth,
+honest shape **and** deep cuts next to boosts, which no choice of Q can
+(a parallel additive bank cannot notch on a slope). Risk: inverse filtering
+is ill-conditioned wherever the forward kernel has a near-null space, which
+at `Q = 1` is most of the spectrum — so it is plausible only at matched Q or
+above, and it needs a stability bound and ears. The O10 kernel work is most
+of the setup.
+
+### What is left for ears
+
+**P7 in SPEC §5** is now a 14-item checklist with pass criteria rather than
+a one-line note. The three that would change the architecture if they fail:
+
+- **Precision must become audible in Matched** (item 10). At `Q = 1` it
+  measured 0.00 dB of resolution difference at every scale. If 128 vs 512
+  still sounds the same in Matched, the resolution claim is wrong.
+- **Matched must be dramatically quieter** (item 3) — 17× → 1.5× peak at
+  128 nodes. If it is not, something is wrong.
+- **Resonance must be musically useful somewhere in its range** (item 9).
+  If the ring is only ever bass mud, the `1/f` weighting is the cause and
+  frequency-dependent Q is the follow-up.
+
+---
 
 ## 2026-10-06 · Band Q — B1 resolved in code, and what measuring it changed
 

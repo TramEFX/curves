@@ -17,6 +17,7 @@
 #include "filter_bank.h"
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <vector>
 
 using curves::FilterBank;
@@ -229,6 +230,72 @@ static double wysiwyg_err_db(int nb, double q, bool correct, double depth_db) {
     return worst;
 }
 
+// O10 acceptance: does the COMPUTED response curve equal the MEASURED one?
+// Same smooth shape and probe bands as section I, but the "drawn" value is
+// now FilterBank::response_curve instead of the nominal per-band gain.
+static void o10_check(int nb, double q, bool correct, double depth_db,
+                      double* worst_db, double* nominal_worst_db, int* window) {
+    std::vector<double> shape(nb), big(nb), re(nb), im(nb);
+    for (int b = 0; b < nb; ++b)
+        shape[b] = db2lin(depth_db * std::sin(2.0 * kPi * 2.0 * b / nb));
+    *worst_db = 0.0;
+    *nominal_worst_db = 0.0;
+    for (double frac : {0.3, 0.45, 0.6, 0.7}) {
+        const int band = int(frac * (nb - 1));
+        const double f = node_f(band, nb);
+        const double tau = q / (kPi * f);
+        const int settle = int(std::max(14.0 * tau, 0.3) * kFs);
+        const double om = 2.0 * kPi * f / kFs;
+        const double cyc = kFs / f;
+        const int meas = int(std::floor(std::max(40.0, 0.25 * kFs) / cyc) * cyc);
+        const int total = settle + meas;
+        std::vector<double> in(total), out(total);
+        for (int i = 0; i < total; ++i) in[i] = 0.1 * std::sin(om * i);
+        Bank bk(nb, q, 0.0, correct);
+        bk.g = shape;
+        bk.run(total, in.data(), out.data());
+        double ss = 0.0, cc = 0.0;
+        for (int i = settle; i < total; ++i) {
+            ss += out[i] * std::sin(om * i);
+            cc += out[i] * std::cos(om * i);
+        }
+        const double actual = 20.0 * std::log10(2.0 * std::sqrt(ss * ss + cc * cc) / meas / 0.1);
+
+        const auto& g = bk.b.gains();
+        for (int b = 0; b < nb; ++b) big[b] = g[b] - 1.0;
+        bk.b.response_curve(big.data(), 1.0, re.data(), im.data());
+        const double computed =
+            10.0 * std::log10((1.0 + re[band]) * (1.0 + re[band]) + im[band] * im[band]);
+        const double nominal = 20.0 * std::log10(g[band]);
+        *worst_db = std::max(*worst_db, std::abs(actual - computed));
+        *nominal_worst_db = std::max(*nominal_worst_db, std::abs(actual - nominal));
+        *window = bk.b.response_window();
+    }
+}
+
+// Steady's detector against Band Q. The threshold is a fixed absolute level
+// on the bandpass, and the SVF's v1 peaks at Q -- so without normalising,
+// raising Q raises what the detector sees by the same factor and Steady
+// slams shut. Probed with a sine ON a band centre, where the normalised
+// bandpass has unity gain at any Q, so a correct detector reads the same
+// duck at every Q.
+static double steady_duck_db(int nb, double q, bool correct, double amp) {
+    const int band = (nb - 1) / 2;
+    const double f = node_f(band, nb);
+    const double om = 2.0 * kPi * f / kFs;
+    const int total = int(std::max(1.0, 14.0 * q / (kPi * f)) * kFs) + int(0.6 * kFs);
+    Bank bk(nb, q, 0.0, correct);
+    bk.g.assign(nb, db2lin(12.0));
+    bk.b.set_steady(0.6, 0.25);
+    for (int i = 0; i < total; ++i) {
+        if ((i % 32) == 0) { bk.b.set_block_targets(bk.g.data(), 32); bk.b.set_spatial_off(); }
+        float l = float(amp * std::sin(om * i)), r = l;
+        bk.b.process_frame(l, r, true);
+    }
+    // 12 dB asked; how much is left after the duck?
+    return 20.0 * std::log10(std::max(bk.b.gains()[band], 1e-9));
+}
+
 int main() {
     std::printf("Matched Q (bandwidth == spacing):  128 -> %.2f   256 -> %.2f   512 -> %.2f\n",
                 matched_q(128), matched_q(256), matched_q(512));
@@ -387,6 +454,55 @@ int main() {
         for (auto& m : modes)
             std::printf("%6d %24s %10.2f %11.2fdB\n", nb, m.name, m.q,
                         wysiwyg_err_db(nb, m.q, m.corr, 12.0));
+    }
+    std::printf("\n=== J. O10 -- COMPUTED response curve vs MEASURED (and vs the old curve) ===\n");
+    std::printf("Same shape and probe bands as section I. \"nominal\" is what the curve\n");
+    std::printf("drew before; \"computed\" is FilterBank::response_curve.\n\n");
+    std::printf("%6s %22s %8s %14s %14s\n",
+                "bands", "mode", "window", "OLD curve err", "NEW curve err");
+    for (int nb : {128, 512}) {
+        const double qm = matched_q(nb);
+        struct { const char* name; double q; bool corr; } modes[] = {
+            {"Flat Q=1 (today)", 1.0, false},
+            {"Flat Q=1 + 1/K", 1.0, true},
+            {"Matched (Res 0)", qm, true},
+            {"Matched x2 (Res .33)", qm * 2.0, true},
+            {"Matched x8 (Res 1)", qm * 8.0, true},
+        };
+        for (auto& m : modes) {
+            double w = 0.0, nw = 0.0; int win = 0;
+            o10_check(nb, m.q, m.corr, 12.0, &w, &nw, &win);
+            std::printf("%6d %22s %8d %11.2fdB %11.2fdB\n", nb, m.name, win, nw, w);
+        }
+    }
+    std::printf("\nCost of one response_curve call (publish runs at 60 Hz):\n");
+    for (int nb : {128, 512}) {
+        const double qm = matched_q(nb);
+        for (double q : {1.0, qm}) {
+            Bank bk(nb, q, 0.0, true);
+            std::vector<double> big(nb, 0.3), re(nb), im(nb);
+            const int reps = 2000;
+            const clock_t t0 = clock();
+            for (int r = 0; r < reps; ++r)
+                bk.b.response_curve(big.data(), 1.0, re.data(), im.data());
+            const double us = 1e6 * double(clock() - t0) / CLOCKS_PER_SEC / reps;
+            std::printf("  %4d bands  Q %8.2f  window %4d  %8.1f us/call  %5.2f%% at 60 Hz\n",
+                        nb, q, bk.b.response_window(), us, us * 60.0 * 1e-4);
+        }
+    }
+    std::printf("\n=== K. STEADY vs Band Q: the detector must not be Q-sensitive ===\n");
+    std::printf("Sine on a band centre, 12 dB asked, Steady 0.6. The normalised\n");
+    std::printf("bandpass has unity gain at any Q, so these columns should AGREE.\n\n");
+    std::printf("%6s %10s %12s %12s %12s\n",
+                "bands", "input", "Q=1", "matched", "matched x4");
+    for (int nb : {128, 512}) {
+        const double qm = matched_q(nb);
+        for (double amp : {0.05, 0.2, 0.6}) {
+            std::printf("%6d %10.2f %9.2fdB %9.2fdB %9.2fdB\n", nb, amp,
+                        steady_duck_db(nb, 1.0, false, amp),
+                        steady_duck_db(nb, qm, true, amp),
+                        steady_duck_db(nb, qm * 4.0, true, amp));
+        }
     }
     return 0;
 }
