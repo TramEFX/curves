@@ -6,6 +6,12 @@
 > `docs/SPEC-0.0.1.md` is superseded, kept for history. This file remains the
 > architecture and decision record.
 >
+> **Notion mirror.** A product-level summary lives at
+> `https://app.notion.com/p/3ee0c6e138f2818ca142e6f2b33e7c2b` (private). It is
+> written FROM these documents, never the other way round: change code,
+> update the repo docs, then push the summary. If they disagree, the repo
+> wins and the Notion page is the bug.
+>
 > **Living document.** This file is the source of truth for the current state of the Curves project. Update it whenever a decision is made, changed, or superseded. Section [Change Log](#change-log) must be appended on every material edit.
 
 ---

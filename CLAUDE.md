@@ -125,6 +125,24 @@ the plugin never uses.
 - **Measure any generator's level before shipping it** — one was 4× full
   scale.
 
+## Documentation workflow — local first, then Notion
+
+**The repository is the source of truth.** There is a summary page in Notion:
+
+> Curves — a physics sandbox for spectral control
+> `https://app.notion.com/p/3ee0c6e138f2818ca142e6f2b33e7c2b`
+
+It is written **from** the repo docs, never the other way round. The order is
+always: change the code → update `ORCHESTRATION.md` / `SPEC-0.0.2.md` /
+`SESSION-LOG.md` → **then** push the summary to Notion. If the two disagree,
+the repo wins and the Notion page is the bug.
+
+Notion holds the *product-level summary* — what this is, the two axes, status
+at a glance. It does not duplicate the control reference or the measurements;
+those stay in the repo, which is where they are verifiable.
+
+Remote: `github.com/TramEFX/curves` (**private**).
+
 ## Documentation map
 
 | file | role |
