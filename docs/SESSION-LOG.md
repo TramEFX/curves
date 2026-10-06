@@ -19,7 +19,7 @@ log that runs to 2026-10-02).
 |---|---|
 | What it is | **A physics sandbox for spectral control.** Physics mode and subscriber are both axes; the cloth is one mode, EQ gain is one subscriber |
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `24ba49f` |
+| Head | `c547496` (Band Q) |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
 | Parameters | 30, in 28 spec entries |
 | Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
