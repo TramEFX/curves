@@ -59,6 +59,9 @@ target_link_libraries(stereo_test PRIVATE curves_string)
 add_executable(overlap_probe src/overlap_probe_main.cpp)
 target_link_libraries(overlap_probe PRIVATE curves_string)
 
+add_executable(q_test src/q_test_main.cpp)
+target_link_libraries(q_test PRIVATE curves_string)
+
 add_executable(display_src src/display_src_main.cpp)
 target_link_libraries(display_src PRIVATE curves_string)
 

@@ -251,7 +251,8 @@ const char* CurvesAudioProcessor::mod_knob_id(int k) {
     static const char* kIds[kNumModKnobs] = {
         "damping", "stiffness", "tension", "smoothing", "drive", "steady",
         "leveler", "velocity", "wind", "waves", "motion", "character",
-        "flutter_hz", "wrinkle", "mix", "flap", "width", "pan_depth"};
+        "flutter_hz", "wrinkle", "mix", "flap", "width", "pan_depth",
+        "resonance"};
     return kIds[juce::jlimit(0, (int)kNumModKnobs - 1, k)];
 }
 
@@ -360,6 +361,23 @@ CurvesAudioProcessor::CurvesAudioProcessor()
                                       R{20.0f, 2000.0f}, 120.0f));
     addParameter(stereo_hi_ = new APF("stereo_hi", "Spatial high cut",
                                       R{1000.0f, 18000.0f}, 12000.0f));
+    // ---- BAND Q. 0 = Flat: Q = 1 with no overlap correction, which is the
+    // historical bank BIT-FOR-BIT. 1 = Matched: band width equals band
+    // spacing, plus the analytic 1/K overlap correction. The flag exists so
+    // the two can be A/B'd, because Matched changes every sound: at Q = 1
+    // the bank passes NO spectral detail at all (measured 0.00 dB survival
+    // of a +-6 dB pattern alternating every 2, 4, 8 or 16 bands, at both
+    // 128 and 512 nodes) while delivering ~24x the asked-for depth on the
+    // string's coarse average. Matched trades that for honest depth and
+    // real resolution. See q_test.
+    addParameter(q_mode_ = new APF("q_mode", "Band Q", R(0.0f, 1.0f, 1.0f), 0.0f));
+    // Resonance pushes Q ABOVE matched: x1 to x8. Narrower bands ring
+    // longer (T60 = 6.91*Q/(pi*f), so 754 ms at 58 Hz already at matched Q
+    // on 128 nodes) and stop filling the gaps between each other, which
+    // turns the response into a comb -- the ripple is 0.93 dB at matched
+    // and 5.73 dB at x8. Both effects are the point: this is the knob that
+    // buys the ringing, harmonic-comb texture.
+    addParameter(resonance_ = new APF("resonance", "Resonance", R{0.0f, 1.0f}, 0.0f));
 
     // Capture each modifiable knob's minimum; "off" resolves to it.
     for (int k = 0; k < kNumModKnobs; ++k) {
@@ -400,6 +418,7 @@ void CurvesAudioProcessor::rebuild(int precision) {
     sim_counter_ = 0;
 
     bank_.prepare(n_nodes_, fs_, 2);
+    last_q_ = -1.0;  // matched Q depends on node count; force a re-apply
     bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
     rebuild_band_map();
     gain_targets_.assign(n_nodes_, 1.0);
@@ -470,6 +489,15 @@ void CurvesAudioProcessor::rebuild_spatial_taper() {
     }
     taper_lo_ = lo;
     taper_hi_ = hi;
+}
+
+// The Q whose -3 dB bandwidth equals the band spacing:
+// Q = sqrt(2^BW)/(2^BW - 1) with BW = log2(fmax/fmin)/(N-1) octaves.
+// 19.85 at 128 nodes, 39.86 at 256, 79.88 at 512.
+double CurvesAudioProcessor::matched_q(int n) {
+    const double bw = std::log2(kFMax / kFMin) / std::max(1, n - 1);
+    const double t = std::pow(2.0, bw);
+    return std::sqrt(t) / (t - 1.0);
 }
 
 void CurvesAudioProcessor::rebuild_band_map() {
@@ -665,6 +693,19 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         smooth_alpha_ = 1.0 - std::exp(-1.0 / (tau * tick_rate));
     }
     bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
+    // Band Q. set_q is O(N) plus an O(N) overlap sum, so it runs only when
+    // the setting actually moves -- not per block.
+    {
+        const bool matched = q_mode_->get() > 0.5f;
+        const double res = knob(kResonance, resonance_->get());
+        const double q = matched ? matched_q(n_nodes_) * std::pow(2.0, 3.0 * res) : 1.0;
+        if (matched != last_q_matched_ || std::abs(q - last_q_) > 1e-9) {
+            bank_.set_q(q);
+            bank_.set_overlap_correction(matched);
+            last_q_matched_ = matched;
+            last_q_ = q;
+        }
+    }
     leveler_.set_amount(knob(kLeveler, leveler_amt_->get()));
     max_gain_db_.store(knob(kRangeDb, drive_->get()), std::memory_order_relaxed);
 

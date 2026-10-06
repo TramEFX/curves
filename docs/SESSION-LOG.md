@@ -21,28 +21,37 @@ log that runs to 2026-10-02).
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
 | Head | `24ba49f` |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
-| Parameters | 28, in 26 spec entries |
+| Parameters | 30, in 28 spec entries |
 | Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
 | Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
 
 > **Status lives in `SPEC-0.0.2.md` §5** — blocked / pending / open, with
-> numbered items (B1, P3, O4 …). One item is **blocked on an owner
-> decision**: band overlap (B1), which gates the Place control (B2).
+> numbered items (B1, P3, O4 …). **Nothing is blocked** as of 2026-10-06:
+> band overlap (B1) was the only blocker, its route is built and measured,
+> and it unblocked Place (B2). What is left is an ear test — **P7**, whether
+> `Band Q = Matched` becomes the default.
 
 **Three invariants that constrain everything:**
 
 1. **WYSIWYG.** The bright curve is drawn from `FilterBank::gains()` with the
    same ±1 clamp the audio path uses — never from the sim. Any amplitude
    mechanism must keep the string inside ±1 in normal use.
+   **Measured, not assumed:** with `Band Q = Flat` the drawn curve is out by
+   31–43 dB because the bands sum (B1). `Band Q = Matched` brings that to
+   6.8 dB, all of it in the cuts. O10 is the structural fix.
 2. **Bit-exact cross-validation.** Every physics change lands in both
    `src/string_sim.cpp` and `prototype/string_sim.py` with identical
    arithmetic order, and the frozen scenario CSVs stay byte-identical.
    New behaviour goes in behind a default-off flag or a new force model so
    the baselines survive.
-3. **Channel coherence** (added 2026-10-02). One instance is one string: no
-   process inside a single instance may treat L and R differently. Stereo
-   interest comes from running separate *instances* per channel.
+3. **Image provenance** (added 2026-10-02 as "channel coherence", renamed
+   2026-10-06 — the old name described a mechanism, not the principle).
+   Every per-band coefficient (mid gain, side gain, mid→side cross-feed)
+   must be a deterministic function of the control surface and the knobs,
+   and therefore **drawable**. Forbidden: any detector that measures the
+   channels separately and lets the result change the balance between them.
+   Permitted: deliberate stereo transforms driven by the control surface.
 
 ---
 
@@ -808,6 +817,151 @@ Updated: `ORCHESTRATION.md` §1 (with the correction stated explicitly rather
 than quietly rewritten), `SPEC-0.0.2.md` (scope note, §1 dataflow, the
 Physics entry), `CLAUDE.md` (lead paragraph). Also corrected stale figures in
 `CLAUDE.md` — it still said 11 scenarios / 104,576 cells and 22 parameters.
+
+## 2026-10-06 · Band Q — B1 resolved in code, and what measuring it changed
+
+**Where it came from.** A NEST Acoustics technique: three single-note samples
+loaded as convolution IRs, each convolver's mix driven by its own randomised
+LFO. Mechanically that is a set of static spectral combs crossfaded by slow
+uncorrelated randomness. Curves already has the randomness one level deeper —
+the physics deforms *one* curve continuously instead of crossfading three —
+but it had **no tail**: the bank is peaking SVFs at `Q = 1`, which have
+essentially no memory, so no amount of moving the curve produces ringing.
+
+The Curves-native route to that texture is high Q, which is **B1's route 2**.
+So the thing I had written up as route 2's drawback — "`Q ≈ 80` at 512 will
+sound resonant" — is the feature. That reframe is what unblocked B1.
+
+### Measuring it corrected my own framing three more times
+
+I had presented B1 as a choice between two routes that "both reshuffle every
+sound tuned by ear". Wrong in three ways:
+
+1. **Not alternatives.** The `1/K` correction is needed at *any* Q. And `K`
+   is **derivable**, not fitted: it is the sum of the Q-normalised bandpass
+   responses at a band centre, in closed form from the band map
+   (`FilterBank::overlap_factor`). Analytic vs measured — 23.87 / 23.88 at
+   `Q = 1`, 1.69 / 1.69 at matched, 1.70 / 1.70 at 512 nodes.
+2. **Matched Q's real prize is node-count independence.** `K` = 1.69 at 128
+   nodes and 1.70 at 512, against 23.9 and 96.1 at `Q = 1`. One constant
+   then corrects every depth at every precision — verified +12 → −12 dB on
+   both node counts with **no polarity inversion anywhere**.
+3. **`Q = 1` passes no spectral detail at all.** The decisive measurement.
+   Survival of a ±6 dB pattern alternating every *n* bands (12 dB = all):
+
+   | bands | Q | every 2 | every 4 | every 8 | every 16 |
+   |---|---|---|---|---|---|
+   | 128 | 1.00 | 0.00 dB | 0.00 dB | 0.01 dB | 0.35 dB |
+   | 128 | 19.85 | 4.30 dB | 5.52 dB | 8.59 dB | 10.38 dB |
+   | 512 | 1.00 | 0.00 dB | −0.00 dB | 0.00 dB | 0.00 dB |
+   | 512 | 79.88 | 4.25 dB | 5.45 dB | 8.46 dB | 10.22 dB |
+
+   The bank is a ~1.4-octave smear: it responds to the string's coarse
+   **average** with 24–96× the asked depth and to its **shape** with
+   nothing. So **Precision has been buying no audible resolution** — 512
+   nodes measured 0.00 dB at every scale tested.
+
+### Flat Q is also the loudest, least safe setting
+
+Sweeping ±18 dB shape on noise, input rms 0.115:
+
+| bands | mode | peak | rms |
+|---|---|---|---|
+| 128 | Flat `Q = 1` | **16.995** | 4.045 |
+| 512 | Flat `Q = 1` | **67.030** | 15.988 |
+| 128 | Matched + 1/K | 1.520 | 0.334 |
+| 512 | Matched + 1/K | 1.486 | 0.342 |
+
+17× full scale at 128 nodes, 67× at 512. **The Leveler has been absorbing an
+enormous gain error** — which is what EQ dB sitting at **3.74 of 24** meant
+all along. Nothing went non-finite at any Q up to 639.
+
+### It is a WYSIWYG violation — the top invariant
+
+Drawn curve vs measured response, smooth ±12 dB shape, worst of four bands:
+
+| mode | 128 nodes | 512 nodes |
+|---|---|---|
+| Flat `Q = 1` (today) | **31.19 dB** | **43.30 dB** |
+| Flat + 1/K | 8.44 dB | 8.48 dB |
+| Matched (Res 0) | 6.84 dB | 6.82 dB |
+| Matched ×2 | 4.67 dB | 4.68 dB |
+| Matched ×4 | 2.10 dB | 2.12 dB |
+| Matched ×8 | 0.67 dB | 0.68 dB |
+
+Third violation of invariant 1, and the first that is **structural** rather
+than a missed stage. The residual after correction is **entirely in the cuts
+— and not because boosted neighbours leak in**, since at those probe bands
+every neighbour is also a cut. It is the **quadrature term**:
+`out = x·(1 + A + jB)`, the correction only makes `A` right, and on a sloped
+shape the neighbours' imaginary parts stop cancelling, so `|1 + A + jB|` is
+dominated by `B` exactly where `1 + A` is small. **A parallel additive bank
+cannot notch deeply on a slope.** Raising Q shrinks the neighbour weights and
+so shrinks `B`, which is why that column falls monotonically.
+
+### Built
+
+- **`Band Q`** — `Flat` (`Q = 1`, no correction: **bit-identical** to the
+  historical bank; `overlap_probe` and `gain_test` reproduce their recorded
+  numbers and all 12 scenarios stay at 119,936 cells / 0 mismatches) or
+  `Matched` (width = spacing, plus analytic `1/K`).
+- **`Resonance`** — ×1 → ×8 above matched. Ring measured exactly at
+  `T60 = 6.91·Q/(π·f)`: **754 ms at 58 Hz already at matched Q**, 3.0 s at
+  Resonance 0.67, falling as `1/f`, so the texture is bass-weighted.
+  Inter-band ripple is the cost — 0.93 dB at 0, 3.24 dB at 0.33, 5.73 dB at
+  1.0, where the response is a comb rather than an EQ. Output level *falls*
+  as Resonance rises (peak 1.52 → 0.75): narrow bands pass less broadband
+  energy.
+
+The correction folds into the multiply the inner loop already had
+(`ok_ = k_/overlap_k_`), so **the display needed no change**: `gains()` still
+reports the nominal, which is now also the response. WYSIWYG holds
+structurally rather than by remembering to mirror it. Bank cost 11.5% →
+11.74% of a core at 512 nodes. 30 parameters; title bar reads
+`SUBSCRIBERS (Matched Q)` so the mode is legible without reading a 0/1 knob.
+
+**Default stays `Flat`** — nothing measured says how Matched *sounds*, and
+every sound so far was tuned against Flat. That is **P7**.
+
+### The traps in this one
+
+> **The SVF's `v1` is the Q-scaled bandpass** — `|v1|` peaks at Q, not 1. At
+> `Q = 1` that is invisible, which is why the bank was **correct by
+> accident**. Without the `k = 1/Q` normalisation, `Q = 80` would have been
+> 80× too deep. This was the first thing to get right and would have
+> silently poisoned every measurement after it.
+
+Three measurement bugs had to be found before any number meant anything,
+which is the habit "validate a metric on a known signal before trusting it"
+earning its place again:
+
+- **"Off" bands set to `1e-10`** — that is a *full notch* on 127 bands, not
+  off. It made the ring-time column frequency-independent (identical 62 ms at
+  754 Hz and 9.4 kHz) because what was decaying was 127 notches, not the one
+  resonance. Off is **unity gain**.
+- **A magnitude-only sync detector** cannot see polarity, so it reported an
+  inverted cut as "ok". Keeping the sign of the in-phase component revealed
+  that cuts invert at matched Q *without* the correction.
+- **The `K` probe was not on a band centre.** `sqrt(f_lo·f_hi)` is the
+  geometric centre of the *range*, not a band centre. At `Q = 1` that is
+  harmless; at `Q = 159` it read the gap (0.04) instead of the peak (1.01).
+  The on-centre band contributes exactly 1, so **any sum below 1 means the
+  probe missed** — a built-in sanity check worth keeping in mind.
+
+### Recommended next
+
+**O10 — draw the computed response rather than the nominal per-band gain.**
+`overlap_factor` is already most of that code; weighting each band by its
+current gain gives a curve honest by construction, retiring the whole class
+of WYSIWYG bug instead of shrinking it, and making the inter-band comb
+visible at high `Resonance` (which no per-band curve can show). ~6M flops/s
+at 512 nodes on the UI thread at 30 Hz.
+
+**O11 — string-driven per-node Q.** The harder half of the original O4.
+`set_q` is already O(N) with `tan` cached precisely so per-band modulation is
+affordable (1 divide + 3 multiplies per band per block).
+
+---
 
 ## 2026-10-06 · Spatial subscriber, and a pre-existing defect it exposed
 

@@ -2,8 +2,8 @@
 
 **Status: current.** Supersedes `SPEC-0.0.1.md`, which is kept for history.
 
-An exhaustive knob-by-knob reference covering all **28 parameters** in
-**26 entries** (the two Walls share one, as do the two Randomisers). For every control it states:
+An exhaustive knob-by-knob reference covering all **30 parameters** in
+**28 entries** (the two Walls share one, as do the two Randomisers). For every control it states:
 
 1. **Assigned parameters** — the exact engine variables it writes.
 2. **What it does** — the effect, in plain language.
@@ -1371,6 +1371,69 @@ or the band map move.
 
 ---
 
+#### 27 · Band Q  `q_mode`
+**0…1 step 1 · default 0 (Flat) · Subscribers**
+
+| Assigns | `FilterBank::set_q` and `set_overlap_correction` |
+|---|---|
+
+**What it does.** Chooses how wide each band is, and therefore how much the
+bands add up. A property of the **bank**, so it applies to every subscriber
+at once — EQ, width and placement all inherit it.
+
+- **Flat** — `Q = 1`, no overlap correction. Bands are ~1.4 octaves wide
+  against a `9.23/N`-octave spacing. This is the historical bank
+  **bit-for-bit**, kept so the two can be A/B'd by ear.
+- **Matched** — band width equals band spacing (`Q = sqrt(2^BW)/(2^BW − 1)`,
+  giving 19.85 / 39.86 / 79.88 at 128 / 256 / 512 nodes) plus the analytic
+  `1/K` overlap correction.
+
+**Measured.** See §5 B1 for the full set. Flat delivers ~24× (128 nodes) to
+~96× (512) the asked depth, passes **0.00 dB** of any spectral detail
+tested, peaks at **17–67× full scale**, inverts cuts, and leaves the drawn
+curve wrong by **31–43 dB**. Matched delivers the asked depth to ~0.05 dB on
+boosts at both node counts, never inverts, peaks at 1.5×, and cuts the
+WYSIWYG error to 6.8 dB — all of which is in the cuts, for the quadrature
+reason in §5.
+
+**The title bar says which mode is live** (`SUBSCRIBERS (Matched Q)`),
+because a 0/1 rotary cannot carry something this consequential.
+
+> **Not yet the default.** Every sound tuned so far was tuned against Flat,
+> and the measurements say nothing about how Matched *sounds*. See P7, and
+> expect EQ dB to need raising well above its current 3.74.
+
+---
+
+#### 28 · Resonance  `resonance`
+**0…1 · default 0 · Subscribers**
+
+| Assigns | `Q = matched_q(N) · 2^(3·Resonance)` — ×1 to ×8 |
+|---|---|
+
+**What it does.** Narrows the bands past matched. Two things follow, and
+both are the point: each band **rings longer**, and the bands stop filling
+the gaps between one another, so the response becomes a **comb**.
+
+**Only meaningful with `Band Q = Matched`** — it is ignored in Flat.
+
+**Measured.** `T60 = 6.91·Q/(π·f)`, confirmed at every point tested. At 128
+nodes: 754 ms at 58 Hz / 58 ms at 754 Hz / 7 ms at 9.4 kHz at Resonance 0,
+rising to 3.0 s / 232 ms / 25 ms at Resonance 0.67. Ring time falls as
+`1/f` because constant Q is constant ring in *cycles*, so the texture is
+strongly bass-weighted. Inter-band ripple is the cost: 0.93 dB at 0,
+3.24 dB at 0.33, 5.73 dB at 1.0. Output level *falls* as Resonance rises
+(peak 1.52 → 0.75), since narrow bands pass less broadband energy, and
+nothing went non-finite up to Q = 639.
+
+**What it is for.** A slowly-moving physics curve read across a bank of
+ringing resonators is the same device as crossfading note-sample impulse
+responses — the comb is drawn by the string instead of baked into a sample,
+the decay is a knob, and it stays drawable. Resonance is the knob that buys
+that texture; at 0 the bank is a clean EQ.
+
+---
+
 ## §4 — Reverse Index: which knobs write each parameter
 
 The entanglement map. A parameter written by more than one knob is where
@@ -1415,7 +1478,14 @@ list. Fixed items are kept with a date so a defect is not rediscovered.
 
 ### ⛔ BLOCKED — needs a decision before the work can continue
 
-**B1 · Band overlap: every per-band depth is nominal, not actual.**
+*Nothing is blocked. B1 was the only blocker; the route is chosen, built and
+measured (below), and it unblocked B2. What remains is an ear test, which is
+**P7**.*
+
+**B1 · Band overlap — ROUTE CHOSEN AND BUILT (2026-10-06). Default is still
+`Band Q = Flat` pending ears; see P7.**
+
+The original finding, kept because the numbers are the baseline for the A/B:
 
 `out = x + Σ bp_b·(g_b − 1)`. With **Q = 1** the bands are ~1.4 octaves wide
 while the spacing is `9.23/N` octaves, so **~0.15·N bands overlap** at any
@@ -1445,16 +1515,128 @@ This is **the unimplemented per-node Q (O4) coming due**. Width and EQ
 inherit the factor *equally* and stay consistent, so both remain usable;
 **Place does not** (see B2).
 
-Two routes, neither taken: **normalise by `1/K`** (one scalar, keeps the
-smooth Q = 1 response, makes the dB knobs honest, removes the Precision
-coupling) or **per-node Q matched to spacing** (`Q ≈ 0.16·N`, ~80 at 512 —
-architecturally intended but will sound resonant, and a far larger change).
-**Both reshuffle every sound already tuned by ear**, which is why this is a
-decision and not a fix.
+#### What the measurements changed about the framing
 
-**B2 · Place is unusable at its stated range.** Direct consequence of B1:
-with `K ≈ 69` a hard pan arrives at roughly `Place = 0.014`, so the entire
-visible travel is past the end. Unblocks the moment B1 does.
+I had framed this as a choice between **`1/K` normalisation** and **per-node
+Q matched to spacing**, and said both "reshuffle every sound tuned by ear".
+Measuring it (`q_test`) showed the framing was wrong in three ways.
+
+**1. They are not alternatives — the correction is needed either way, and it
+is derivable, not fitted.** `K` is the sum of the Q-normalised bandpass
+responses at a band centre, which the bank now computes in closed form from
+its own band map (`FilterBank::overlap_factor`). Analytic vs measured:
+
+| bands | Q | K analytic | K measured | +6 dB asked → delivered |
+|---|---|---|---|---|
+| 128 | 1.00 | 23.87 | 23.88 | 6.00 dB |
+| 128 | 19.85 | 1.69 | 1.69 | 6.00 dB |
+| 512 | 1.00 | 96.06 | 96.08 | 6.00 dB |
+| 512 | 79.88 | 1.70 | 1.70 | 6.00 dB |
+
+**2. Matched Q's real prize is not depth, it is that `K` stops scaling with
+node count** — 1.69 at 128 nodes and 1.70 at 512, against 23.9 and 96.1 at
+Q = 1. One constant then corrects every depth at every precision. Verified
+across +12 → −12 dB on both node counts, **no polarity inversion anywhere**.
+
+**3. Q = 1 passes no spectral detail at all.** This is the finding that
+actually decides it. Survival of a ±6 dB pattern alternating every *n* bands
+(12 dB = fully passed):
+
+| bands | Q | every 2 | every 4 | every 8 | every 16 |
+|---|---|---|---|---|---|
+| 128 | 1.00 | 0.00 dB | 0.00 dB | 0.01 dB | 0.35 dB |
+| 128 | 19.85 (matched) | 4.30 dB | 5.52 dB | 8.59 dB | 10.38 dB |
+| 512 | 1.00 | 0.00 dB | −0.00 dB | 0.00 dB | 0.00 dB |
+| 512 | 79.88 (matched) | 4.25 dB | 5.45 dB | 8.46 dB | 10.22 dB |
+
+At Q = 1 the bank is a ~1.4-octave smear: it responds to the string's
+**coarse average** with ~24–96× the asked depth and to its *shape* with
+nothing. **Precision buys no audible resolution at Q = 1** — 512 nodes
+measured 0.00 dB at every scale tested. At matched Q the resolution is set
+by node spacing instead, which is what Precision was supposed to mean.
+
+**4. Flat Q is also the loudest and least safe setting.** Driven with a
+sweeping ±18 dB shape on noise at input rms 0.115:
+
+| bands | mode | peak | rms |
+|---|---|---|---|
+| 128 | Flat Q = 1 (today) | **16.995** | 4.045 |
+| 512 | Flat Q = 1 (today) | **67.030** | 15.988 |
+| 128 | Matched + 1/K | 1.520 | 0.334 |
+| 512 | Matched + 1/K | 1.486 | 0.342 |
+
+17× full scale at 128 nodes, 67× at 512. The Leveler has been absorbing an
+enormous gain error, and that is why EQ dB had to be run at 3.74 of 24.
+Nothing produced a non-finite sample at any Q up to 639.
+
+**5. It is a WYSIWYG violation, not a nicety — the top invariant.** Drawn
+curve vs measured response, smooth ±12 dB shape, worst of four probe bands:
+
+| mode | 128 nodes | 512 nodes |
+|---|---|---|
+| Flat Q = 1 (today) | **31.19 dB** | **43.30 dB** |
+| Flat Q = 1 + 1/K | 8.44 dB | 8.48 dB |
+| Matched (Res 0) | 6.84 dB | 6.82 dB |
+| Matched ×2 | 4.67 dB | 4.68 dB |
+| Matched ×4 | 2.10 dB | 2.12 dB |
+| Matched ×8 | 0.67 dB | 0.68 dB |
+
+So invariant 1 is currently out by 31–43 dB. This is a third violation, and
+unlike Steady and Mix it is **structural rather than a missed stage**.
+
+**The residual after correction is entirely in the cuts, and the cause is
+not neighbour boosts leaking in** — at the probe bands every neighbour is
+also a cut. It is the quadrature term: `out = x·(1 + A + jB)` and the
+correction only makes `A` right. On a sloped shape the neighbours' imaginary
+contributions stop cancelling, and `|1 + A + jB|` is dominated by `B`
+exactly where `1 + A` is small, i.e. in a deep cut. **A parallel additive
+bank cannot notch deeply on a slope.** Raising Q shrinks the neighbour
+weights and so shrinks `B`, which is why the column above falls monotonically.
+
+#### What was built
+
+Two parameters, in SUBSCRIBERS (they are bank properties, so they apply to
+every subscriber at once, not just the EQ):
+
+- **`Band Q`** — `Flat` (Q = 1, no correction: **bit-identical** to the
+  historical bank, verified by `overlap_probe`, `gain_test` and the 12
+  frozen scenarios) or `Matched` (band width = band spacing, plus the
+  analytic `1/K`). The flag exists so the two can be A/B'd by ear.
+- **`Resonance`** — pushes Q above matched, ×1 → ×8. Narrower bands ring
+  longer and stop filling the gaps between each other.
+
+The correction folds into the single multiply the inner loop already had
+(`ok_ = k_/K`, where `k_ = 1/Q` normalises the SVF's Q-scaled bandpass), so
+**the display needed no change**: `gains()` still reports the nominal value,
+which is now also the response. WYSIWYG holds structurally rather than by
+remembering to mirror it. Cost: bank 11.5% → 11.74% of a core at 512 nodes.
+
+> **A trap worth recording.** The SVF's `v1` is the *Q-scaled* bandpass —
+> `|v1|` peaks at Q, not at 1. At Q = 1 that is invisible, which is why the
+> bank was correct by accident. Without the `k = 1/Q` normalisation, Q = 80
+> would have been **80× too deep**.
+
+#### Ring time — what the high-Q route actually buys
+
+`T60 = 6.91·Q/(π·f)`, measured to match at every point tested. 128 nodes:
+
+| Q | 58 Hz | 754 Hz | 9.4 kHz |
+|---|---|---|---|
+| 1.00 | 40 ms | 3 ms | ~0 ms |
+| 19.85 (matched) | 754 ms | 58 ms | 7 ms |
+| 79.40 (Res .67) | 3031 ms | 232 ms | 25 ms |
+
+Constant Q means constant ring in *cycles*, so ring time falls as `1/f`. The
+texture is therefore strongly low-frequency weighted — natural (a real
+resonator behaves this way) but worth knowing before chasing broadband
+shimmer. Ripple between band centres is the cost: 0.93 dB at matched,
+3.24 dB at ×2, 5.73 dB at ×8, at which point the response is a comb rather
+than an EQ. That comb is the point for texture work and a defect for EQ
+work, which is exactly why `Resonance` is a knob and not a constant.
+
+**B2 · Place — UNBLOCKED.** `pan` is corrected by the same `ok_` scalar, so
+with `Band Q = Matched` the factor is 1.70 rather than ~69 and the knob's
+travel is honest. Needs an ear check at its current range (P7).
 
 ### ⏳ PENDING — decided, waiting on ears or a later pass
 
@@ -1474,6 +1656,16 @@ visible travel is past the end. Unblocks the moment B1 does.
 - **P6 · Shedding has no Tension compensation** — peak falls 80.7× across the
   Tension dial at Character 1. Belongs with the Character work.
 
+- **P7 · `Band Q = Matched` needs an ear test, and the default depends on
+  it.** Everything measurable says Flat is broken (31–43 dB WYSIWYG error,
+  17–67× full-scale output, zero spectral resolution, depth coupled to
+  Precision). Nothing measurable says it *sounds* better matched, and every
+  sound tuned so far was tuned against Flat. Flipping the default is an
+  owner call. Expect to re-tune **EQ dB** upward — 3.74 of 24 was
+  compensation for the ~24× overshoot and will be far too little once the
+  knob is honest — and to re-check **Steady**, **Leveler** and **Place**,
+  which were all calibrated against the old level.
+
 ### 🔧 OPEN — known, costed, nobody blocked
 
 - **O1 · Wrinkle and Flap sit outside the excitation budget** (1.57× and
@@ -1482,7 +1674,25 @@ visible travel is past the end. Unblocks the moment B1 does.
   between distinct simulations, which is axis 1 of the product.
 - **O3 · Adding a physics mode is UI work too.** CLOTH & WIND is a
   Flagpole-shaped panel hard-coded alongside the generic ones.
-- **O4 · Per-node Q unimplemented.** `Q = 1.0` fixed, despite being a
+- **O10 · The curve could be drawn from the TRUE response instead of the
+  nominal per-band gain.** `FilterBank::overlap_factor` already evaluates
+  the exact digital response of the summed bank in closed form; generalising
+  it to weight each band by its current gain would give a curve that is
+  honest by construction — no `1/K`, no quadrature residual, no reliance on
+  Q being high enough. That would retire the whole class of WYSIWYG bug
+  (three so far) rather than shrinking it, and it also makes the inter-band
+  comb ripple visible at high `Resonance`, which no per-band curve can show.
+  Cost is a UI-thread magnitude evaluation at ~30 Hz: `O(bands × pixels)`,
+  about 6M flops/s at 512 nodes. **This is the recommended next step.**
+- **O11 · Q is global; the string could drive it per node.** This is the
+  original O4 vision and the harder half of it. `set_q` is already O(N) with
+  `tan` cached precisely so per-band modulation is affordable (1 divide +
+  3 multiplies per band per block). It needs a second control-signal
+  subscriber and a decision about what drives Q — the same string shape as
+  gain, its velocity, or an independent mode.
+- **O4 · Per-node Q — the GLOBAL half is now built** (`Band Q`,
+  `Resonance`; see B1). What remains is per-node modulation, tracked as
+  O11. Previously read: `Q = 1.0` fixed, despite being a
   recorded architectural decision. See B1 — this is the root of it.
 - **O5 · Stiffness is weaker than its range** now that DC and tilt are
   blocked.
@@ -1567,6 +1777,10 @@ build/Release/wind_test.exe              # Wind sweeps, old vs shipped mapping
 build/Release/rnd_test.exe               # randomisers + the direction invariant
 build/Release/stereo_test.exe            # width, placement, mono-safety
 build/Release/overlap_probe.exe          # the band-overlap factor K (B1)
+build/Release/q_test.exe                 # Band Q: K analytic vs measured,
+                                         # resolution, ring time, levels,
+                                         # WYSIWYG error (B1). Slow (~4 min):
+                                         # high-Q bands need seconds to settle
 build/Release/display_src.exe            # every subscriber config is drawable
 build/Release/spatial_test.exe           # spatial spectrum by wavenumber band
 ```

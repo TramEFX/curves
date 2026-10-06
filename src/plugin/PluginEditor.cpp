@@ -120,6 +120,10 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"pan_depth", "Place", kSubscriber},
         {"stereo_lo", "Low Hz", kSubscriber},
         {"stereo_hi", "High Hz", kSubscriber},
+        // Band Q is a property of the BANK, so it applies to every
+        // subscriber at once, not just the EQ.
+        {"q_mode", "Band Q", kSubscriber},
+        {"resonance", "Resonance", kSubscriber},
     };
     for (const auto& d : defs) {
         for (auto* p2 : processor_.getParameters()) {
@@ -269,11 +273,11 @@ void CurvesAudioProcessorEditor::resized() {
 
     // Bottom-up: GLOBAL gets its own full-width row (the "one obvious
     // spot"), with STRING and CLOTH & WIND sharing the row above it.
-    // Bottom row carries GLOBAL and SUBSCRIBERS side by side. GLOBAL holds
-    // 7, SUBSCRIBERS 5, so the width is split in that ratio.
+    // Bottom row carries GLOBAL and SUBSCRIBERS side by side. Both hold 7
+    // since Band Q and Resonance arrived, so the width splits evenly.
     {
         auto bottom = area.removeFromBottom(kGlobalH);
-        const int gw = (bottom.getWidth() - kPanelGap) * 7 / 12;
+        const int gw = (bottom.getWidth() - kPanelGap) / 2;
         panel_[kGlobal] = bottom.removeFromLeft(gw);
         bottom.removeFromLeft(kPanelGap);
         panel_[kSubscriber] = bottom;
@@ -326,7 +330,7 @@ void CurvesAudioProcessorEditor::resized() {
     // is the "one obvious spot", and a second row made Test Noise wrap
     // out of the panel's height and clip.
     place(kGlobal, panel_[kGlobal], 7);
-    place(kSubscriber, panel_[kSubscriber], 5);
+    place(kSubscriber, panel_[kSubscriber], 7);
     place(kString, panel_[kString], 2);
     place(kCloth, panel_[kCloth], 4);
 
@@ -844,7 +848,13 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     draw_panel(g, panel_[kString], "STRING", true);
     draw_panel(g, panel_[kCloth], "CLOTH & WIND   (Flagpole)", mode == 1);
     draw_panel(g, panel_[kGlobal], "GLOBAL", true);
-    draw_panel(g, panel_[kSubscriber], "SUBSCRIBERS", true);
+    // Name the Q mode in the title the way CLOTH & WIND names the physics
+    // mode: it changes every per-band depth, so it must be readable at a
+    // glance rather than inferred from a 0/1 knob.
+    draw_panel(g, panel_[kSubscriber],
+               processor_.q_matched() ? "SUBSCRIBERS   (Matched Q)"
+                                      : "SUBSCRIBERS   (Flat Q)",
+               true);
 
     // Per-knob modifier LEDs. Power: yellow lit / black off. Magnitude:
     // green / orange / red for low / medium / high. Both are buttons.

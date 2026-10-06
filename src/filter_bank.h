@@ -36,6 +36,26 @@ public:
     // Fixed band center frequencies; caller owns the frequency map.
     void set_band_frequency(int band, double fc);
 
+    // Uniform Q for every band. Q = 1.0 is the historical fixed value and
+    // is BIT-IDENTICAL to the pre-Q bank (the normalisation below multiplies
+    // by exactly 1.0). Matched-to-spacing Q is ~0.156*N -- see q_test.
+    void set_q(double q);
+    double q() const { return q_; }
+
+    // Band OVERLAP correction (B1). The bands add, so a nominal g arrives as
+    // 1 + K*(g-1). With Q = 1, K ~= 0.152*N -- it SCALES WITH NODE COUNT,
+    // which is what made every per-band depth nominal rather than actual.
+    // At Q matched to the band spacing K collapses to a CONSTANT ~1.70, and
+    // one scalar removes it. K is computed analytically from the band map,
+    // not fitted. Enabling this changes no display code: the correction is
+    // folded into the audio-path scalar, so gains() keeps reporting the
+    // nominal value, which is now also the actual response. WYSIWYG holds
+    // structurally rather than by remembering to mirror it.
+    void set_overlap_correction(bool on);
+    double overlap_k() const { return overlap_k_; }
+    // Sum of the Q-normalised bandpasses at f -- the overlap factor there.
+    double overlap_factor(double f) const;
+
     // Per-band dynamic EQ ("Steady"): bands whose bandpass energy exceeds
     // the threshold get their own contribution squeezed. amount 0 = off.
     // Threshold is linear amplitude on the bandpass signal.
@@ -143,9 +163,18 @@ public:
             g_eff_[b] = 1.0 + bigm;
             gs_eff_[b] = 1.0 + bigs;
 
-            ym += v1m * bigm;
+            // v1 is the Q-SCALED bandpass: |v1| peaks at Q, not at 1. At
+            // Q = 1 that is invisible, which is why the bank was correct by
+            // accident. Normalising by k = 1/Q makes the peak gain exactly
+            // G at ANY Q -- without it Q = 80 would be 80x too deep.
+            // ok_ = k_ / K folds BOTH scalars into the one multiply that
+            // was already here: k = 1/Q normalises the SVF's Q-scaled
+            // bandpass, 1/K removes the band overlap. At Q = 1 with the
+            // correction off, ok_ is exactly 1.0 and this is bit-identical
+            // to the pre-Q bank.
+            ym += v1m * (bigm * ok_);
             if (stereo)
-                ys += v1s * bigs + v1m * pan;
+                ys += v1s * (bigs * ok_) + v1m * (pan * ok_);
         }
         if (stereo) {
             l = static_cast<float>(ym + ys);
@@ -158,12 +187,18 @@ public:
 
 private:
     void recompute_coefficients();
+    void refresh_overlap();
 
     int num_bands_ = 0;
     double fs_ = 48000.0;
+    double q_ = 1.0, k_ = 1.0;          // k = 1/Q, the SVF damping
+    double overlap_k_ = 1.0;            // K: how much the bands add up
+    double ok_ = 1.0;                   // k_ / overlap_k_, the audio scalar
+    bool overlap_on_ = false;
     double steady_amount_ = 0.0, steady_threshold_ = 0.25;
     double atk_alpha_ = 0.0, rel_alpha_ = 0.0;
     std::vector<double> fc_;            // band center frequencies
+    std::vector<double> gt_;            // tan(pi*fc/fs), independent of Q
     std::vector<double> a1_, a2_, a3_;  // SVF coefficients (g, k fixed per band)
     std::vector<double> g_;             // current linear gain per band
     std::vector<double> ramp_;          // per-frame geometric step toward target

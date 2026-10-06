@@ -35,8 +35,9 @@ doing, and a stray click of theirs lands in the test and corrupts it.
   `build/Release/` cover almost everything: `scenarios`, `gain_test`,
   `display_test`, `wind_test`, `spatial_test`, `mid_test`, `waves_test`,
   `patch_test`, `tension_test`, `lines_test`, `rnd_test`, `hash_probe`,
-  `stereo_test`, `overlap_probe`, `display_src`, `bench`. Prefer these over
-  driving the GUI, always.
+  `stereo_test`, `overlap_probe`, `q_test`, `display_src`, `bench`. Prefer
+  these over driving the GUI, always. (`q_test` takes ~4 minutes: high-Q
+  bands need seconds of settling per probe and it sweeps many of them.)
 - **Screenshots are safe; clicks are not.** `PrintWindow(hwnd, dc,
   PW_RENDERFULLCONTENT)` grabs the window without taking focus or touching
   the cursor. Use it freely. Synthetic *input* should be announced first and
@@ -72,9 +73,11 @@ doing, and a stray click of theirs lands in the test and corrupts it.
 
 ## Before starting anything: read SPEC-0.0.2 §5
 
-It is the blocked / pending / open status. One item is **blocked on an owner
-decision** (band overlap, B1) and it gates the spatial subscriber's
-placement control — do not try to "fix" placement without reading it.
+It is the blocked / pending / open status. **Nothing is blocked** as of
+2026-10-06: band overlap (B1) was the only blocker, the route is built and
+measured, and it unblocked Place (B2). What is left is an ear test, **P7** —
+whether `Band Q = Matched` becomes the default. Do not flip that default
+without the owner; every sound tuned so far was tuned against Flat.
 
 ## The one check that must pass
 
@@ -100,7 +103,12 @@ the plugin never uses.
 
 1. **WYSIWYG** — the bright curve is what the audio goes through. Any new
    stage added *after* the bank must be folded into the display too; this
-   has been violated twice (Steady, then Mix).
+   has been violated three times (Steady, then Mix, then band overlap).
+   The third is different in kind: not a missed stage but the bank's own
+   summation, measured at **31–43 dB** of error with `Band Q = Flat`. The
+   lesson is that the invariant needs *measuring* against the real response
+   and not just auditing against the signal chain — see `q_test` section I,
+   and O10 for the structural fix (draw the computed response).
 2. **Bit-exact cross-validation** — above.
 3. **Image provenance** — the stereo image moves only when told to. Every
    per-band coefficient (mid gain, side gain, mid→side cross-feed) must be a
@@ -120,8 +128,13 @@ the plugin never uses.
 - **Validate a metric on a known signal before trusting it.** Two metrics
   (wave direction, then motion frequency) gave confidently wrong answers.
 - **When a knob "does nothing" or "needs turning way up", it is usually
-  fighting something structural, not short of range.** Four cases so far.
-  Check the *level* across its sweep first.
+  fighting something structural, not short of range.** Five cases so far —
+  the fifth being EQ dB run at 3.74 of 24, which turned out to be
+  compensation for the bank delivering ~24× the asked depth. Check the
+  *level* across its sweep first.
+- **A knob turned way DOWN is the same signal as a knob turned way up.**
+  EQ dB sitting at 3.74 was the visible symptom of B1 for weeks and was
+  read as taste rather than as evidence.
 - **Measure any generator's level before shipping it** — one was 4× full
   scale.
 
@@ -148,6 +161,6 @@ Remote: `github.com/TramEFX/curves` (**private**).
 | file | role |
 |---|---|
 | `docs/SESSION-LOG.md` | running log: what was measured, what was decided, what is open |
-| `docs/SPEC-0.0.2.md` | current control reference, all 28 parameters; **§5 is the blocked/pending/open status** |
+| `docs/SPEC-0.0.2.md` | current control reference, all 30 parameters; **§5 is the blocked/pending/open status** |
 | `docs/SPEC-0.0.1.md` | superseded, kept |
 | `ORCHESTRATION.md` | architecture and decision record |

@@ -86,6 +86,7 @@ public:
     void reroll_wind_seed() { wind_seed_ = next_seed(wind_seed_); }
 
     int active_nodes() const { return n_nodes_; }
+    bool q_matched() const { return last_q_matched_; }
     // Effective Range dB: the knob AFTER its magnitude modifier, which is
     // what the audio path actually uses. The canvas labels its dB axis from
     // this, so the marks stay truthful at any magnitude setting.
@@ -118,7 +119,8 @@ public:
     enum ModKnob {
         kDamping = 0, kStiffness, kTension, kSmoothing, kRangeDb, kSteady,
         kLeveler, kVelocity, kWind, kWaves, kMotion, kCharacter,
-        kFlutterHz, kWrinkle, kMix, kFlap, kWidth, kPanDepth, kNumModKnobs
+        kFlutterHz, kWrinkle, kMix, kFlap, kWidth, kPanDepth, kResonance,
+        kNumModKnobs
     };
     // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
     // exceed the nominal maximum - that is the point of it.
@@ -152,6 +154,9 @@ public:
     void set_knob_on(int k, bool v) { knob_mods_[k].on = v; }
     void set_knob_mag(int k, int v) { knob_mods_[k].mag = juce::jlimit(0, 2, v); }
     static const char* mod_knob_id(int k);
+    // Band width == band spacing. Depends on node count, so Precision
+    // changes it; rebuild() invalidates last_q_ to force a re-apply.
+    static double matched_q(int n);
 
     // Flatten the string without touching any modifier: zeroes displacement
     // and velocity but leaves wind, flutter and every knob exactly as they
@@ -186,6 +191,8 @@ private:
     int display_accum_ = 0;          // samples since the last display publish
     int ui_theme_ = 0;               // editor colour theme (appearance only)
     std::array<KnobMod, kNumModKnobs> knob_mods_{};
+    double last_q_ = -1.0;          // cached so set_q() is not called per block
+    bool last_q_matched_ = false;
     std::atomic<bool> reset_request_{false};
     double knob(int k, double raw) const {
         const auto& m = knob_mods_[k];
@@ -267,6 +274,8 @@ private:
     // depths share one shape and differ only in how hard they drive it.
     juce::AudioParameterFloat* width_ = nullptr;
     juce::AudioParameterFloat* pan_depth_ = nullptr;
+    juce::AudioParameterFloat* q_mode_ = nullptr;
+    juce::AudioParameterFloat* resonance_ = nullptr;
     juce::AudioParameterFloat* stereo_lo_ = nullptr;
     juce::AudioParameterFloat* stereo_hi_ = nullptr;
     std::vector<double> side_targets_, pan_targets_;
