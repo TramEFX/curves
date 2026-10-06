@@ -105,7 +105,7 @@ public:
     enum ModKnob {
         kDamping = 0, kStiffness, kTension, kSmoothing, kRangeDb, kSteady,
         kLeveler, kVelocity, kWind, kWaves, kMotion, kCharacter,
-        kFlutterHz, kWrinkle, kMix, kFlap, kNumModKnobs
+        kFlutterHz, kWrinkle, kMix, kFlap, kWidth, kPanDepth, kNumModKnobs
     };
     // Magnitude scales the knob's travel ABOVE ITS MINIMUM, so High can
     // exceed the nominal maximum - that is the point of it.
@@ -245,6 +245,22 @@ private:
     juce::AudioParameterFloat* drive_ = nullptr;     // max gain dB
     juce::AudioParameterFloat* mix_ = nullptr;       // dry/wet
     juce::AudioParameterFloat* flap_ = nullptr;      // mid-band tip drive
+    // ---- SPATIAL subscriber -------------------------------------------
+    // Width is expressed in dB, the same unit as Range, because that is
+    // literally what it is: how far the SIDE gain departs from the mid at
+    // full deflection. width ratio = 2^(disp*Width/6.0206), so the two
+    // depths share one shape and differ only in how hard they drive it.
+    juce::AudioParameterFloat* width_ = nullptr;
+    juce::AudioParameterFloat* pan_depth_ = nullptr;
+    juce::AudioParameterFloat* stereo_lo_ = nullptr;
+    juce::AudioParameterFloat* stereo_hi_ = nullptr;
+    std::vector<double> side_targets_, pan_targets_;
+    // Per-band taper that damps the spatial deviation outside [lo, hi].
+    // Cached: it only moves when the cuts or the band map do.
+    std::vector<double> spatial_w_;
+    double taper_lo_ = -1.0, taper_hi_ = -1.0;
+    void rebuild_spatial_taper();
+
     juce::AudioParameterFloat* flutter_rnd_ = nullptr;
     juce::AudioParameterFloat* wind_rnd_ = nullptr;
     std::atomic<int> flutter_seed_{1};

@@ -251,7 +251,7 @@ const char* CurvesAudioProcessor::mod_knob_id(int k) {
     static const char* kIds[kNumModKnobs] = {
         "damping", "stiffness", "tension", "smoothing", "drive", "steady",
         "leveler", "velocity", "wind", "waves", "motion", "character",
-        "flutter_hz", "wrinkle", "mix", "flap"};
+        "flutter_hz", "wrinkle", "mix", "flap", "width", "pan_depth"};
     return kIds[juce::jlimit(0, (int)kNumModKnobs - 1, k)];
 }
 
@@ -263,6 +263,8 @@ CurvesAudioProcessor::PowerMode CurvesAudioProcessor::power_mode(int k) {
             return kPowerNone;
         case kWind:                 // gates the gust field entirely
         case kFlutterHz:            // gates vortex shedding entirely
+        case kRangeDb:              // gates the EQ subscriber entirely, so
+                                    // EQ and spatial can run independently
             return kPowerGate;
         default:
             return kPowerToMin;
@@ -350,6 +352,14 @@ CurvesAudioProcessor::CurvesAudioProcessor()
                                      R{0.0f, 1.0f}, 0.0f));
     addParameter(flutter_rnd_ = new APF("flutter_rnd", "Flutter Random",
                                         R{0.0f, 1.0f}, 0.0f));
+    // ---- SPATIAL subscriber. Neutral at zero, so it costs nothing and
+    // changes nothing until it is turned up.
+    addParameter(width_ = new APF("width", "Width dB", R{0.0f, 24.0f}, 0.0f));
+    addParameter(pan_depth_ = new APF("pan_depth", "Placement", R{0.0f, 1.0f}, 0.0f));
+    addParameter(stereo_lo_ = new APF("stereo_lo", "Spatial low cut",
+                                      R{20.0f, 2000.0f}, 120.0f));
+    addParameter(stereo_hi_ = new APF("stereo_hi", "Spatial high cut",
+                                      R{1000.0f, 18000.0f}, 12000.0f));
 
     // Capture each modifiable knob's minimum; "off" resolves to it.
     for (int k = 0; k < kNumModKnobs; ++k) {
@@ -436,6 +446,30 @@ void CurvesAudioProcessor::apply_physics(int mode) {
     }
     // kFree / kElastic: no anchors, no forces — knobs do the talking.
     sim_->set_force_field(field);
+}
+
+// Damps the SPATIAL deviation outside [lo, hi], leaving the EQ alone.
+// Widening the bass is almost always wrong, and the log axis puts bass at
+// the left end, so a flat width depth misbehaves down there. This is a
+// taper on the DEVIATION, not a filter on the audio: outside the window
+// width goes to 1 and pan to 0, i.e. those bands are simply left alone.
+// One octave of smoothstep at each edge keeps the drawn curve continuous.
+void CurvesAudioProcessor::rebuild_spatial_taper() {
+    spatial_w_.assign(n_nodes_, 1.0);
+    const double lo = std::max(1.0, (double)stereo_lo_->get());
+    const double hi = std::max(lo * 2.0, (double)stereo_hi_->get());
+    const double l2lo = std::log2(lo), l2hi = std::log2(hi);
+    auto smooth = [](double t) {
+        t = std::clamp(t, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    };
+    for (int i = 0; i < n_nodes_; ++i) {
+        const double f = std::max(1.0, band_fc_[i]);
+        const double l2 = std::log2(f);
+        spatial_w_[i] = smooth(l2 - l2lo) * smooth(l2hi - l2);
+    }
+    taper_lo_ = lo;
+    taper_hi_ = hi;
 }
 
 void CurvesAudioProcessor::rebuild_band_map() {
@@ -652,7 +686,23 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     mix_amount_ = knob(kMix, mix_->get());
     vel_amt_ = knob(kVelocity, velocity_->get());
     vel_scale_ = kVelScale / std::max(1.0, tension_v);
-    const double range_db = max_gain_db_.load(std::memory_order_relaxed);
+    const double range_db =
+        mechanism_on(kRangeDb) ? max_gain_db_.load(std::memory_order_relaxed) : 0.0;
+    // The spatial subscriber is neutral at zero depth, so it is skipped
+    // outright rather than computed and multiplied by one.
+    const double width_db = knob(kWidth, width_->get());
+    const double pan_amt = knob(kPanDepth, pan_depth_->get());
+    const bool spatial_on = (width_db > 1e-6 || pan_amt > 1e-6);
+    if (spatial_on) {
+        if (side_targets_.size() != (std::size_t)n_nodes_) {
+            side_targets_.assign(n_nodes_, 1.0);
+            pan_targets_.assign(n_nodes_, 0.0);
+        }
+        if (taper_lo_ != (double)stereo_lo_->get()
+            || taper_hi_ != (double)stereo_hi_->get()
+            || (int)spatial_w_.size() != n_nodes_)
+            rebuild_spatial_taper();
+    }
     // Targets are re-aimed per CHUNK inside the audio loop below, not once
     // per block -- see kGainChunk.
 
@@ -699,11 +749,28 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
       // already smoothed at the tick rate in its own (log) domain, so Range
       // enters exactly once and memorylessly.
       for (int i = 0; i < n_nodes_; ++i) {
-          const double db = std::clamp(smoothed_disp_[i], -1.0, 1.0) * range_db;
+          const double d = std::clamp(smoothed_disp_[i], -1.0, 1.0);
+          const double db = d * range_db;
           // 10^(db/20) == 2^(db/6.0206); exp2 is markedly cheaper than pow.
           gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
+          if (spatial_on) {
+              // Width is a DEPTH ON THE SIDE, in the same dB unit as Range:
+              // the side gain is the mid gain plus Width dB of the same
+              // shape, so the width ratio is 2^(d*Width/6.0206). EQ and
+              // spatial read ONE curve and differ only in how hard they
+              // drive it -- which is what keeps a single drawn curve honest
+              // for both.
+              const double w = spatial_w_[i];
+              side_targets_[i] = std::exp2((db + d * width_db * w)
+                                           * (1.0 / 6.020599913279624));
+              pan_targets_[i] = d * pan_amt * w;
+          }
       }
       bank_.set_block_targets(gain_targets_.data(), len);
+      if (spatial_on)
+          bank_.set_spatial_targets(side_targets_.data(), pan_targets_.data(), len);
+      else
+          bank_.set_spatial_off();
       for (int s = base; s < base + len; ++s) {
         if (++sim_counter_ >= sim_divisor_) {
             sim_->tick();

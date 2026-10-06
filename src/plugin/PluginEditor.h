@@ -103,7 +103,12 @@ private:
     // Which panel a control belongs to. GLOBAL is always in effect; STRING
     // is the physics that always applies; CLOTH is Flagpole-only and dims
     // outside it.
-    enum Group { kGlobal = 0, kString = 1, kCloth = 2, kNumGroups = 3 };
+    // SUBSCRIBERS is its own group because that is the architecture: each
+    // subscriber reads the same control signal and carries its own depth
+    // and limits. EQ and SPATIAL today; per-node Q and cutoff modulation
+    // slot in here without a redesign.
+    enum Group { kGlobal = 0, kString = 1, kCloth = 2, kSubscriber = 3,
+                 kNumGroups = 4 };
 
     struct Knob {
         juce::Slider slider;

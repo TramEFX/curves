@@ -14,6 +14,11 @@ void FilterBank::prepare(int num_bands, double sample_rate, int num_channels) {
     g_.assign(num_bands, 1.0);
     ramp_.assign(num_bands, 1.0);
     g_eff_.assign(num_bands, 1.0);
+    gs_.assign(num_bands, 1.0);
+    ramp_s_.assign(num_bands, 1.0);
+    pan_.assign(num_bands, 0.0);
+    pan_step_.assign(num_bands, 0.0);
+    spatial_ = false;
     steady_env_.assign(num_bands, 0.0);
     s1_.assign(std::max(num_channels, 2), std::vector<double>(num_bands, 0.0));
     s2_.assign(std::max(num_channels, 2), std::vector<double>(num_bands, 0.0));
@@ -45,6 +50,18 @@ void FilterBank::set_block_targets(const double* linear_gains, int num_frames) {
         const double g1 = std::max(linear_gains[b], 1e-9);
         ramp_[b] = std::pow(g1 / g0, inv_n);
     }
+}
+
+void FilterBank::set_spatial_targets(const double* side_gains,
+                                     const double* pans, int num_frames) {
+    const double inv_n = 1.0 / static_cast<double>(std::max(1, num_frames));
+    for (int b = 0; b < num_bands_; ++b) {
+        const double g0 = std::max(gs_[b], 1e-9);
+        const double g1 = std::max(side_gains[b], 1e-9);
+        ramp_s_[b] = std::pow(g1 / g0, inv_n);
+        pan_step_[b] = (pans[b] - pan_[b]) * inv_n;
+    }
+    spatial_ = true;
 }
 
 void FilterBank::recompute_coefficients() {

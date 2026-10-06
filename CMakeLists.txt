@@ -53,6 +53,12 @@ target_link_libraries(hash_probe PRIVATE curves_string)
 add_executable(rnd_test src/rnd_test_main.cpp)
 target_link_libraries(rnd_test PRIVATE curves_string)
 
+add_executable(stereo_test src/stereo_test_main.cpp)
+target_link_libraries(stereo_test PRIVATE curves_string)
+
+add_executable(overlap_probe src/overlap_probe_main.cpp)
+target_link_libraries(overlap_probe PRIVATE curves_string)
+
 # ---- JUCE / CLAP plugin shell (M0 second half) ----
 # enable via -DCURVES_BUILD_PLUGIN=ON; FetchContent pulls JUCE so the repo
 # stays light. CLAP comes from clap-juce-extensions (JUCE has no native CLAP).
