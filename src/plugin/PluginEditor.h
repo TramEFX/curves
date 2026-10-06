@@ -114,6 +114,12 @@ private:
         juce::Slider slider;
         juce::Label label;
         juce::RangedAudioParameter* param = nullptr;
+        // The BASE parameter id ("damping"), without the voice suffix. The
+        // knob keeps this so it can be re-pointed at the other voice's
+        // parameter when you switch which voice you are editing -- one set
+        // of widgets, two sets of parameters.
+        juce::String base_id;
+        bool per_voice = false;
         int group = kGlobal;
         int mod = -1;                    // ModKnob index, or -1 if not modifiable
         juce::Rectangle<int> power;      // on/off LED hit area
@@ -143,8 +149,14 @@ private:
     float y_to_value(float y) const;
     void deposit_stroke(float node_from, float val_from, float node_to, float val_to);
     void apply_physics_preset(int mode);
-    void draw_panel(juce::Graphics&, juce::Rectangle<int>, const char* title,
-                    bool active) const;
+    // Re-points every per-voice knob at the selected voice's parameter and
+    // refreshes its displayed value. Called when you click L or R, and
+    // after a state load.
+    bool last_dual_ = false;
+    void rebind_voice();
+    void refresh_voice_buttons();
+    void draw_panel(juce::Graphics&, juce::Rectangle<int>,
+                    const juce::String& title, bool active) const;
 
     void timerCallback() override;
     void sliderValueChanged(juce::Slider*) override;
@@ -158,6 +170,13 @@ private:
     juce::TextButton scale_button_{"+-1"};
     juce::TextButton reset_button_{"RESET"};
     juce::TextButton theme_button_{"AQUA"};
+    // Dual: click to enable two independent strings, one per channel.
+    // L / R: which one's complete knob set the panels are showing. The
+    // active one is highlighted; only one voice is editable (and drawn) at
+    // a time, which is what keeps a 26-knob panel readable.
+    juce::TextButton dual_button_{"DUAL"};
+    juce::TextButton voice_l_{"L"};
+    juce::TextButton voice_r_{"R"};
     CurvesKnobLook knob_look_;
     int theme_index_ = 0;
     float display_scale_ = 1.0f;

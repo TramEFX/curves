@@ -272,52 +272,53 @@ CurvesAudioProcessor::PowerMode CurvesAudioProcessor::power_mode(int k) {
     }
 }
 
-CurvesAudioProcessor::CurvesAudioProcessor()
-    : AudioProcessor(BusesProperties()
-                         .withInput("Input", juce::AudioChannelSet::stereo(), true)
-                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
+// The per-voice parameter set, added twice. Voice 0 keeps the historical
+// parameter IDs so projects saved before Dual existed still recall; voice 1
+// takes an "_r" suffix and an " R" label suffix.
+//
+// Both sets are REAL automatable parameters. The alternative -- keeping
+// voice 1 in the state tree only -- would make the right channel
+// un-automatable, which is not a plugin anyone wants. The cost is a long
+// host parameter list and a rescan.
+void CurvesAudioProcessor::add_voice_params(VoiceParams& p, int voice) {
     using APF = juce::AudioParameterFloat;
     using R = juce::NormalisableRange<float>;
+    const juce::String sfx = voice == 0 ? juce::String() : juce::String("_r");
+    const juce::String tag = voice == 0 ? juce::String() : juce::String(" R");
+    auto ID = [&](const char* b) { return juce::String(b) + sfx; };
+    auto NM = [&](const char* b) { return juce::String(b) + tag; };
     // Dial ranges calibrated by feel-testing (user): meaningful damping by
     // 45% of the old 0-40 dial -> max 18; meaningful force by 25% of the old
     // dial -> drive/ceiling compressed x0.25 (see processBlock).
-    addParameter(damping_ = new APF("damping", "Damping", R{0.05f, 18.0f}, 1.5f));
-    addParameter(stiffness_ = new APF("stiffness", "Stiffness", R{0.0f, 20.0f}, 4.0f));
-    addParameter(tension_ = new APF("tension", "Tension", R{50.0f, 600.0f}, 300.0f));
+    addParameter(p.damping = new APF(ID("damping"), NM("Damping"), R{0.05f, 18.0f}, 1.5f));
+    addParameter(p.stiffness = new APF(ID("stiffness"), NM("Stiffness"), R{0.0f, 20.0f}, 4.0f));
+    addParameter(p.tension = new APF(ID("tension"), NM("Tension"), R{50.0f, 600.0f}, 300.0f));
     // 30 -> 15 ms: the smoother used to advance once PER CHANNEL, so a stereo
     // instance ran at half the set time. Fixing that doubled the real
     // smoothing at any given setting; 15 ms restores the previous feel.
-    addParameter(smoothing_ = new APF("smoothing", "Smoothing ms", R{2.0f, 100.0f}, 15.0f));
-    addParameter(drive_ = new APF("drive", "Max gain dB", R{3.0f, 24.0f}, 18.0f));
-    // Dry/wet. 1 = fully processed, 0 = bypass (so power-off = its minimum
-    // is genuinely neutral). Applied after the bank and BEFORE the leveler,
-    // so the leveler trims what you actually hear.
-    addParameter(mix_ = new APF("mix", "Mix", R{0.0f, 1.0f}, 1.0f));
-    addParameter(steady_ = new APF("steady", "Steady (per-band)", R{0.0f, 1.0f}, 0.35f));
-    addParameter(leveler_amt_ = new APF("leveler", "Leveler (output)", R{0.0f, 1.0f}, 0.5f));
-    addParameter(test_src_ = new APF("test", "Test source",
-                                     R(0.0f, 5.0f, 1.0f), 0.0f));
-    addParameter(physics_ = new APF("physics", "Physics", R(0.0f, 3.0f, 1.0f), 0.0f));
-    addParameter(precision_ = new APF("precision", "Precision", R(0.0f, 2.0f, 1.0f), 0.0f));
-    addParameter(velocity_ = new APF("velocity", "Velocity", R{0.0f, 1.0f}, 0.0f));
-    addParameter(wind_ = new APF("wind", "Wind", R{0.0f, 1.0f}, 0.50f));
-    addParameter(waves_ = new APF("waves", "Waves", R{0.0f, 1.0f}, 0.24f));
+    addParameter(p.smoothing = new APF(ID("smoothing"), NM("Smoothing ms"), R{2.0f, 100.0f}, 15.0f));
+    addParameter(p.drive = new APF(ID("drive"), NM("Max gain dB"), R{3.0f, 24.0f}, 18.0f));
+    addParameter(p.steady = new APF(ID("steady"), NM("Steady (per-band)"), R{0.0f, 1.0f}, 0.35f));
+    addParameter(p.physics = new APF(ID("physics"), NM("Physics"), R(0.0f, 3.0f, 1.0f), 0.0f));
+    addParameter(p.velocity = new APF(ID("velocity"), NM("Velocity"), R{0.0f, 1.0f}, 0.0f));
+    addParameter(p.wind = new APF(ID("wind"), NM("Wind"), R{0.0f, 1.0f}, 0.50f));
+    addParameter(p.waves = new APF(ID("waves"), NM("Waves"), R{0.0f, 1.0f}, 0.24f));
     // Motion = total string excitation, calibrated so peak displacement
     // tracks the dial linearly regardless of Character. Default chosen to
     // match the previous Force 0.6 wind-only feel (peak ~0.37).
-    addParameter(motion_ = new APF("motion", "Motion", R{0.0f, 1.0f}, 0.45f));
+    addParameter(p.motion = new APF(ID("motion"), NM("Motion"), R{0.0f, 1.0f}, 0.45f));
     // Character = where that excitation comes from. 0 = all gust wind,
     // 1 = all self-sustaining vortex shedding. Default 0 reproduces the
     // previous behaviour exactly; raising it is a tuning decision.
-    addParameter(character_ = new APF("character", "Character", R{0.0f, 1.0f}, 0.0f));
-    addParameter(direction_ = new APF("direction", "Direction", R(0.0f, 1.0f, 1.0f), 0.0f));
+    addParameter(p.character = new APF(ID("character"), NM("Character"), R{0.0f, 1.0f}, 0.0f));
+    addParameter(p.direction = new APF(ID("direction"), NM("Direction"), R(0.0f, 1.0f, 1.0f), 0.0f));
     // Walls replace the old Cloth-length knob. Two independent boundaries,
     // dragged on the canvas, so any window anywhere along the spectrum can be
     // the active cloth. Length could only ever shorten from the free end and,
     // worse, did not actually work: measured, Length 0.6 still left 99% of
     // the string moving, because the "near-rigid tail" was not a hard wall.
-    addParameter(wall_lo_ = new APF("wall_lo", "Wall Low", R{0.0f, 1.0f}, 0.0f));
-    addParameter(wall_hi_ = new APF("wall_hi", "Wall High", R{0.0f, 1.0f}, 1.0f));
+    addParameter(p.wall_lo = new APF(ID("wall_lo"), NM("Wall Low"), R{0.0f, 1.0f}, 0.0f));
+    addParameter(p.wall_hi = new APF(ID("wall_hi"), NM("Wall High"), R{0.0f, 1.0f}, 1.0f));
     // Flutter = vortex shedding. The wake oscillator is a limit cycle, so
     // this is the one control that makes the string move with NO gusting at
     // all. Default 0 (off) so the existing Flagpole feel is unchanged until
@@ -339,27 +340,27 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // lowpass it away (0.08). Left uncompensated because the project
     // prefers true-to-simulation behaviour; gain-compensating the rate is a
     // one-line change if it starts feeling like a volume knob.
-    addParameter(flutter_hz_ = new APF("flutter_hz", "Flutter Hz", R{0.1f, 20.0f}, 3.0f));
+    addParameter(p.flutter_hz = new APF(ID("flutter_hz"), NM("Flutter Hz"), R{0.1f, 20.0f}, 3.0f));
     // Wrinkle: tip-localized fine detail - "how the last third resolves or
     // flaps". 0 = off, so the stage costs nothing until dialled in.
-    addParameter(wrinkle_ = new APF("wrinkle", "Wrinkle", R{0.0f, 1.0f}, 0.0f));
+    addParameter(p.wrinkle = new APF(ID("wrinkle"), NM("Wrinkle"), R{0.0f, 1.0f}, 0.0f));
     // Flap: how hard the mid-band ripples drive the FREE END. The bump
     // envelope is zero there by construction, so without this the ripples
     // fade out over the last fifth -- they were never forced, not damped.
-    addParameter(flap_ = new APF("flap", "Flap", R{0.0f, 1.0f}, 0.45f));
+    addParameter(p.flap = new APF(ID("flap"), NM("Flap"), R{0.0f, 1.0f}, 0.45f));
     // Randomisers. 0 = the fixed constant sets, i.e. exactly the regular
     // behaviour; turning one up perturbs those constants from its seed.
-    addParameter(wind_rnd_ = new APF("wind_rnd", "Wind Random",
+    addParameter(p.wind_rnd = new APF(ID("wind_rnd"), NM("Wind Random"),
                                      R{0.0f, 1.0f}, 0.0f));
-    addParameter(flutter_rnd_ = new APF("flutter_rnd", "Flutter Random",
+    addParameter(p.flutter_rnd = new APF(ID("flutter_rnd"), NM("Flutter Random"),
                                         R{0.0f, 1.0f}, 0.0f));
     // ---- SPATIAL subscriber. Neutral at zero, so it costs nothing and
     // changes nothing until it is turned up.
-    addParameter(width_ = new APF("width", "Width dB", R{0.0f, 24.0f}, 0.0f));
-    addParameter(pan_depth_ = new APF("pan_depth", "Placement", R{0.0f, 1.0f}, 0.0f));
-    addParameter(stereo_lo_ = new APF("stereo_lo", "Spatial low cut",
+    addParameter(p.width = new APF(ID("width"), NM("Width dB"), R{0.0f, 24.0f}, 0.0f));
+    addParameter(p.pan_depth = new APF(ID("pan_depth"), NM("Placement"), R{0.0f, 1.0f}, 0.0f));
+    addParameter(p.stereo_lo = new APF(ID("stereo_lo"), NM("Spatial low cut"),
                                       R{20.0f, 2000.0f}, 120.0f));
-    addParameter(stereo_hi_ = new APF("stereo_hi", "Spatial high cut",
+    addParameter(p.stereo_hi = new APF(ID("stereo_hi"), NM("Spatial high cut"),
                                       R{1000.0f, 18000.0f}, 12000.0f));
     // ---- BAND Q. 0 = Flat: Q = 1 with no overlap correction, which is the
     // historical bank BIT-FOR-BIT. 1 = Matched: band width equals band
@@ -370,30 +371,130 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // 128 and 512 nodes) while delivering ~24x the asked-for depth on the
     // string's coarse average. Matched trades that for honest depth and
     // real resolution. See q_test.
-    addParameter(q_mode_ = new APF("q_mode", "Band Q", R(0.0f, 1.0f, 1.0f), 0.0f));
+    addParameter(p.q_mode = new APF(ID("q_mode"), NM("Band Q"), R(0.0f, 1.0f, 1.0f), 0.0f));
     // Resonance pushes Q ABOVE matched: x1 to x8. Narrower bands ring
     // longer (T60 = 6.91*Q/(pi*f), so 754 ms at 58 Hz already at matched Q
     // on 128 nodes) and stop filling the gaps between each other, which
     // turns the response into a comb -- the ripple is 0.93 dB at matched
     // and 5.73 dB at x8. Both effects are the point: this is the knob that
     // buys the ringing, harmonic-comb texture.
-    addParameter(resonance_ = new APF("resonance", "Resonance", R{0.0f, 1.0f}, 0.0f));
+    addParameter(p.resonance = new APF(ID("resonance"), NM("Resonance"), R{0.0f, 1.0f}, 0.0f));
+}
 
-    // Capture each modifiable knob's minimum; "off" resolves to it.
-    for (int k = 0; k < kNumModKnobs; ++k) {
-        knob_mods_[k].lo = 0.0;
-        for (auto* p : getParameters())
-            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
-                if (rp->paramID == juce::String(mod_knob_id(k)))
-                    knob_mods_[k].lo = rp->getNormalisableRange().start;
+CurvesAudioProcessor::CurvesAudioProcessor()
+    : AudioProcessor(BusesProperties()
+                         .withInput("Input", juce::AudioChannelSet::stereo(), true)
+                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
+    using APF = juce::AudioParameterFloat;
+    using R = juce::NormalisableRange<float>;
+    // ---- GLOBAL parameters: output plumbing and the routing switch ----
+    // Dry/wet. 1 = fully processed, 0 = bypass (so power-off = its minimum
+    // is genuinely neutral). Applied after the bank and BEFORE the leveler,
+    // so the leveler trims what you actually hear.
+    addParameter(mix_ = new APF("mix", "Mix", R{0.0f, 1.0f}, 1.0f));
+    addParameter(leveler_amt_ = new APF("leveler", "Leveler (output)", R{0.0f, 1.0f}, 0.5f));
+    addParameter(test_src_ = new APF("test", "Test source",
+                                     R(0.0f, 5.0f, 1.0f), 0.0f));
+    addParameter(precision_ = new APF("precision", "Precision", R(0.0f, 2.0f, 1.0f), 0.0f));
+    // Dual: two independent strings, voice 0 on LEFT and voice 1 on RIGHT,
+    // each driving a MONO bank. Stereo then comes from the two physics
+    // simulations genuinely diverging rather than from one string's
+    // mid/side -- which is what the sandbox was aimed at from the start.
+    //
+    // A parameter rather than a UI flag because it changes the audio path.
+    // Note that per-voice Width and Place go INERT in dual mode: a voice
+    // sees one channel, so its side signal is zero by construction. The
+    // editor dims them to say so.
+    addParameter(dual_ = new APF("dual", "Dual L/R", R(0.0f, 1.0f, 1.0f), 0.0f));
+
+    // ---- the two per-voice sets ----
+    for (int v = 0; v < kNumVoices; ++v)
+        add_voice_params(vp_[v], v);
+
+    // Capture each modifiable knob's minimum; "off" resolves to it. Done
+    // per voice against that voice's own parameter IDs -- the two sets have
+    // identical ranges, but reading voice 1's minimum off voice 0's
+    // parameter is the kind of shared lookup that would quietly couple them.
+    for (int v = 0; v < kNumVoices; ++v)
+        for (int k = 0; k < kNumModKnobs; ++k) {
+            voices_[v].mods[k].lo = 0.0;
+            // Global knobs exist only under their voice-0 id, so look them
+            // up there whichever voice we are filling.
+            const juce::String want =
+                voice_param_id(mod_knob_id(k), is_global_knob(k) ? 0 : v);
+            for (auto* prm : getParameters())
+                if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(prm))
+                    if (rp->paramID == want)
+                        voices_[v].mods[k].lo = rp->getNormalisableRange().start;
+        }
+}
+
+// Turning Dual on gives voice 1 a usable starting point: it copies voice 0's
+// whole set, then re-rolls its seeds. Starting it at defaults would mean the
+// right channel jumped to a different sound; starting it IDENTICAL would
+// mean dual mode sounded like mono until you moved something. A copy plus
+// fresh seeds is the same weather, different gusts -- audibly stereo
+// immediately, and still recognisably the patch you had.
+void CurvesAudioProcessor::set_dual(bool on) {
+    if (dual_ == nullptr)
+        return;
+    if (on && dual_->get() <= 0.5f)
+        copy_voice(0, 1);
+    dual_->beginChangeGesture();
+    dual_->setValueNotifyingHost(on ? 1.0f : 0.0f);
+    dual_->endChangeGesture();
+}
+
+// Every per-voice parameter, by its BASE id. Used to copy one voice onto
+// another and to let the editor rebind its knobs when you switch voices.
+// An explicit list rather than walking the VoiceParams struct as memory:
+// the struct-as-pointer-array trick works right up until someone adds a
+// non-pointer field to it.
+const char* const* CurvesAudioProcessor::voice_param_ids(int& count) {
+    static const char* const kIds[] = {
+        "damping", "stiffness", "tension", "smoothing", "drive", "steady",
+        "physics", "velocity", "wind", "waves", "motion", "character",
+        "direction", "wall_lo", "wall_hi", "flutter_hz", "wrinkle", "flap",
+        "wind_rnd", "flutter_rnd", "width", "pan_depth", "stereo_lo",
+        "stereo_hi", "q_mode", "resonance"};
+    count = (int)(sizeof(kIds) / sizeof(kIds[0]));
+    return kIds;
+}
+
+juce::AudioParameterFloat* CurvesAudioProcessor::find_param(
+    const juce::String& id) const {
+    for (auto* prm : getParameters())
+        if (auto* rp = dynamic_cast<juce::AudioParameterFloat*>(prm))
+            if (rp->paramID == id)
+                return rp;
+    return nullptr;
+}
+
+void CurvesAudioProcessor::copy_voice(int from, int to) {
+    if (from == to)
+        return;
+    int n = 0;
+    const char* const* ids = voice_param_ids(n);
+    for (int i = 0; i < n; ++i) {
+        auto* a = find_param(voice_param_id(ids[i], from));
+        auto* b = find_param(voice_param_id(ids[i], to));
+        if (a == nullptr || b == nullptr)
+            continue;
+        b->beginChangeGesture();
+        b->setValueNotifyingHost(b->convertTo0to1(a->get()));
+        b->endChangeGesture();
     }
+    voices_[to].mods = voices_[from].mods;
+    voices_[to].flutter_seed = next_seed(voices_[from].flutter_seed + 7919);
+    voices_[to].wind_seed = next_seed(voices_[from].wind_seed + 104729);
 }
 
 void CurvesAudioProcessor::prepareToPlay(double sampleRate, int) {
     fs_ = sampleRate;
     leveler_.prepare(fs_);
     last_precision_ = -1;  // processBlock rebuilds with the current setting
-    sim_ = nullptr;
+    for (auto& v : voices_)
+        v.sim = nullptr;
 }
 
 void CurvesAudioProcessor::releaseResources() {}
@@ -408,36 +509,51 @@ bool CurvesAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) co
 void CurvesAudioProcessor::rebuild(int precision) {
     n_nodes_ = kPrecisionNodes[precision];
     sim_divisor_ = kPrecisionDivisor[precision];
-
-    curves::StringParams p;
-    p.tick_rate = fs_ / sim_divisor_;
-    p.wave_speed = tension_->get();
-    p.damping = damping_->get();
-    p.stiffness = stiffness_->get();
-    sim_ = std::make_unique<curves::StringSim>(n_nodes_, p);
-    sim_counter_ = 0;
-
-    bank_.prepare(n_nodes_, fs_, 2);
-    last_q_ = -1.0;  // matched Q depends on node count; force a re-apply
-    bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
-    rebuild_band_map();
-    gain_targets_.assign(n_nodes_, 1.0);
-    // Display response scratch. Allocated here so publish_display never
-    // allocates on the audio thread.
-    resp_big_.assign(n_nodes_, 0.0);
-    resp_re_.assign(n_nodes_, 0.0);
-    resp_im_.assign(n_nodes_, 0.0);
-    smoothed_disp_.fill(0.0);
-    last_physics_ = -1;  // force re-apply on the current preset
+    // The band map is identical for every voice (it depends only on node
+    // count and sample rate), so it is computed once and shared; each
+    // voice's bank still has the frequencies set on it individually.
+    band_fc_.resize(n_nodes_);
+    for (int i = 0; i < n_nodes_; ++i)
+        band_fc_[i] = std::min(node_frequency(i, n_nodes_, kFMin, kFMax), 0.45 * fs_);
+    // EVERY voice is rebuilt, not just the active ones: switching Dual on
+    // mid-session must not find voice 1 holding a sim from the old node
+    // count, which would be a silent buffer-overrun.
+    for (int v = 0; v < kNumVoices; ++v)
+        rebuild_voice(voices_[v], vp_[v]);
 }
 
-void CurvesAudioProcessor::apply_physics(int mode) {
-    if (!sim_)
+void CurvesAudioProcessor::rebuild_voice(Voice& v, const VoiceParams& p) {
+    curves::StringParams sp;
+    sp.tick_rate = fs_ / sim_divisor_;
+    sp.wave_speed = p.tension->get();
+    sp.damping = p.damping->get();
+    sp.stiffness = p.stiffness->get();
+    v.sim = std::make_unique<curves::StringSim>(n_nodes_, sp);
+    v.sim_counter = 0;
+
+    v.bank.prepare(n_nodes_, fs_, 2);
+    v.last_q = -1.0;  // matched Q depends on node count; force a re-apply
+    v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
+    rebuild_band_map(v);
+    v.gain_targets.assign(n_nodes_, 1.0);
+    // Display response scratch. Allocated here so publish_display never
+    // allocates on the audio thread.
+    v.resp_big.assign(n_nodes_, 0.0);
+    v.resp_re.assign(n_nodes_, 0.0);
+    v.resp_im.assign(n_nodes_, 0.0);
+    v.smoothed_disp.fill(0.0);
+    v.last_physics = -1;   // force re-apply on the current preset
+    v.taper_lo = -1.0;     // and force the spatial taper to rebuild
+    v.taper_hi = -1.0;
+}
+
+void CurvesAudioProcessor::apply_physics(Voice& v, int mode) {
+    if (!v.sim)
         return;
-    sim_->anchor_low = false;
-    sim_->anchor_high = false;
-    sim_->force_model = curves::StringSim::kStaticField;
-    sim_->set_density_taper(0.0);
+    v.sim->anchor_low = false;
+    v.sim->anchor_high = false;
+    v.sim->force_model = curves::StringSim::kStaticField;
+    v.sim->set_density_taper(0.0);
     std::vector<double> field(n_nodes_, 0.0);
 
     if (mode == kFlagpole) {
@@ -445,23 +561,23 @@ void CurvesAudioProcessor::apply_physics(int mode) {
         // — it moves and whips (user decision: pinning it kills the whip).
         // Cloth length sets where the animation terminates; beyond it the
         // wind is zero and damping is multiplied (termination behavior).
-        sim_->anchor_high = true;
+        v.sim->anchor_high = true;
         // Aero model: the wind is a VELOCITY field and the force comes from
         // relative velocity, so the string fights the wind and flap
         // amplitude is bounded by drag instead of by a limiter. Phase speed
         // scales with node count so Wind means the same thing in every
         // precision mode (at a fixed nodes/s the pattern would traverse a
         // 1024-node string 8x slower than a 128-node one).
-        sim_->set_cloth_aero(192.0 * n_nodes_ / 128.0,
+        v.sim->set_cloth_aero(192.0 * n_nodes_ / 128.0,
                              static_cast<double>(n_nodes_), 1.5);
-        sim_->aero_rho_cd = 0.6;
-        sim_->set_density_taper(2.0);
+        v.sim->aero_rho_cd = 0.6;
+        v.sim->set_density_taper(2.0);
         // Walls own the active extent now, so cloth_length stays at 1 and the
         // walls are the single owner of the geometry. (The old Cloth-length
         // knob both desynced across apply_physics and did not actually hold:
         // measured, length 0.6 still left 99% of the string moving.)
-        sim_->set_cloth_length(1.0);
-        last_wall_lo_ = -1.0;   // force the walls to re-apply to the new sim
+        v.sim->set_cloth_length(1.0);
+        v.last_wall_lo = -1.0;   // force the walls to re-apply to the new sim
     } else if (mode == kGust) {
         // No anchors; smooth zero-mean static force field across the spectrum.
         const double w = 8.0 * (static_cast<double>(n_nodes_) / 128.0);
@@ -469,7 +585,7 @@ void CurvesAudioProcessor::apply_physics(int mode) {
             field[i] = -w * std::sin(3.14159265358979323846 * i / (n_nodes_ - 1));
     }
     // kFree / kElastic: no anchors, no forces — knobs do the talking.
-    sim_->set_force_field(field);
+    v.sim->set_force_field(field);
 }
 
 // Damps the SPATIAL deviation outside [lo, hi], leaving the EQ alone.
@@ -478,10 +594,11 @@ void CurvesAudioProcessor::apply_physics(int mode) {
 // taper on the DEVIATION, not a filter on the audio: outside the window
 // width goes to 1 and pan to 0, i.e. those bands are simply left alone.
 // One octave of smoothstep at each edge keeps the drawn curve continuous.
-void CurvesAudioProcessor::rebuild_spatial_taper() {
-    spatial_w_.assign(n_nodes_, 1.0);
-    const double lo = std::max(1.0, (double)stereo_lo_->get());
-    const double hi = std::max(lo * 2.0, (double)stereo_hi_->get());
+void CurvesAudioProcessor::rebuild_spatial_taper(Voice& v,
+                                                 const VoiceParams& p) {
+    v.spatial_w.assign(n_nodes_, 1.0);
+    const double lo = std::max(1.0, (double)p.stereo_lo->get());
+    const double hi = std::max(lo * 2.0, (double)p.stereo_hi->get());
     const double l2lo = std::log2(lo), l2hi = std::log2(hi);
     auto smooth = [](double t) {
         t = std::clamp(t, 0.0, 1.0);
@@ -490,10 +607,10 @@ void CurvesAudioProcessor::rebuild_spatial_taper() {
     for (int i = 0; i < n_nodes_; ++i) {
         const double f = std::max(1.0, band_fc_[i]);
         const double l2 = std::log2(f);
-        spatial_w_[i] = smooth(l2 - l2lo) * smooth(l2hi - l2);
+        v.spatial_w[i] = smooth(l2 - l2lo) * smooth(l2hi - l2);
     }
-    taper_lo_ = lo;
-    taper_hi_ = hi;
+    v.taper_lo = lo;
+    v.taper_hi = hi;
 }
 
 // The Q whose -3 dB bandwidth equals the band spacing:
@@ -505,55 +622,28 @@ double CurvesAudioProcessor::matched_q(int n) {
     return std::sqrt(t) / (t - 1.0);
 }
 
-void CurvesAudioProcessor::rebuild_band_map() {
-    band_fc_.resize(n_nodes_);
-    for (int i = 0; i < n_nodes_; ++i) {
-        // Clamp so the top band never crosses Nyquist.
-        band_fc_[i] = std::min(node_frequency(i, n_nodes_, kFMin, kFMax), 0.45 * fs_);
-        bank_.set_band_frequency(i, band_fc_[i]);
-    }
+// band_fc_ is filled by rebuild(); this only pushes it into one voice's bank.
+void CurvesAudioProcessor::rebuild_band_map(Voice& v) {
+    for (int i = 0; i < n_nodes_; ++i)
+        v.bank.set_band_frequency(i, band_fc_[i]);
 }
 
-void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
-                                        juce::MidiBuffer&) {
-    juce::ScopedNoDenormals noDenormals;
-
-    // 0. Precision mode: rebuild sim/bank tuple when it changes. This must
-    //    run BEFORE the null check — prepareToPlay leaves sim_ null and the
-    //    first block creates it here (early-returning first = permanent
-    //    silence, which is exactly what happened at first M2 deploy).
-    const int prec = static_cast<int>(precision_->get());
-    if (prec != last_precision_) {
-        rebuild(prec);
-        last_precision_ = prec;
-    }
-    if (!sim_) {
-        buffer.clear();
-        return;
-    }
-
+// Maps ONE voice's parameters onto its engine. This was the first two
+// thirds of processBlock, reading flat members; it now reads a Voice and a
+// VoiceParams, which is what makes two independent instances possible at
+// all. Everything global (Mix, Leveler, Test Src, Precision) stayed behind.
+void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
+                                         int prec_idx, VoiceBlock& out) {
     // Physics preset: anchors + force field when it changes.
-    const int phys = static_cast<int>(physics_->get());
-    if (phys != last_physics_) {
-        apply_physics(phys);
-        last_physics_ = phys;
+    const int phys = static_cast<int>(p.physics->get());
+    if (phys != v.last_physics) {
+        apply_physics(v, phys);
+        v.last_physics = phys;
     }
-
-    // 1. GUI is a writer: apply the latest draw deposit (held string).
-    const uint32_t dv = draw_version_.load(std::memory_order_acquire);
-    if (dv != last_draw_version_) {
-        const juce::SpinLock::ScopedLockType lk(draw_lock_);
-        std::vector<double> vals(draw_count_);
-        for (int i = 0; i < draw_count_; ++i)
-            vals[i] = static_cast<double>(draw_buffer_[i]);
-        sim_->displace(vals);
-        last_draw_version_ = dv;
-    }
-
     // 2. Live physics parameters (cheap, per block).
-    sim_->set_damping(knob(kDamping, damping_->get()));
-    sim_->set_stiffness(knob(kStiffness, stiffness_->get()));
-    sim_->set_wave_speed(knob(kTension, tension_->get()));
+    v.sim->set_damping(knob(v, kDamping, p.damping->get()));
+    v.sim->set_stiffness(knob(v, kStiffness, p.stiffness->get()));
+    v.sim->set_wave_speed(knob(v, kTension, p.tension->get()));
     // Wind = gust PHASE VELOCITY: how fast the flapping pattern travels
     // along the cloth.
     //
@@ -580,27 +670,27 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // the band where the string actually tracks the gust at every precision.
     // Wind 0.5 gives 0.60, the ratio the 128-node calibration was tuned at.
     {
-        const double wind_knob = knob(kWind, wind_->get());
+        const double wind_knob = knob(v, kWind, p.wind->get());
         const double ratio = 0.12 * std::pow(25.0, wind_knob);
-        const double c = std::max(1.0, knob(kTension, tension_->get()));
-        sim_->wind_phase_speed = ratio * c;
+        const double c = std::max(1.0, knob(v, kTension, p.tension->get()));
+        v.sim->wind_phase_speed = ratio * c;
         // Mid-band ripples ride the same knob: Wind picks their SIZE, 6 -> 20
         // waves across the cloth. Amount follows Motion (via wind_speed), so
         // there is no extra control -- measured, the gust sites cover only
         // 1.7-6 waves and wrinkle 25-64, and nothing reached the middle.
-        sim_->mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
-        sim_->mid_lock_d = kMidLockD;
-        sim_->mid_env = kMidEnv;
-        sim_->mid_flap = knob(kFlap, flap_->get());
-        sim_->gust_spread = wind_rnd_->get();
-        sim_->gust_seed = wind_seed_.load(std::memory_order_relaxed);
+        v.sim->mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
+        v.sim->mid_lock_d = kMidLockD;
+        v.sim->mid_env = kMidEnv;
+        v.sim->mid_flap = knob(v, kFlap, p.flap->get());
+        v.sim->gust_spread = p.wind_rnd->get();
+        v.sim->gust_seed = v.wind_seed.load(std::memory_order_relaxed);
         // Wind also sets how fast the ripples RUN DOWN the string, with the
         // detuning loss compensated so it stays a speed control.
         const double travel =
             kMidTravelLo * std::pow(kMidTravelHi / kMidTravelLo, wind_knob);
-        sim_->mid_travel = travel;
-        sim_->mid_ripple =
-            mechanism_on(kWind) ? kMidAmp * mid_resonance_compensation(travel) : 0.0;
+        v.sim->mid_travel = travel;
+        v.sim->mid_ripple =
+            mechanism_on(v, kWind) ? kMidAmp * mid_resonance_compensation(travel) : 0.0;
     }
     // Waves knob: spatial concentration — 0.5x (stretched) to 3x (packed)
     // Waves range extended 0.5-3.0 -> 0.5-5.0 (user: "not noticing waves
@@ -616,21 +706,20 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // flattens past ~7, so 8 is where it genuinely stops doing anything
     // rather than an arbitrary stop. The default knob moved 0.40 -> 0.24
     // so the shipped density stays 2.3 and the stock character is intact.
-    sim_->wave_density = 0.5 + 7.5 * knob(kWaves, waves_->get());
-    sim_->set_wind_origin(direction_->get() > 0.5f ? 1 : 0);
+    v.sim->wave_density = 0.5 + 7.5 * knob(v, kWaves, p.waves->get());
+    v.sim->set_wind_origin(p.direction->get() > 0.5f ? 1 : 0);
     // Walls: only rebuild the geometry when they actually move.
-    const double wlo = wall_lo_->get(), whi = wall_hi_->get();
-    if (std::abs(wlo - last_wall_lo_) > 1e-4 || std::abs(whi - last_wall_hi_) > 1e-4) {
-        sim_->set_walls(wlo, whi);
-        last_wall_lo_ = wlo;
-        last_wall_hi_ = whi;
+    const double wlo = p.wall_lo->get(), whi = p.wall_hi->get();
+    if (std::abs(wlo - v.last_wall_lo) > 1e-4 || std::abs(whi - v.last_wall_hi) > 1e-4) {
+        v.sim->set_walls(wlo, whi);
+        v.last_wall_lo = wlo;
+        v.last_wall_hi = whi;
     }
     // --- excitation budget --------------------------------------------
     // One amount control (Motion) and one balance control (Character); the
     // individual source dials are solved for, not set directly.
-    const double motion = knob(kMotion, motion_->get());
-    const double character = knob(kCharacter, character_->get());
-    const int prec_idx = std::clamp(static_cast<int>(precision_->get()), 0, 2);
+    const double motion = knob(v, kMotion, p.motion->get());
+    const double character = knob(v, kCharacter, p.character->get());
     const double target_peak =
         kMotionPeak * motion * mix_boost(character, prec_idx);
     const double wind_dial = dial_for_peak((1.0 - character) * target_peak,
@@ -646,7 +735,7 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // string audibly quieter at high Tension). The node term plus kNodeWindGain hold
     // it across precision modes - the two sources scale differently with
     // resolution, so each carries its own per-precision gain.
-    const double tension_v = knob(kTension, tension_->get());
+    const double tension_v = knob(v, kTension, p.tension->get());
     const double tension_norm =
         std::pow(std::max(1.0, tension_v) / 300.0, kTensionP[prec_idx]);
     const double node_norm = std::pow(128.0 / std::max(1, n_nodes_), 0.25);
@@ -655,17 +744,17 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // only its rate dropped to minimum and the gusts kept blowing slowly.
     const double gust_speed = 25.0 * wind_dial * tension_norm * node_norm
                               * kNodeWindGain[prec_idx]
-                              * wave_density_compensation(sim_->wave_density);
-    sim_->wind_speed = mechanism_on(kWind) ? gust_speed : 0.0;
+                              * wave_density_compensation(v.sim->wave_density);
+    v.sim->wind_speed = mechanism_on(v, kWind) ? gust_speed : 0.0;
     // Wrinkle keeps its own amplitude reference, so turning the gust field
     // off does not silence it as well - it is a separate mechanism with its
     // own power switch.
-    sim_->wrinkle_speed = gust_speed;
+    v.sim->wrinkle_speed = gust_speed;
     // Flap limiter permanently off: aerodynamic drag IS the amplitude
     // mechanism now. Kept in the engine rather than deleted so the legacy
     // kFlagpoleWind model and the frozen validation scenarios still behave
     // exactly as their baselines record.
-    sim_->flap_limit = 1e9;
+    v.sim->flap_limit = 1e9;
     // Flutter amount, with the rate dial's amplitude swing compensated out so
     // Flutter Hz is a RATE control rather than a rate-and-volume control.
     // f0 is the string's fundamental and moves with Tension, node count and
@@ -675,9 +764,9 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                               * std::max(0.02, whi - wlo));
         const double f0 = std::max(1e-6, tension_v / span);
         const double comp = flutter_rate_compensation(
-            knob(kFlutterHz, flutter_hz_->get()) / f0);
+            knob(v, kFlutterHz, p.flutter_hz->get()) / f0);
         // Flutter Hz's power LED gates shedding entirely.
-        sim_->shed_gain = mechanism_on(kFlutterHz)
+        v.sim->shed_gain = mechanism_on(v, kFlutterHz)
                               ? 90.0 * shed_dial * comp * kNodeShedGain[prec_idx]
                               : 0.0;
     }
@@ -685,34 +774,33 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // 1.45 at 1.5 -> 1.82 at 3.0, with the POLE end unchanged (0.83 ->
     // 0.87), i.e. the effect stays where it was asked for.
     // +30% amplitude on user request: 3.0 -> 3.9 at the top of the dial.
-    sim_->wrinkle = 3.9 * knob(kWrinkle, wrinkle_->get());
-    sim_->shed_freq_hz = knob(kFlutterHz, flutter_hz_->get());
-    sim_->shed_spread = flutter_rnd_->get();
-    sim_->shed_seed = flutter_seed_.load(std::memory_order_relaxed);
+    v.sim->wrinkle = 3.9 * knob(v, kWrinkle, p.wrinkle->get());
+    v.sim->shed_freq_hz = knob(v, kFlutterHz, p.flutter_hz->get());
+    v.sim->shed_spread = p.flutter_rnd->get();
+    v.sim->shed_seed = v.flutter_seed.load(std::memory_order_relaxed);
     // Smoothing is now a one-pole on disp at the sim tick rate. Both of
     // these used the RAW knob and so quietly ignored their own magnitude
     // modifiers; they take knob() like every other control now.
     {
-        const double tau = std::max(1e-4, knob(kSmoothing, smoothing_->get()) * 1e-3);
+        const double tau = std::max(1e-4, knob(v, kSmoothing, p.smoothing->get()) * 1e-3);
         const double tick_rate = fs_ / std::max(1, sim_divisor_);
-        smooth_alpha_ = 1.0 - std::exp(-1.0 / (tau * tick_rate));
+        v.smooth_alpha = 1.0 - std::exp(-1.0 / (tau * tick_rate));
     }
-    bank_.set_steady(knob(kSteady, steady_->get()), 0.25);
+    v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
     // Band Q. set_q is O(N) plus an O(N) overlap sum, so it runs only when
     // the setting actually moves -- not per block.
     {
-        const bool matched = q_mode_->get() > 0.5f;
-        const double res = knob(kResonance, resonance_->get());
+        const bool matched = p.q_mode->get() > 0.5f;
+        const double res = knob(v, kResonance, p.resonance->get());
         const double q = matched ? matched_q(n_nodes_) * std::pow(2.0, 3.0 * res) : 1.0;
-        if (matched != last_q_matched_ || std::abs(q - last_q_) > 1e-9) {
-            bank_.set_q(q);
-            bank_.set_overlap_correction(matched);
-            last_q_matched_ = matched;
-            last_q_ = q;
+        if (matched != v.last_q_matched || std::abs(q - v.last_q) > 1e-9) {
+            v.bank.set_q(q);
+            v.bank.set_overlap_correction(matched);
+            v.last_q_matched = matched;
+            v.last_q = q;
         }
     }
-    leveler_.set_amount(knob(kLeveler, leveler_amt_->get()));
-    max_gain_db_.store(knob(kRangeDb, drive_->get()), std::memory_order_relaxed);
+    v.range_db.store(knob(v, kRangeDb, p.drive->get()), std::memory_order_relaxed);
 
     // 3. Per-block gain targets: a BLEND of position and velocity.
     //
@@ -729,16 +817,17 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     //    self-normalising: measured rms and peak of the velocity term with
     //    kVelScale = 30 are close to those of u, so neither extreme pushes
     //    the +-1 clamp the way an additive form would.
-    mix_amount_ = knob(kMix, mix_->get());
-    vel_amt_ = knob(kVelocity, velocity_->get());
-    vel_scale_ = kVelScale / std::max(1.0, tension_v);
-    const double range_db =
-        mechanism_on(kRangeDb) ? max_gain_db_.load(std::memory_order_relaxed) : 0.0;
+    v.vel_amt = knob(v, kVelocity, p.velocity->get());
+    v.vel_scale = kVelScale / std::max(1.0, tension_v);
+    out.range_db =
+        mechanism_on(v, kRangeDb) ? v.range_db.load(std::memory_order_relaxed) : 0.0;
     // The spatial subscriber is neutral at zero depth, so it is skipped
     // outright rather than computed and multiplied by one.
-    const double width_db = knob(kWidth, width_->get());
-    const double pan_amt = knob(kPanDepth, pan_depth_->get());
-    const bool spatial_on = (width_db > 1e-6 || pan_amt > 1e-6);
+    const double width_db = knob(v, kWidth, p.width->get());
+    const double pan_amt = knob(v, kPanDepth, p.pan_depth->get());
+    out.width_db = width_db;
+    out.pan_amt = pan_amt;
+    out.spatial_on = (width_db > 1e-6 || pan_amt > 1e-6);
     // Which subscriber the canvas is showing. The EQ wins when it is on,
     // because that is the one with an absolute dB meaning; with it gated
     // off the curve falls back to the WIDTH shape, which is still being
@@ -750,9 +839,9 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // curve the honest answer.
     int src = 3;
     double depth = 1.0;
-    if (mechanism_on(kRangeDb)) {
+    if (mechanism_on(v, kRangeDb)) {
         src = 0;
-        depth = max_gain_db_.load(std::memory_order_relaxed);
+        depth = v.range_db.load(std::memory_order_relaxed);
     } else if (width_db > 1e-6) {
         src = 1;
         depth = width_db;
@@ -773,33 +862,92 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     // exactly the knob value and the axis is unchanged from before. The
     // widening in Flat mode IS the defect, made legible: you asked for 18
     // and the axis says 44.
-    if (src != 2 && !bank_.overlap_corrected() && n_nodes_ > 1) {
-        const double K = bank_.overlap_factor(band_fc_[n_nodes_ / 2]);
+    if (src != 2 && !v.bank.overlap_corrected() && n_nodes_ > 1) {
+        const double K = v.bank.overlap_factor(band_fc_[n_nodes_ / 2]);
         const double g = std::pow(10.0, depth / 20.0);
         const double act = 1.0 + K * (g - 1.0);
         if (act > 1.0) depth = 20.0 * std::log10(act);
     }
-    display_src_.store(src, std::memory_order_relaxed);
-    display_depth_.store(depth, std::memory_order_relaxed);
-    if (spatial_on) {
-        if (side_targets_.size() != (std::size_t)n_nodes_) {
-            side_targets_.assign(n_nodes_, 1.0);
-            pan_targets_.assign(n_nodes_, 0.0);
+    v.display_src.store(src, std::memory_order_relaxed);
+    v.display_depth.store(depth, std::memory_order_relaxed);
+    if (out.spatial_on) {
+        if (v.side_targets.size() != (std::size_t)n_nodes_) {
+            v.side_targets.assign(n_nodes_, 1.0);
+            v.pan_targets.assign(n_nodes_, 0.0);
         }
-        if (taper_lo_ != (double)stereo_lo_->get()
-            || taper_hi_ != (double)stereo_hi_->get()
-            || (int)spatial_w_.size() != n_nodes_)
-            rebuild_spatial_taper();
+        if (v.taper_lo != (double)p.stereo_lo->get()
+            || v.taper_hi != (double)p.stereo_hi->get()
+            || (int)v.spatial_w.size() != n_nodes_)
+            rebuild_spatial_taper(v, p);
     }
     // Targets are re-aimed per CHUNK inside the audio loop below, not once
     // per block -- see kGainChunk.
+}
 
-    // 3b. Reset request from the UI: flatten the string, touch nothing else.
-    //     Wind, flutter and every knob stay exactly as they are, so the
-    //     cloth starts moving again immediately from rest.
+void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
+                                        juce::MidiBuffer&) {
+    juce::ScopedNoDenormals noDenormals;
+
+    // 0. Precision mode: rebuild the sim/bank tuple for EVERY voice when it
+    //    changes. This must run BEFORE the null check -- prepareToPlay
+    //    leaves the sims null and the first block creates them here
+    //    (early-returning first = permanent silence, which is exactly what
+    //    happened at first M2 deploy).
+    const int prec = static_cast<int>(precision_->get());
+    if (prec != last_precision_) {
+        rebuild(prec);
+        last_precision_ = prec;
+    }
+    if (!voices_[0].sim) {
+        buffer.clear();
+        return;
+    }
+
+    const int n = buffer.getNumSamples();
+    float* ch0 = buffer.getWritePointer(0);
+    float* ch1 = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+    const bool stereo = ch1 != nullptr;
+    // Dual needs two output channels to mean anything, so on a mono bus it
+    // falls back to one voice rather than ticking a second sim into nothing.
+    const bool dual = dual_ != nullptr && dual_->get() > 0.5f && stereo;
+    const int nv = dual ? kNumVoices : 1;
+    active_voices_.store(nv, std::memory_order_relaxed);
+    const int prec_idx = std::clamp(prec, 0, 2);
+
+    // 1. GUI is a writer: apply the latest draw deposit (held string). It
+    //    goes to the voice the canvas is SHOWING -- drawing on screen has to
+    //    affect the string you can see.
+    const uint32_t dv = draw_version_.load(std::memory_order_acquire);
+    if (dv != last_draw_version_) {
+        const juce::SpinLock::ScopedLockType lk(draw_lock_);
+        std::vector<double> vals(draw_count_);
+        for (int i = 0; i < draw_count_; ++i)
+            vals[i] = static_cast<double>(draw_buffer_[i]);
+        Voice& target = voices_[juce::jlimit(0, nv - 1, ui_voice_)];
+        if (target.sim)
+            target.sim->displace(vals);
+        last_draw_version_ = dv;
+    }
+
+    // 2. Global knobs. Their modifiers live on voice 0 because these knobs
+    //    are not voice-paged -- there is one Mix and one Leveler for the
+    //    whole plugin, after both voices are summed into the output.
+    leveler_.set_amount(knob(voices_[0], kLeveler, leveler_amt_->get()));
+    mix_amount_ = knob(voices_[0], kMix, mix_->get());
+
+    // 3. Per-voice parameter mapping.
+    VoiceBlock vb[kNumVoices];
+    for (int vi = 0; vi < nv; ++vi)
+        prepare_voice(voices_[vi], vp_[vi], prec_idx, vb[vi]);
+
+    // 3b. Reset request from the UI: flatten EVERY active string, touch
+    //     nothing else. Wind, flutter and every knob stay exactly as they
+    //     are, so the cloth starts moving again immediately from rest.
     if (reset_request_.exchange(false, std::memory_order_acquire)) {
         std::vector<double> flat(n_nodes_, 0.0);
-        sim_->displace(flat);
+        for (int vi = 0; vi < nv; ++vi)
+            if (voices_[vi].sim)
+                voices_[vi].sim->displace(flat);
     }
 
     // 4. Audio: tick the sim on its divisor grid, process per sample.
@@ -809,10 +957,6 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         juce::jlimit(0, (int)kNumTestSrc - 1,
                      static_cast<int>(std::lround(test_src_->get())));
     const bool test_on = test_src != kTestOff;
-    const int n = buffer.getNumSamples();
-    float* ch0 = buffer.getWritePointer(0);
-    float* ch1 = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
-    const bool stereo = ch1 != nullptr;
     // Re-aim the gain ramp every kGainChunk samples rather than once per
     // host block.
     //
@@ -833,14 +977,20 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     constexpr int kGainChunk = 32;
     for (int base = 0; base < n; base += kGainChunk) {
       const int len = std::min(kGainChunk, n - base);
+      for (int vi = 0; vi < nv; ++vi) {
+      Voice& v = voices_[vi];
+      const double range_db = vb[vi].range_db;
+      const bool spatial_on = vb[vi].spatial_on;
+      const double width_db = vb[vi].width_db;
+      const double pan_amt = vb[vi].pan_amt;
       // Targets from the control signal as it stands RIGHT NOW. disp was
       // already smoothed at the tick rate in its own (log) domain, so Range
       // enters exactly once and memorylessly.
       for (int i = 0; i < n_nodes_; ++i) {
-          const double d = std::clamp(smoothed_disp_[i], -1.0, 1.0);
+          const double d = std::clamp(v.smoothed_disp[i], -1.0, 1.0);
           const double db = d * range_db;
           // 10^(db/20) == 2^(db/6.0206); exp2 is markedly cheaper than pow.
-          gain_targets_[i] = std::exp2(db * (1.0 / 6.020599913279624));
+          v.gain_targets[i] = std::exp2(db * (1.0 / 6.020599913279624));
           if (spatial_on) {
               // Width is a DEPTH ON THE SIDE, in the same dB unit as Range:
               // the side gain is the mid gain plus Width dB of the same
@@ -848,30 +998,35 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
               // spatial read ONE curve and differ only in how hard they
               // drive it -- which is what keeps a single drawn curve honest
               // for both.
-              const double w = spatial_w_[i];
-              side_targets_[i] = std::exp2((db + d * width_db * w)
+              const double w = v.spatial_w[i];
+              v.side_targets[i] = std::exp2((db + d * width_db * w)
                                            * (1.0 / 6.020599913279624));
-              pan_targets_[i] = d * pan_amt * w;
+              v.pan_targets[i] = d * pan_amt * w;
           }
       }
-      bank_.set_block_targets(gain_targets_.data(), len);
+      v.bank.set_block_targets(v.gain_targets.data(), len);
       if (spatial_on)
-          bank_.set_spatial_targets(side_targets_.data(), pan_targets_.data(), len);
+          v.bank.set_spatial_targets(v.side_targets.data(), v.pan_targets.data(), len);
       else
-          bank_.set_spatial_off();
+          v.bank.set_spatial_off();
+      }
       for (int s = base; s < base + len; ++s) {
-        if (++sim_counter_ >= sim_divisor_) {
-            sim_->tick();
-            sim_counter_ = 0;
+        // Every active voice advances on the same divisor grid.
+        for (int vi = 0; vi < nv; ++vi) {
+        Voice& v = voices_[vi];
+        if (++v.sim_counter >= sim_divisor_) {
+            v.sim->tick();
+            v.sim_counter = 0;
             // The string has new information: fold it into the smoothed
             // control signal. This is the only smoothing in the plugin.
-            const auto& u = sim_->positions();
-            const auto& v = sim_->velocities();
-            const double a = smooth_alpha_, va = vel_amt_, vs = vel_scale_;
+            const auto& u = v.sim->positions();
+            const auto& vel = v.sim->velocities();
+            const double a = v.smooth_alpha, va = v.vel_amt, vs = v.vel_scale;
             for (int i = 0; i < n_nodes_; ++i) {
-                const double disp = (1.0 - va) * u[i] + va * (vs * v[i]);
-                smoothed_disp_[i] += a * (disp - smoothed_disp_[i]);
+                const double disp = (1.0 - va) * u[i] + va * (vs * vel[i]);
+                v.smoothed_disp[i] += a * (disp - v.smoothed_disp[i]);
             }
+        }
         }
         if (test_on) {
             ch0[s] = test_sample(test_src, 0);
@@ -882,7 +1037,21 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
         const float dry_r = stereo ? ch1[s] : dry_l;
         float l = dry_l;
         float r = dry_r;
-        bank_.process_frame(l, r, stereo);
+        if (dual) {
+            // DUAL: each voice sees ONE channel, as mono. Its side signal
+            // is therefore zero by construction, which makes Width and
+            // Place inert per voice -- the stereo comes from the two
+            // strings diverging, not from one string's mid/side. The editor
+            // dims those two knobs to say so.
+            float a0 = dry_l, b0 = dry_l;
+            voices_[0].bank.process_frame(a0, b0, false);
+            float a1 = dry_r, b1 = dry_r;
+            voices_[1].bank.process_frame(a1, b1, false);
+            l = a0;
+            r = a1;
+        } else {
+            voices_[0].bank.process_frame(l, r, stereo);
+        }
         if (mix_amount_ < 1.0) {
             const float m = static_cast<float>(mix_amount_);
             l = dry_l + m * (l - dry_l);
@@ -906,7 +1075,13 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     }
 }
 
+// Publishes the voice the editor is SHOWING. Only one curve is drawn at a
+// time -- which is the point of the L/R highlight: you look at one string's
+// complete picture, knobs and curve together.
 void CurvesAudioProcessor::publish_display() {
+    Voice& v = uiv();
+    if (!v.sim)
+        return;
     // The audio thread must NEVER block on the GUI thread. The editor holds
     // this same spinlock while it copies the snapshot out, and a spinlock
     // owned by a lower-priority thread is a textbook priority inversion:
@@ -915,7 +1090,7 @@ void CurvesAudioProcessor::publish_display() {
     // not. (Diagnosed alongside the high-precision glitch report.)
     if (!display_lock_.tryEnter())
         return;
-    const auto& u = sim_->positions();
+    const auto& u = v.sim->positions();
     for (int i = 0; i < n_nodes_; ++i)
         display_buffer_[i] = static_cast<float>(u[i]);
     // The EQ curve of truth: the bank's smoothed per-band gains (post
@@ -926,8 +1101,8 @@ void CurvesAudioProcessor::publish_display() {
     // effective per-band gain is 1 + Mix*(g - 1). Without this the curve
     // drew the full EQ depth while Mix 0.5 applied half of it -- the same
     // class of WYSIWYG violation Steady had, introduced when Mix was added.
-    const int src = display_src_.load(std::memory_order_relaxed);
-    const double depth = display_depth_.load(std::memory_order_relaxed);
+    const int src = v.display_src.load(std::memory_order_relaxed);
+    const double depth = v.display_depth.load(std::memory_order_relaxed);
     const double mix = mix_amount_;
     // O10. The curve is the bank's TRUE summed response, not the nominal
     // per-band gain. The bands overlap and add, so the nominal value never
@@ -942,21 +1117,21 @@ void CurvesAudioProcessor::publish_display() {
         // unity term. The in-phase part is the coherent leak and keeps the
         // sign the display needs; the quadrature part is a 90-degree-shifted
         // leak and does not read as position.
-        const auto& p = bank_.pans();
-        bank_.response_curve(p.data(), mix, resp_re_.data(), resp_im_.data());
+        const auto& p = v.bank.pans();
+        v.bank.response_curve(p.data(), mix, v.resp_re.data(), v.resp_im.data());
         const double amt = std::max(1e-9, depth * 0.01);
         for (int i = 0; i < n_nodes_; ++i)
             display_eq_buffer_[i] =
-                static_cast<float>(std::clamp(resp_re_[i] / amt, -1.0, 1.0));
+                static_cast<float>(std::clamp(v.resp_re[i] / amt, -1.0, 1.0));
     } else {
         // Mix scales only the added part, so it folds into the convolution
         // exactly -- the sum is linear in the per-band excess.
-        const auto& g = (src == 1) ? bank_.side_gains() : bank_.gains();
-        for (int i = 0; i < n_nodes_; ++i) resp_big_[i] = g[i] - 1.0;
-        bank_.response_curve(resp_big_.data(), mix, resp_re_.data(),
-                             resp_im_.data());
+        const auto& g = (src == 1) ? v.bank.side_gains() : v.bank.gains();
+        for (int i = 0; i < n_nodes_; ++i) v.resp_big[i] = g[i] - 1.0;
+        v.bank.response_curve(v.resp_big.data(), mix, v.resp_re.data(),
+                             v.resp_im.data());
         for (int i = 0; i < n_nodes_; ++i) {
-            const double re = 1.0 + resp_re_[i], im = resp_im_[i];
+            const double re = 1.0 + v.resp_re[i], im = v.resp_im[i];
             const double mag2 = std::max(re * re + im * im, 1e-12);
             const double db = 10.0 * std::log10(mag2);
             display_eq_buffer_[i] =
@@ -998,12 +1173,21 @@ void CurvesAudioProcessor::getStateInformation(juce::MemoryBlock& dest) {
         if (auto* v = dynamic_cast<juce::RangedAudioParameter*>(p))
             tree.setProperty(juce::Identifier(v->paramID), v->getValue(), nullptr);
     tree.setProperty("uiTheme", ui_theme_, nullptr);
-    juce::String mods;
-    for (int k = 0; k < kNumModKnobs; ++k)
-        mods << (knob_mods_[k].on ? "1" : "0") << juce::String(knob_mods_[k].mag);
-    tree.setProperty("knobMods", mods, nullptr);
-    tree.setProperty("flutterSeed", (int)flutter_seed_, nullptr);
-    tree.setProperty("windSeed", (int)wind_seed_, nullptr);
+    tree.setProperty("uiVoice", ui_voice_, nullptr);
+    // Per voice. Voice 0 keeps the original property names so a session
+    // saved before Dual existed still restores its modifiers and seeds;
+    // voice 1 gets suffixed ones, and their absence just leaves it at
+    // defaults.
+    for (int v = 0; v < kNumVoices; ++v) {
+        const juce::String sfx = v == 0 ? juce::String() : juce::String("R");
+        juce::String mods;
+        for (int k = 0; k < kNumModKnobs; ++k)
+            mods << (voices_[v].mods[k].on ? "1" : "0")
+                 << juce::String(voices_[v].mods[k].mag);
+        tree.setProperty("knobMods" + sfx, mods, nullptr);
+        tree.setProperty("flutterSeed" + sfx, (int)voices_[v].flutter_seed, nullptr);
+        tree.setProperty("windSeed" + sfx, (int)voices_[v].wind_seed, nullptr);
+    }
     if (auto xml = tree.createXml())
         copyXmlToBinary(*xml, dest);
 }
@@ -1013,16 +1197,23 @@ void CurvesAudioProcessor::setStateInformation(const void* data, int size) {
         if (auto tree = juce::ValueTree::fromXml(*xml); tree.isValid()) {
             if (tree.hasProperty("uiTheme"))
                 ui_theme_ = (int)tree.getProperty("uiTheme");
-            if (tree.hasProperty("flutterSeed"))
-                flutter_seed_ = (int)tree.getProperty("flutterSeed");
-            if (tree.hasProperty("windSeed"))
-                wind_seed_ = (int)tree.getProperty("windSeed");
-            if (tree.hasProperty("knobMods")) {
-                const juce::String m = tree.getProperty("knobMods").toString();
-                for (int k = 0; k < kNumModKnobs && 2 * k + 1 < m.length(); ++k) {
-                    knob_mods_[k].on = (m[2 * k] == '1');
-                    knob_mods_[k].mag =
-                        juce::jlimit(0, 2, static_cast<int>(m[2 * k + 1]) - '0');
+            if (tree.hasProperty("uiVoice"))
+                set_ui_voice((int)tree.getProperty("uiVoice"));
+            for (int v = 0; v < kNumVoices; ++v) {
+                const juce::String sfx = v == 0 ? juce::String() : juce::String("R");
+                if (tree.hasProperty("flutterSeed" + sfx))
+                    voices_[v].flutter_seed =
+                        (int)tree.getProperty("flutterSeed" + sfx);
+                if (tree.hasProperty("windSeed" + sfx))
+                    voices_[v].wind_seed = (int)tree.getProperty("windSeed" + sfx);
+                if (tree.hasProperty("knobMods" + sfx)) {
+                    const juce::String m =
+                        tree.getProperty("knobMods" + sfx).toString();
+                    for (int k = 0; k < kNumModKnobs && 2 * k + 1 < m.length(); ++k) {
+                        voices_[v].mods[k].on = (m[2 * k] == '1');
+                        voices_[v].mods[k].mag =
+                            juce::jlimit(0, 2, static_cast<int>(m[2 * k + 1]) - '0');
+                    }
                 }
             }
             for (auto* p : getParameters())

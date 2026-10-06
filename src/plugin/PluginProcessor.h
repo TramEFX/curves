@@ -24,6 +24,12 @@
 class CurvesAudioProcessor : public juce::AudioProcessor {
 public:
     static constexpr int kMaxNodes = 1024;
+    // ONE VOICE = ONE STRING. Voice 0 alone is the historical single
+    // instance; in Dual mode voice 0 drives LEFT and voice 1 drives RIGHT,
+    // each as a mono bank. This is the "multiple instances in parallel"
+    // the sandbox was aimed at from the start -- stereo from genuinely
+    // independent physics rather than from one string's mid/side.
+    static constexpr int kNumVoices = 2;
 
     CurvesAudioProcessor();
 
@@ -80,33 +86,66 @@ public:
     // continuous quantity to automate, and two more automation entries for
     // something you click is noise. They ride in the state tree, so they
     // still save with the preset.
-    int flutter_seed() const { return flutter_seed_; }
-    int wind_seed() const { return wind_seed_; }
-    void reroll_flutter_seed() { flutter_seed_ = next_seed(flutter_seed_); }
-    void reroll_wind_seed() { wind_seed_ = next_seed(wind_seed_); }
+    int flutter_seed() const { return uiv().flutter_seed; }
+    int wind_seed() const { return uiv().wind_seed; }
+    void reroll_flutter_seed() {
+        uiv().flutter_seed = next_seed(uiv().flutter_seed);
+    }
+    void reroll_wind_seed() { uiv().wind_seed = next_seed(uiv().wind_seed); }
+
+    // ---- which voice the panels are editing -----------------------------
+    // Pure appearance: it selects which parameter set the knobs are bound
+    // to and which voice the canvas draws, and rides in the state tree like
+    // the colour theme. Dual on/off IS a parameter, because it changes the
+    // audio path and wants automation and preset recall.
+    int ui_voice() const { return ui_voice_; }
+    void set_ui_voice(int v) { ui_voice_ = juce::jlimit(0, kNumVoices - 1, v); }
+    bool dual_on() const { return dual_ != nullptr && dual_->get() > 0.5f; }
+    void set_dual(bool on);
 
     int active_nodes() const { return n_nodes_; }
-    bool q_matched() const { return last_q_matched_; }
+    // How many voices the LAST processed block actually ran. Dual needs a
+    // stereo bus to mean anything, so this is not simply the Dual parameter
+    // -- and it is what a test should assert on.
+    int active_voices() const {
+        return active_voices_.load(std::memory_order_relaxed);
+    }
+    // Test hook: the gain target a voice is currently driving band i to.
+    // Lets a test see whether two voices diverge BEFORE the bank, which is
+    // the difference between a physics problem and a routing problem.
+    double voice_gain_target(int voice, int i) const {
+        const Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        return (i >= 0 && i < (int)v.gain_targets.size()) ? v.gain_targets[i] : 0.0;
+    }
+    bool q_matched() const { return uiv().last_q_matched; }
     // Effective Range dB: the knob AFTER its magnitude modifier, which is
     // what the audio path actually uses. The canvas labels its dB axis from
     // this, so the marks stay truthful at any magnitude setting.
     double range_db() const {
-        return max_gain_db_.load(std::memory_order_relaxed);
+        return uiv().range_db.load(std::memory_order_relaxed);
     }
     // What the canvas axis should be labelled in. With the EQ gated off but
     // the spatial subscriber running, the curve is the WIDTH shape and the
     // axis means width dB, not EQ dB.
     double display_depth_db() const {
-        return display_depth_.load(std::memory_order_relaxed);
+        return uiv().display_depth.load(std::memory_order_relaxed);
     }
     // 0 = mid gain (dB), 1 = side gain (dB), 2 = placement (%), 3 = nothing
     // applied. Ordered fallback: whichever subscriber is actually carrying
     // the shape. Enumerating these one at a time is how the curve went
     // missing twice, so this is exhaustive by construction.
     int display_src() const {
-        return display_src_.load(std::memory_order_relaxed);
+        return uiv().display_src.load(std::memory_order_relaxed);
     }
-    int physics_mode() const { return last_physics_; }
+    int physics_mode() const { return uiv().last_physics; }
+    // The parameter ID the editor should bind a knob to, for the voice it
+    // is currently showing: "damping" for voice 0, "damping_r" for voice 1.
+    // The base ids of all per-voice parameters, so the editor can rebind.
+    static const char* const* voice_param_ids(int& count);
+    static juce::String voice_param_id(const char* base, int voice) {
+        return voice == 0 ? juce::String(base)
+                          : juce::String(base) + juce::String("_r");
+    }
 
     // ---- per-knob modifiers (on/off + magnitude) ------------------------
     // Deliberately NOT AudioParameters. Nineteen knobs x (bypass + range)
@@ -149,10 +188,17 @@ public:
         int mag = 1;        // 0 = low, 1 = medium, 2 = high
         double lo = 0.0;    // the parameter's minimum, captured at construction
     };
-    bool knob_on(int k) const { return knob_mods_[k].on; }
-    int knob_mag(int k) const { return knob_mods_[k].mag; }
-    void set_knob_on(int k, bool v) { knob_mods_[k].on = v; }
-    void set_knob_mag(int k, int v) { knob_mods_[k].mag = juce::jlimit(0, 2, v); }
+    // Mix and Leveler are GLOBAL knobs that happen to sit in the modifier
+    // enum, and the audio path reads their modifiers from voice 0. Routing
+    // the editor through the highlighted voice instead would mean toggling
+    // Mix's power LED with R selected wrote to voice 1 and did nothing.
+    static bool is_global_knob(int k) { return k == kMix || k == kLeveler; }
+    bool knob_on(int k) const { return knob_voice(k).mods[k].on; }
+    int knob_mag(int k) const { return knob_voice(k).mods[k].mag; }
+    void set_knob_on(int k, bool v) { knob_voice(k).mods[k].on = v; }
+    void set_knob_mag(int k, int v) {
+        knob_voice(k).mods[k].mag = juce::jlimit(0, 2, v);
+    }
     static const char* mod_knob_id(int k);
     // Band width == band spacing. Depends on node count, so Precision
     // changes it; rebuild() invalidates last_q_ to force a re-apply.
@@ -178,25 +224,114 @@ private:
     static constexpr int kPrecisionNodes[3] = {128, 256, 512};
     static constexpr int kPrecisionDivisor[3] = {4, 2, 2};
 
+    // Everything that belongs to ONE string. This was a flat set of members
+    // on the processor; gathering it into a struct is what lets it exist
+    // twice. Each voice owns its own sim, bank, control smoother, spatial
+    // taper, seeds AND its own complete set of knob modifiers, because each
+    // voice has its own complete set of knobs.
+    struct Voice {
+        std::unique_ptr<curves::StringSim> sim;
+        curves::FilterBank bank;
+        int sim_counter = 0;
+        int last_physics = -1;
+        double last_q = -1.0;
+        bool last_q_matched = false;
+        double last_wall_lo = -1.0, last_wall_hi = -1.0;
+        std::vector<double> gain_targets, side_targets, pan_targets;
+        std::vector<double> spatial_w;
+        double taper_lo = -1.0, taper_hi = -1.0;
+        std::vector<double> resp_big, resp_re, resp_im;   // display scratch
+        std::array<double, kMaxNodes> smoothed_disp{};
+        double smooth_alpha = 0.05, vel_amt = 0.0, vel_scale = 0.0;
+        std::array<KnobMod, kNumModKnobs> mods{};
+        std::atomic<int> flutter_seed{1};
+        std::atomic<int> wind_seed{1};
+        // Published per block for the editor's readouts.
+        std::atomic<double> range_db{18.0};
+        std::atomic<double> display_depth{18.0};
+        std::atomic<int> display_src{0};
+    };
+    // The per-voice parameter set. Precision, Mix, Leveler, Test Src and
+    // Dual are global and stay on the processor -- they are output plumbing
+    // or the routing switch itself, not properties of a string.
+    struct VoiceParams {
+        juce::AudioParameterFloat* damping = nullptr;
+        juce::AudioParameterFloat* stiffness = nullptr;
+        juce::AudioParameterFloat* tension = nullptr;
+        juce::AudioParameterFloat* smoothing = nullptr;
+        juce::AudioParameterFloat* drive = nullptr;
+        juce::AudioParameterFloat* steady = nullptr;
+        juce::AudioParameterFloat* physics = nullptr;
+        juce::AudioParameterFloat* velocity = nullptr;
+        juce::AudioParameterFloat* wind = nullptr;
+        juce::AudioParameterFloat* waves = nullptr;
+        juce::AudioParameterFloat* motion = nullptr;
+        juce::AudioParameterFloat* character = nullptr;
+        juce::AudioParameterFloat* direction = nullptr;
+        juce::AudioParameterFloat* wall_lo = nullptr;
+        juce::AudioParameterFloat* wall_hi = nullptr;
+        juce::AudioParameterFloat* flutter_hz = nullptr;
+        juce::AudioParameterFloat* wrinkle = nullptr;
+        juce::AudioParameterFloat* flap = nullptr;
+        juce::AudioParameterFloat* wind_rnd = nullptr;
+        juce::AudioParameterFloat* flutter_rnd = nullptr;
+        juce::AudioParameterFloat* width = nullptr;
+        juce::AudioParameterFloat* pan_depth = nullptr;
+        juce::AudioParameterFloat* stereo_lo = nullptr;
+        juce::AudioParameterFloat* stereo_hi = nullptr;
+        juce::AudioParameterFloat* q_mode = nullptr;
+        juce::AudioParameterFloat* resonance = nullptr;
+    };
+    // What prepare_voice() hands the audio loop for this block. These used
+    // to be locals in processBlock; with two voices they have to be per
+    // voice, and a struct beats four out-parameters.
+    struct VoiceBlock {
+        bool spatial_on = false;
+        double range_db = 0.0;
+        double width_db = 0.0;
+        double pan_amt = 0.0;
+    };
+    Voice voices_[kNumVoices];
+    VoiceParams vp_[kNumVoices];
     float test_sample(int src, int channel);
     float pink_noise(int channel);
     void rebuild(int precision);
-    void apply_physics(int mode);
-    void rebuild_band_map();
+    void rebuild_voice(Voice& v, const VoiceParams& p);
+    void apply_physics(Voice& v, int mode);
+    void rebuild_band_map(Voice& v);
     void publish_display();
+    // Maps a voice's parameters onto its engine; everything that used to be
+    // the first two thirds of processBlock.
+    void prepare_voice(Voice& v, const VoiceParams& p, int prec_idx,
+                       VoiceBlock& out);
+    void add_voice_params(VoiceParams& p, int voice);
+    // Copies every parameter and modifier of one voice onto another, then
+    // re-rolls the destination's seeds. Used when Dual is switched on.
+    void copy_voice(int from, int to);
+    juce::AudioParameterFloat* find_param(const juce::String& id) const;
 
-    std::unique_ptr<curves::StringSim> sim_;
-    curves::FilterBank bank_;
+    std::atomic<int> active_voices_{1};
+    int ui_voice_ = 0;               // which voice the panels are editing
+    Voice& uiv() { return voices_[juce::jlimit(0, kNumVoices - 1, ui_voice_)]; }
+    const Voice& uiv() const {
+        return voices_[juce::jlimit(0, kNumVoices - 1, ui_voice_)];
+    }
+    // Declared here rather than beside knob_on() because the return type
+    // needs Voice to be complete.
+    Voice& knob_voice(int k) { return is_global_knob(k) ? voices_[0] : uiv(); }
+    const Voice& knob_voice(int k) const {
+        return is_global_knob(k) ? voices_[0] : uiv();
+    }
+
     curves::OutputLeveler leveler_;
     int display_accum_ = 0;          // samples since the last display publish
     int ui_theme_ = 0;               // editor colour theme (appearance only)
-    std::array<KnobMod, kNumModKnobs> knob_mods_{};
-    std::vector<double> resp_big_, resp_re_, resp_im_;  // display scratch
-    double last_q_ = -1.0;          // cached so set_q() is not called per block
-    bool last_q_matched_ = false;
     std::atomic<bool> reset_request_{false};
-    double knob(int k, double raw) const {
-        const auto& m = knob_mods_[k];
+    // knob() and mechanism_on() read the modifiers of a SPECIFIC voice --
+    // they used to read the processor's single set, which is exactly the
+    // kind of shared state that would silently couple the two voices.
+    static double knob(const Voice& v, int k, double raw) {
+        const auto& m = v.mods[k];
         // Magnitude always applies; power-off only collapses to the minimum
         // for knobs where the minimum is genuinely neutral. kPowerGate knobs
         // keep their value and are silenced at the mechanism instead.
@@ -206,19 +341,16 @@ private:
             return raw;
         return m.lo + (raw - m.lo) * kMagScale[juce::jlimit(0, 2, m.mag)];
     }
-    bool mechanism_on(int k) const {
-        return power_mode(k) != kPowerGate || knob_mods_[k].on;
+    static bool mechanism_on(const Voice& v, int k) {
+        return power_mode(k) != kPowerGate || v.mods[k].on;
     }
     double fs_ = 48000.0;
-    int sim_counter_ = 0;
     int sim_divisor_ = 4;
     int n_nodes_ = 128;
-    int last_physics_ = -1;
     int last_precision_ = -1;
 
     // band center frequencies + per-block gain targets
     std::vector<double> band_fc_;
-    std::vector<double> gain_targets_{};
 
     // THE SMOOTHER. It lives here, on the string's own control signal, not
     // downstream on the linear gain where it used to sit.
@@ -236,16 +368,9 @@ private:
     // information; it is also an anti-alias filter ahead of the block-rate
     // sampling the bank sees.  (ORCHESTRATION.md:155 specified this from the
     // start -- "one one-pole smoother toward the current sim value".)
-    std::array<double, kMaxNodes> smoothed_disp_{};
-    double smooth_alpha_ = 0.05;   // one-pole coefficient at the tick rate
-    double vel_amt_ = 0.0;         // cached for the per-tick update
     double mix_amount_ = 1.0;      // dry/wet, cached per block
-    double vel_scale_ = 0.0;
     // Read by the GUI thread for the dB axis; relaxed atomic because a
     // torn double would print a nonsense label.
-    std::atomic<double> max_gain_db_{18.0};
-    std::atomic<double> display_depth_{18.0};
-    std::atomic<int> display_src_{0};
 
     // draw mailbox (GUI -> audio); fixed max size, first n_nodes_ active
     juce::SpinLock draw_lock_;
@@ -261,13 +386,17 @@ private:
     int display_count_ = 128;
     std::atomic<uint32_t> display_version_{0};
 
-    juce::AudioParameterFloat* damping_ = nullptr;
-    juce::AudioParameterFloat* stiffness_ = nullptr;
-    juce::AudioParameterFloat* tension_ = nullptr;
-    juce::AudioParameterFloat* smoothing_ = nullptr;
-    juce::AudioParameterFloat* drive_ = nullptr;     // max gain dB
-    juce::AudioParameterFloat* mix_ = nullptr;       // dry/wet
-    juce::AudioParameterFloat* flap_ = nullptr;      // mid-band tip drive
+    // ---- GLOBAL parameters ------------------------------------------
+    // Output plumbing and the routing switch. Everything else is per voice
+    // and lives in vp_[].
+    juce::AudioParameterFloat* mix_ = nullptr;         // dry/wet
+    juce::AudioParameterFloat* leveler_amt_ = nullptr; // output RMS trim
+    juce::AudioParameterFloat* test_src_ = nullptr;    // internal test source
+    juce::AudioParameterFloat* precision_ = nullptr;   // node count mode 0..2
+    // Dual IS a parameter: it changes the audio path, so it wants
+    // automation and preset recall. Which voice you are LOOKING at does
+    // not, and rides in the state tree instead.
+    juce::AudioParameterFloat* dual_ = nullptr;
     // ---- SPATIAL subscriber -------------------------------------------
     // Width is expressed in dB, the same unit as Range, because that is
     // literally what it is: how far the SIDE gain departs from the mid at
@@ -275,44 +404,16 @@ private:
     // depths share one shape and differ only in how hard they drive it.
     juce::AudioParameterFloat* width_ = nullptr;
     juce::AudioParameterFloat* pan_depth_ = nullptr;
-    juce::AudioParameterFloat* q_mode_ = nullptr;
-    juce::AudioParameterFloat* resonance_ = nullptr;
-    juce::AudioParameterFloat* stereo_lo_ = nullptr;
-    juce::AudioParameterFloat* stereo_hi_ = nullptr;
-    std::vector<double> side_targets_, pan_targets_;
     // Per-band taper that damps the spatial deviation outside [lo, hi].
     // Cached: it only moves when the cuts or the band map do.
-    std::vector<double> spatial_w_;
-    double taper_lo_ = -1.0, taper_hi_ = -1.0;
-    void rebuild_spatial_taper();
+    void rebuild_spatial_taper(Voice& v, const VoiceParams& p);
 
-    juce::AudioParameterFloat* flutter_rnd_ = nullptr;
-    juce::AudioParameterFloat* wind_rnd_ = nullptr;
-    std::atomic<int> flutter_seed_{1};
-    std::atomic<int> wind_seed_{1};
     static int next_seed(int cur) {
         // any step that visits a lot of distinct values; the hash does the
         // actual scrambling, this only needs to not repeat quickly
         return static_cast<int>((static_cast<unsigned>(cur) * 1664525u
                                  + 1013904223u) & 0x7fffffffu);
     }
-    juce::AudioParameterFloat* steady_ = nullptr;    // per-band dynamic EQ depth
-    juce::AudioParameterFloat* leveler_amt_ = nullptr; // output RMS trim depth
-    juce::AudioParameterFloat* test_src_ = nullptr;  // internal pink noise
-    juce::AudioParameterFloat* physics_ = nullptr;   // force preset 0..3
-    juce::AudioParameterFloat* precision_ = nullptr; // node count mode 0..2
-    juce::AudioParameterFloat* velocity_ = nullptr;  // velocity coupling 0..1
-    juce::AudioParameterFloat* wind_ = nullptr;      // gust phase velocity 0..1
-    juce::AudioParameterFloat* waves_ = nullptr;     // wave concentration 0..1
-    juce::AudioParameterFloat* motion_ = nullptr;    // total excitation 0..1
-    juce::AudioParameterFloat* character_ = nullptr; // gust <-> shedding 0..1
-    juce::AudioParameterFloat* direction_ = nullptr; // wind travel direction 0/1
-    juce::AudioParameterFloat* wall_lo_ = nullptr;   // active window, low edge
-    juce::AudioParameterFloat* wall_hi_ = nullptr;   // active window, high edge
-    juce::AudioParameterFloat* flutter_hz_ = nullptr;// shedding rate, Hz
-    juce::AudioParameterFloat* wrinkle_ = nullptr;   // tip fine detail 0..1
-    double last_wall_lo_ = -1.0, last_wall_hi_ = -1.0;
-
     // Paul Kellet pink-noise filter state, per channel.
     std::array<float, 7> pink_[2]{};
     float brown_[2]{};          // leaky integrator state

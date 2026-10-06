@@ -92,7 +92,7 @@ void CurvesKnobLook::drawRotarySlider(juce::Graphics& g, int x, int y, int w,
 CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     : AudioProcessorEditor(p), processor_(p) {
     theme_index_ = processor_.ui_theme();
-    setSize(1000, 700);
+    setSize(1000, 784);   // +84 for the second SUBSCRIBERS row
     setup_randomiser(rnd_wind_, "wind_rnd", true);
     setup_randomiser(rnd_flutter_, "flutter_rnd", false);
 
@@ -102,12 +102,15 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     // Controls, grouped by SCOPE. GLOBAL is always in effect; STRING is the
     // physics that always applies; CLOTH & WIND is Flagpole-only.
     const struct { const char* id; const char* name; int group; } defs[] = {
-        // GLOBAL
-        {"physics", "Physics", kGlobal},    {"precision", "Precision", kGlobal},
-        {"smoothing", "Smooth", kGlobal},
-        {"steady", "Steady", kGlobal},      {"leveler", "Leveler", kGlobal},
+        // GLOBAL -- and GLOBAL now means it. Physics, Smooth and Steady
+        // used to sit here, but they belong to ONE voice, and leaving
+        // per-voice knobs in a panel labelled GLOBAL would be a lie as soon
+        // as the knobs became voice-paged.
+        {"precision", "Precision", kGlobal},
+        {"leveler", "Leveler", kGlobal},
         {"mix", "Mix", kGlobal},            {"test", "Test Src", kGlobal},
-        // STRING
+        // STRING -- the physics that always applies, per voice
+        {"physics", "Physics", kString},
         {"damping", "Damping", kString},    {"stiffness", "Stiffness", kString},
         {"tension", "Tension", kString},    {"velocity", "Velocity", kString},
         // CLOTH & WIND
@@ -115,8 +118,12 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"character", "Character", kCloth}, {"flutter_hz", "Flutter Hz", kCloth},
         {"waves", "Waves", kCloth},         {"wrinkle", "Wrinkle", kCloth},
         {"flap", "Flap", kCloth},           {"direction", "Direction", kCloth},
-        // SUBSCRIBERS - what the one control signal drives
-        {"drive", "EQ dB", kSubscriber},    {"width", "Width", kSubscriber},
+        // SUBSCRIBERS - what the one control signal drives. Smoothing is
+        // the control smoother and Steady is the bank's dynamic EQ, so both
+        // describe how the signal drives the subscribers rather than how
+        // the string moves.
+        {"drive", "EQ dB", kSubscriber},    {"smoothing", "Smooth", kSubscriber},
+        {"steady", "Steady", kSubscriber},  {"width", "Width", kSubscriber},
         {"pan_depth", "Place", kSubscriber},
         {"stereo_lo", "Low Hz", kSubscriber},
         {"stereo_hi", "High Hz", kSubscriber},
@@ -131,6 +138,17 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
             if (rp == nullptr || rp->paramID != juce::String(d.id))
                 continue;
             auto knob = std::make_unique<Knob>();
+            knob->base_id = d.id;
+            {
+                int nvp = 0;
+                const char* const* ids =
+                    CurvesAudioProcessor::voice_param_ids(nvp);
+                for (int i = 0; i < nvp; ++i)
+                    if (juce::String(ids[i]) == juce::String(d.id)) {
+                        knob->per_voice = true;
+                        break;
+                    }
+            }
             const auto& range = rp->getNormalisableRange();
             // Discrete params (Physics/Precision/Direction) carry interval 1;
             // continuous ones must stay continuous.
@@ -172,14 +190,43 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         }
     }
 
-    for (auto* b : {&scale_button_, &theme_button_, &reset_button_})
+    for (auto* b : {&scale_button_, &theme_button_, &reset_button_,
+                    &dual_button_, &voice_l_, &voice_r_})
         addAndMakeVisible(*b);
+    // Click to enable. Turning it on copies this voice onto the other and
+    // re-rolls its seeds, so the right channel starts as the same weather
+    // with different gusts -- audibly stereo at once, still the same patch.
+    dual_button_.onClick = [this] {
+        const bool now = !processor_.dual_on();
+        processor_.set_dual(now);
+        if (!now)
+            processor_.set_ui_voice(0);
+        rebind_voice();
+        refresh_voice_buttons();
+        repaint();
+    };
+    voice_l_.onClick = [this] {
+        processor_.set_ui_voice(0);
+        rebind_voice();
+        refresh_voice_buttons();
+        repaint();
+    };
+    voice_r_.onClick = [this] {
+        // Picking R with Dual off would show a voice that is not running.
+        if (!processor_.dual_on())
+            processor_.set_dual(true);
+        processor_.set_ui_voice(1);
+        rebind_voice();
+        refresh_voice_buttons();
+        repaint();
+    };
     // Flattens the string and leaves every modifier running, so the cloth
     // restarts from rest. Replaces winding Damping up to kill energy.
     reset_button_.onClick = [this] { processor_.request_reset(); };
     scale_button_.onClick = [this] { cycle_display_scale(); };
     theme_button_.onClick = [this] { cycle_theme(); };
 
+    rebind_voice();        // a reopened editor may be showing voice 1
     apply_theme();
     resized();  // setSize() above ran before the knobs existed
 }
@@ -213,13 +260,17 @@ void CurvesAudioProcessorEditor::apply_theme() {
     const auto& t = theme();
     knob_look_.set_theme(&t);
     theme_button_.setButtonText(t.name);
-    for (auto* b : {&scale_button_, &theme_button_, &reset_button_}) {
+    for (auto* b : {&scale_button_, &theme_button_, &reset_button_,
+                    &dual_button_, &voice_l_, &voice_r_}) {
         b->setColour(juce::TextButton::buttonColourId, juce::Colour(t.panel));
         b->setColour(juce::TextButton::textColourOffId, juce::Colour(t.curve));
     }
     for (auto& k : knobs_)
         k->label.setColour(juce::Label::textColourId, juce::Colour(t.text_dim));
-    repaint();
+    repaint();    // Last: the plain button colours above would otherwise wipe the
+    // selected-voice highlight.
+    refresh_voice_buttons();
+
 }
 
 // ---- layout ---------------------------------------------------------------
@@ -229,7 +280,11 @@ void CurvesAudioProcessorEditor::apply_theme() {
 namespace {
 constexpr int kHeaderH = 34;
 constexpr int kHintH = 24;
-constexpr int kGlobalH = 104;
+// Two rows now. SUBSCRIBERS carries 9 controls since Smooth, Steady, Band Q
+// and Resonance joined it, and nine across at this width put the power and
+// magnitude LEDs straight through the labels ("Steady" rendered as a blob,
+// "Resonance" as "esonan"). Two rows of five is the readable shape.
+constexpr int kGlobalH = 188;
 constexpr int kPhysicsH = 188;
 constexpr int kPanelGap = 10;
 }  // namespace
@@ -265,6 +320,11 @@ void CurvesAudioProcessorEditor::resized() {
     scale_button_.setBounds(getWidth() - 86, 12, 74, 24);
     theme_button_.setBounds(getWidth() - 172, 12, 78, 24);
     reset_button_.setBounds(getWidth() - 256, 12, 76, 24);
+    // Voice controls sit to the LEFT of the utility buttons: DUAL enables,
+    // then L and R pick which set you are looking at.
+    dual_button_.setBounds(getWidth() - 356, 12, 68, 24);
+    voice_l_.setBounds(getWidth() - 420, 12, 30, 24);
+    voice_r_.setBounds(getWidth() - 388, 12, 30, 24);
     if (knobs_.empty())
         return;  // setSize() runs before the knobs are created in the ctor
 
@@ -273,11 +333,11 @@ void CurvesAudioProcessorEditor::resized() {
 
     // Bottom-up: GLOBAL gets its own full-width row (the "one obvious
     // spot"), with STRING and CLOTH & WIND sharing the row above it.
-    // Bottom row carries GLOBAL and SUBSCRIBERS side by side. Both hold 7
-    // since Band Q and Resonance arrived, so the width splits evenly.
+    // Bottom row carries GLOBAL and SUBSCRIBERS side by side. GLOBAL is
+    // down to 4 real globals and SUBSCRIBERS up to 9, so split 4:13.
     {
         auto bottom = area.removeFromBottom(kGlobalH);
-        const int gw = (bottom.getWidth() - kPanelGap) / 2;
+        const int gw = (bottom.getWidth() - kPanelGap) * 2 / 7;
         panel_[kGlobal] = bottom.removeFromLeft(gw);
         bottom.removeFromLeft(kPanelGap);
         panel_[kSubscriber] = bottom;
@@ -329,9 +389,9 @@ void CurvesAudioProcessorEditor::resized() {
     // GLOBAL holds 8 controls since Mix was added. Keep it ONE row -- it
     // is the "one obvious spot", and a second row made Test Noise wrap
     // out of the panel's height and clip.
-    place(kGlobal, panel_[kGlobal], 7);
-    place(kSubscriber, panel_[kSubscriber], 7);
-    place(kString, panel_[kString], 2);
+    place(kGlobal, panel_[kGlobal], 2);
+    place(kSubscriber, panel_[kSubscriber], 5);
+    place(kString, panel_[kString], 3);
     place(kCloth, panel_[kCloth], 4);
 
     // Randomisers sit on the top-right corner of the knob they belong to,
@@ -523,10 +583,61 @@ void CurvesAudioProcessorEditor::push_current() {
 
 // ---- physics presets (knob values + engine mode) --------------------------
 
+// One set of widgets, two sets of parameters. Switching voice re-points
+// every per-voice knob rather than building a second panel: the ranges are
+// identical by construction (both sets come from add_voice_params), so only
+// the pointer and the displayed value change.
+void CurvesAudioProcessorEditor::rebind_voice() {
+    const int voice = processor_.ui_voice();
+    for (auto& k : knobs_) {
+        if (!k->per_voice || k->base_id.isEmpty())
+            continue;
+        const juce::String want =
+            CurvesAudioProcessor::voice_param_id(k->base_id.toRawUTF8(), voice);
+        for (auto* p2 : processor_.getParameters()) {
+            auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p2);
+            if (rp == nullptr || rp->paramID != want)
+                continue;
+            k->param = rp;
+            k->slider.setValue(rp->convertFrom0to1(rp->getValue()),
+                               juce::dontSendNotification);
+            break;
+        }
+    }
+}
+
+void CurvesAudioProcessorEditor::refresh_voice_buttons() {
+    const auto& t = theme();
+    const bool dual = processor_.dual_on();
+    const int voice = processor_.ui_voice();
+    dual_button_.setColour(juce::TextButton::buttonColourId,
+                           juce::Colour(dual ? t.curve : t.panel)
+                               .withMultipliedAlpha(dual ? 0.55f : 1.0f));
+    dual_button_.setColour(juce::TextButton::textColourOffId,
+                           juce::Colour(dual ? t.bg : t.curve));
+    // The selected voice is HIGHLIGHTED; with Dual off, R is dimmed because
+    // there is no second string running to look at.
+    for (int i = 0; i < 2; ++i) {
+        auto* b = i == 0 ? &voice_l_ : &voice_r_;
+        const bool sel = (voice == i);
+        const bool live = (i == 0) || dual;
+        b->setColour(juce::TextButton::buttonColourId,
+                     juce::Colour(sel ? t.curve : t.panel)
+                         .withMultipliedAlpha(sel ? 0.55f : (live ? 1.0f : 0.4f)));
+        b->setColour(juce::TextButton::textColourOffId,
+                     juce::Colour(sel ? t.bg : t.curve)
+                         .withMultipliedAlpha(live ? 1.0f : 0.5f));
+    }
+}
+
 void CurvesAudioProcessorEditor::apply_physics_preset(int mode) {
+    // Writes to the voice currently being edited: with R selected, these
+    // must land on "damping_r" and not on voice 0's "damping".
     auto set_param = [this](const char* id, float v) {
+        const juce::String want =
+            CurvesAudioProcessor::voice_param_id(id, processor_.ui_voice());
         for (auto& k : knobs_) {
-            if (k->param == nullptr || k->param->paramID != juce::String(id))
+            if (k->param == nullptr || k->param->paramID != want)
                 continue;
             k->param->beginChangeGesture();
             k->param->setValueNotifyingHost(k->param->convertTo0to1(v));
@@ -592,6 +703,20 @@ void CurvesAudioProcessorEditor::timerCallback() {
         rnd_wind_.setEnabled(cloth_live);
         rnd_flutter_.setEnabled(cloth_live);
     }
+    // In Dual, each voice sees ONE channel, so its side signal is zero by
+    // construction and Width and Place can do nothing. Dimming them says so
+    // rather than leaving two knobs that look live and are not -- the
+    // "knob that does nothing" pattern, avoided for once in advance.
+    const bool dual = processor_.dual_on();
+    if (dual != last_dual_) {
+        last_dual_ = dual;
+        for (auto& k : knobs_)
+            if (k->base_id == "width" || k->base_id == "pan_depth") {
+                k->slider.setEnabled(!dual);
+                k->label.setAlpha(dual ? 0.4f : 1.0f);
+            }
+        refresh_voice_buttons();
+    }
     repaint();
 }
 
@@ -628,7 +753,7 @@ void CurvesAudioProcessorEditor::sliderValueChanged(juce::Slider* s) {
 
 void CurvesAudioProcessorEditor::draw_panel(juce::Graphics& g,
                                             juce::Rectangle<int> box,
-                                            const char* title,
+                                            const juce::String& title,
                                             bool active) const {
     const auto& t = theme();
     const auto r = box.toFloat();
@@ -845,15 +970,23 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
                juce::Justification::centred);
 
     // ---- panels ----
-    draw_panel(g, panel_[kString], "STRING", true);
-    draw_panel(g, panel_[kCloth], "CLOTH & WIND   (Flagpole)", mode == 1);
+    // With two voices live, every per-voice panel says WHICH one it is
+    // showing. Without that, two identical-looking panels differing only by
+    // a highlighted L/R button is an easy way to edit the wrong channel.
+    const juce::String vtag =
+        processor_.dual_on()
+            ? juce::String(processor_.ui_voice() == 0 ? "   [L]" : "   [R]")
+            : juce::String();
+    draw_panel(g, panel_[kString], "STRING" + vtag, true);
+    draw_panel(g, panel_[kCloth], "CLOTH & WIND   (Flagpole)" + vtag, mode == 1);
     draw_panel(g, panel_[kGlobal], "GLOBAL", true);
     // Name the Q mode in the title the way CLOTH & WIND names the physics
     // mode: it changes every per-band depth, so it must be readable at a
     // glance rather than inferred from a 0/1 knob.
     draw_panel(g, panel_[kSubscriber],
-               processor_.q_matched() ? "SUBSCRIBERS   (Matched Q)"
-                                      : "SUBSCRIBERS   (Flat Q)",
+               (processor_.q_matched() ? juce::String("SUBSCRIBERS   (Matched Q)")
+                                      : juce::String("SUBSCRIBERS   (Flat Q)"))
+                   + vtag,
                true);
 
     // Per-knob modifier LEDs. Power: yellow lit / black off. Magnitude:

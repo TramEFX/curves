@@ -120,4 +120,23 @@ if(CURVES_BUILD_PLUGIN)
             juce::juce_recommended_lto_flags
             juce::juce_recommended_warning_flags
     )
+    # Headless harness for the DUAL routing. It links the real processor
+    # rather than mirroring it, because what is being tested is which
+    # parameter set reaches which engine and which engine reaches which
+    # channel -- a mirror of that would only test the mirror.
+    juce_add_console_app(dual_test PRODUCT_NAME "dual_test")
+    target_sources(dual_test PRIVATE
+        src/dual_test_main.cpp
+        src/plugin/PluginProcessor.cpp
+        src/plugin/PluginEditor.cpp
+    )
+    target_compile_definitions(dual_test PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_STANDALONE_APPLICATION=1
+    )
+    target_include_directories(dual_test PRIVATE src)
+    target_link_libraries(dual_test
+        PRIVATE juce::juce_audio_utils juce::juce_dsp curves_string
+        PUBLIC juce::juce_recommended_config_flags)
 endif()

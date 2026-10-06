@@ -36,7 +36,11 @@ doing, and a stray click of theirs lands in the test and corrupts it.
   `build/Release/` cover almost everything: `scenarios`, `gain_test`,
   `display_test`, `wind_test`, `spatial_test`, `mid_test`, `waves_test`,
   `patch_test`, `tension_test`, `lines_test`, `rnd_test`, `hash_probe`,
-  `stereo_test`, `overlap_probe`, `q_test`, `display_src`, `bench`. Prefer
+  `stereo_test`, `overlap_probe`, `q_test`, `display_src`, `bench`, and
+  **`dual_test`** (in `build/dual_test_artefacts/Release/`) — the only one
+  that links the real PROCESSOR rather than mirroring it, because what it
+  checks is routing: which parameter set reaches which engine and which
+  engine reaches which channel. Prefer
   these over driving the GUI, always. (`q_test` takes ~4 minutes: high-Q
   bands need seconds of settling per probe and it sweeps many of them.)
 - **Screenshots are safe; clicks are not.** `PrintWindow(hwnd, dc,
@@ -54,6 +58,23 @@ doing, and a stray click of theirs lands in the test and corrupts it.
   primary), so getting this wrong sends every click to the wrong screen.
 - If the owner says they are at the keyboard, **do not drive the UI at all**
   — ask them to perform the interaction, or verify it headlessly.
+
+## Two voices
+
+`Dual L/R` runs **two independent strings**, voice 0 on left and voice 1 on
+right, each driving a mono bank. 57 parameters: 4 globals (Precision, Mix,
+Leveler, Test Src) plus Dual, and **26 per voice** — voice 1's carry an
+`_r` suffix. The editor shows one voice at a time; L/R picks which, and the
+per-voice panels tag their titles `[L]`/`[R]`.
+
+- **Width and Place go inert in dual** — a voice sees one channel, so its
+  side signal is zero by construction. The editor dims them.
+- **Dual roughly doubles the sim cost.** 512 nodes with wind was already
+  ~101% of a core single-voice, so dual belongs at 128 or 256.
+- `set_knob_on`/`knob_on` write to the **highlighted** voice; Mix and
+  Leveler are global and deliberately route to voice 0 instead.
+- Adding a parameter means adding it to `add_voice_params` **and** to
+  `voice_param_ids`, or the editor cannot rebind it.
 
 ## Build
 
