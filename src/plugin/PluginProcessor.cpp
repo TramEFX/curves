@@ -1079,9 +1079,6 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 // time -- which is the point of the L/R highlight: you look at one string's
 // complete picture, knobs and curve together.
 void CurvesAudioProcessor::publish_display() {
-    Voice& v = uiv();
-    if (!v.sim)
-        return;
     // The audio thread must NEVER block on the GUI thread. The editor holds
     // this same spinlock while it copies the snapshot out, and a spinlock
     // owned by a lower-priority thread is a textbook priority inversion:
@@ -1090,9 +1087,17 @@ void CurvesAudioProcessor::publish_display() {
     // not. (Diagnosed alongside the high-precision glitch report.)
     if (!display_lock_.tryEnter())
         return;
+    const int nv = active_voices_.load(std::memory_order_relaxed);
+    for (int vi = 0; vi < kNumVoices; ++vi) {
+    Voice& v = voices_[vi];
+    // A voice that is not running keeps its LAST frame rather than being
+    // cleared: a canvas that blanks when Dual is switched off reads as a
+    // bug, and the frame it is holding is the last true one.
+    if (vi >= nv || !v.sim)
+        continue;
     const auto& u = v.sim->positions();
     for (int i = 0; i < n_nodes_; ++i)
-        display_buffer_[i] = static_cast<float>(u[i]);
+        display_buffer_[vi][i] = static_cast<float>(u[i]);
     // The EQ curve of truth: the bank's smoothed per-band gains (post
     // smoothing, post Steady), normalized so +1 = Max gain dB.
     //
@@ -1121,7 +1126,7 @@ void CurvesAudioProcessor::publish_display() {
         v.bank.response_curve(p.data(), mix, v.resp_re.data(), v.resp_im.data());
         const double amt = std::max(1e-9, depth * 0.01);
         for (int i = 0; i < n_nodes_; ++i)
-            display_eq_buffer_[i] =
+            display_eq_buffer_[vi][i] =
                 static_cast<float>(std::clamp(v.resp_re[i] / amt, -1.0, 1.0));
     } else {
         // Mix scales only the added part, so it folds into the convolution
@@ -1134,9 +1139,10 @@ void CurvesAudioProcessor::publish_display() {
             const double re = 1.0 + v.resp_re[i], im = v.resp_im[i];
             const double mag2 = std::max(re * re + im * im, 1e-12);
             const double db = 10.0 * std::log10(mag2);
-            display_eq_buffer_[i] =
+            display_eq_buffer_[vi][i] =
                 static_cast<float>(std::clamp(db / std::max(1.0, depth), -1.0, 1.0));
         }
+    }
     }
     display_count_ = n_nodes_;
     display_version_.fetch_add(1, std::memory_order_release);
@@ -1158,12 +1164,14 @@ void CurvesAudioProcessor::push_clear() {
     push_draw(zeros, n_nodes_);
 }
 
-void CurvesAudioProcessor::pull_display(std::array<float, kMaxNodes>& out_pos,
+void CurvesAudioProcessor::pull_display(int voice,
+                                        std::array<float, kMaxNodes>& out_pos,
                                         std::array<float, kMaxNodes>& out_eq,
                                         int& count) const {
+    const int vi = juce::jlimit(0, kNumVoices - 1, voice);
     const juce::SpinLock::ScopedLockType lk(display_lock_);
-    out_pos = display_buffer_;
-    out_eq = display_eq_buffer_;
+    out_pos = display_buffer_[vi];
+    out_eq = display_eq_buffer_[vi];
     count = display_count_;
 }
 

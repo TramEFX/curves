@@ -73,6 +73,15 @@ per-voice panels tag their titles `[L]`/`[R]`.
   ~101% of a core single-voice, so dual belongs at 128 or 256.
 - `set_knob_on`/`knob_on` write to the **highlighted** voice; Mix and
   Leveler are global and deliberately route to voice 0 instead.
+- **Both strings are drawn.** With Dual on the plot area splits into two
+  stacked canvases, L above R. The highlighted one carries the walls, the
+  anchor pin and full brightness; the other is a dimmed read-only view, and
+  **clicking it selects that voice** rather than drawing on it. Everything
+  geometric resolves through `plot_bounds()`, which answers for the voice
+  being *edited* — that is what keeps one copy of the interaction code.
+- Anything that looks a parameter up by a bare id is a bug waiting:
+  `wall_x`/`set_wall` read voice 0's walls while editing voice 1 until they
+  were routed through `voice_param_id`.
 - Adding a parameter means adding it to `add_voice_params` **and** to
   `voice_param_ids`, or the editor cannot rebind it.
 

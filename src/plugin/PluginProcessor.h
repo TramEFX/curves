@@ -67,7 +67,12 @@ public:
     // display is exactly what the EQ is doing.
     void pull_display(std::array<float, kMaxNodes>& out_pos,
                       std::array<float, kMaxNodes>& out_eq,
-                      int& count) const;
+                      int& count) const {
+        pull_display(ui_voice_, out_pos, out_eq, count);
+    }
+    // Per voice, so the editor can show BOTH strings side by side in Dual.
+    void pull_display(int voice, std::array<float, kMaxNodes>& out_pos,
+                      std::array<float, kMaxNodes>& out_eq, int& count) const;
     // Display helpers.
     // Test source: off plus five textures, chosen to probe different things
     // about a MOVING EQ rather than just to make noise.
@@ -127,15 +132,19 @@ public:
     // What the canvas axis should be labelled in. With the EQ gated off but
     // the spatial subscriber running, the curve is the WIDTH shape and the
     // axis means width dB, not EQ dB.
-    double display_depth_db() const {
-        return uiv().display_depth.load(std::memory_order_relaxed);
+    double display_depth_db() const { return display_depth_db(ui_voice_); }
+    double display_depth_db(int voice) const {
+        return voices_[juce::jlimit(0, kNumVoices - 1, voice)]
+            .display_depth.load(std::memory_order_relaxed);
     }
     // 0 = mid gain (dB), 1 = side gain (dB), 2 = placement (%), 3 = nothing
     // applied. Ordered fallback: whichever subscriber is actually carrying
     // the shape. Enumerating these one at a time is how the curve went
     // missing twice, so this is exhaustive by construction.
-    int display_src() const {
-        return uiv().display_src.load(std::memory_order_relaxed);
+    int display_src() const { return display_src(ui_voice_); }
+    int display_src(int voice) const {
+        return voices_[juce::jlimit(0, kNumVoices - 1, voice)]
+            .display_src.load(std::memory_order_relaxed);
     }
     int physics_mode() const { return uiv().last_physics; }
     // The parameter ID the editor should bind a knob to, for the voice it
@@ -381,8 +390,10 @@ private:
 
     // display mailbox (audio -> GUI)
     mutable juce::SpinLock display_lock_;
-    std::array<float, kMaxNodes> display_buffer_{};
-    std::array<float, kMaxNodes> display_eq_buffer_{};
+    // One snapshot PER VOICE: in Dual the editor draws both canvases, so
+    // publishing only the highlighted one would leave the other frozen.
+    std::array<float, kMaxNodes> display_buffer_[kNumVoices]{};
+    std::array<float, kMaxNodes> display_eq_buffer_[kNumVoices]{};
     int display_count_ = 128;
     std::atomic<uint32_t> display_version_{0};
 

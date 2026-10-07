@@ -149,6 +149,17 @@ private:
     float y_to_value(float y) const;
     void deposit_stroke(float node_from, float val_from, float node_to, float val_to);
     void apply_physics_preset(int mode);
+    // The canvas for one voice. With Dual off this is the whole plot area;
+    // with Dual on it is the top or bottom half, so the second string is
+    // visible instead of hidden behind the L/R switch.
+    juce::Rectangle<float> plot_bounds(int voice) const;
+    // Draws one string's canvas. `active` is the highlighted voice: it gets
+    // the full chrome (walls, anchor, axis labels) and full brightness; the
+    // other is dimmed and read-only, because the knobs edit only one voice.
+    void draw_plot(juce::Graphics&, int voice, juce::Rectangle<float> b,
+                   bool active);
+    // Which canvas a point is in, or -1. Clicking the dim one selects it.
+    int plot_at(juce::Point<float> p) const;
     // Re-points every per-voice knob at the selected voice's parameter and
     // refreshes its displayed value. Called when you click L or R, and
     // after a state load.
@@ -165,8 +176,12 @@ private:
     CurvesAudioProcessor& processor_;
 
     std::array<float, CurvesAudioProcessor::kMaxNodes> draw_nodes_{};
-    std::array<float, CurvesAudioProcessor::kMaxNodes> display_nodes_{};
-    std::array<float, CurvesAudioProcessor::kMaxNodes> display_eq_{};
+    // One snapshot per voice. In Dual both canvases are live, so both are
+    // pulled every frame.
+    std::array<float, CurvesAudioProcessor::kMaxNodes>
+        display_nodes_[CurvesAudioProcessor::kNumVoices]{};
+    std::array<float, CurvesAudioProcessor::kMaxNodes>
+        display_eq_[CurvesAudioProcessor::kNumVoices]{};
     juce::TextButton scale_button_{"+-1"};
     juce::TextButton reset_button_{"RESET"};
     juce::TextButton theme_button_{"AQUA"};

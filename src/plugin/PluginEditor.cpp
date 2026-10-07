@@ -413,11 +413,36 @@ void CurvesAudioProcessorEditor::resized() {
 
 // ---- geometry -------------------------------------------------------------
 
-juce::Rectangle<float> CurvesAudioProcessorEditor::plot_bounds() const {
+// The whole plot region, before it is split between voices.
+static constexpr float kPlotGap = 8.0f;
+
+juce::Rectangle<float> CurvesAudioProcessorEditor::plot_bounds(int voice) const {
     auto area = getLocalBounds().reduced(14, 12);
     area.removeFromTop(kHeaderH);
     area.removeFromBottom(kGlobalH + kPanelGap + kPhysicsH + kHintH);
-    return area.toFloat();
+    auto f = area.toFloat();
+    if (!processor_.dual_on())
+        return f;
+    // Stacked, L above R, so the pair reads top-to-bottom the way the
+    // channels are usually listed.
+    const float h = (f.getHeight() - kPlotGap) * 0.5f;
+    return voice == 0 ? f.withHeight(h)
+                      : f.withTop(f.getY() + h + kPlotGap).withHeight(h);
+}
+
+// Everything geometric (node_to_x, value_to_y, the walls, drawing) resolves
+// through this, so it answers for the voice being EDITED. That is what keeps
+// a second canvas from needing a second copy of the interaction code.
+juce::Rectangle<float> CurvesAudioProcessorEditor::plot_bounds() const {
+    return plot_bounds(processor_.ui_voice());
+}
+
+int CurvesAudioProcessorEditor::plot_at(juce::Point<float> p) const {
+    const int nv = processor_.dual_on() ? CurvesAudioProcessor::kNumVoices : 1;
+    for (int v = 0; v < nv; ++v)
+        if (plot_bounds(v).contains(p))
+            return v;
+    return -1;
 }
 
 float CurvesAudioProcessorEditor::node_to_x(float node) const {
@@ -448,10 +473,14 @@ float CurvesAudioProcessorEditor::y_to_value(float y) const {
 
 float CurvesAudioProcessorEditor::wall_x(int which) const {
     const auto b = plot_bounds();
-    const char* id = (which == 0) ? "wall_lo" : "wall_hi";
+    // Walls are PER VOICE. Looking them up by the bare id read voice 0's
+    // walls while editing voice 1 -- the posts would not have matched the
+    // string under them.
+    const juce::String id = CurvesAudioProcessor::voice_param_id(
+        which == 0 ? "wall_lo" : "wall_hi", processor_.ui_voice());
     for (auto* p : processor_.getParameters())
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
-            if (rp->paramID == juce::String(id))
+            if (rp->paramID == id)
                 return b.getX() + rp->convertFrom0to1(rp->getValue()) * b.getWidth();
     return b.getX();
 }
@@ -459,10 +488,11 @@ float CurvesAudioProcessorEditor::wall_x(int which) const {
 void CurvesAudioProcessorEditor::set_wall(int which, float x_px) {
     const auto b = plot_bounds();
     const float f = juce::jlimit(0.0f, 1.0f, (x_px - b.getX()) / b.getWidth());
-    const char* id = (which == 0) ? "wall_lo" : "wall_hi";
+    const juce::String id = CurvesAudioProcessor::voice_param_id(
+        which == 0 ? "wall_lo" : "wall_hi", processor_.ui_voice());
     for (auto* p : processor_.getParameters())
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
-            if (rp->paramID == juce::String(id)) {
+            if (rp->paramID == id) {
                 rp->beginChangeGesture();
                 rp->setValueNotifyingHost(rp->convertTo0to1(f));
                 rp->endChangeGesture();
@@ -534,12 +564,26 @@ void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
             return;
         }
     }
+    // Clicking the dimmed canvas HIGHLIGHTS that voice rather than drawing
+    // on it. Switching first and drawing on the same click would deposit a
+    // stroke on a string you had not chosen to edit yet.
+    {
+        const int hit = plot_at(e.position.toFloat());
+        if (hit >= 0 && hit != processor_.ui_voice()) {
+            processor_.set_ui_voice(hit);
+            rebind_voice();
+            refresh_voice_buttons();
+            repaint();
+            return;
+        }
+    }
     if (!plot_bounds().contains(e.position.toFloat()))
         return;
     drawing_ = true;
     // Deposit onto the string's *current* state, not a stale buffer.
     std::array<float, CurvesAudioProcessor::kMaxNodes> eq_snap{};
-    processor_.pull_display(draw_nodes_, eq_snap, active_count_);
+    processor_.pull_display(processor_.ui_voice(), draw_nodes_, eq_snap,
+                            active_count_);
     last_node_ = juce::jlimit(0.0f, float(active_nodes() - 1), x_to_node(e.position.x));
     last_val_ = y_to_value(e.position.y);
     deposit_stroke(last_node_, last_val_, last_node_, last_val_);
@@ -670,9 +714,14 @@ void CurvesAudioProcessorEditor::apply_physics_preset(int mode) {
 // ---- display --------------------------------------------------------------
 
 void CurvesAudioProcessorEditor::timerCallback() {
-    processor_.pull_display(display_nodes_, display_eq_, active_count_);
+    // Both voices every frame: in Dual both canvases are live, and pulling
+    // only the highlighted one would leave the other frozen.
+    const int nv = processor_.dual_on() ? CurvesAudioProcessor::kNumVoices : 1;
+    for (int v = 0; v < nv; ++v)
+        processor_.pull_display(v, display_nodes_[v], display_eq_[v],
+                                active_count_);
     if (!drawing_) {
-        draw_nodes_ = display_nodes_;
+        draw_nodes_ = display_nodes_[processor_.ui_voice()];
         dirty_ = false;
     }
     // Cloth & Wind only does anything in Flagpole, so grey it out elsewhere
@@ -803,23 +852,25 @@ void CurvesAudioProcessorEditor::draw_led(juce::Graphics& g,
     g.fillEllipse(c.x - rad * 0.42f, c.y - rad * 0.58f, rad * 0.62f, rad * 0.46f);
 }
 
-void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
+// Draws ONE string's canvas. Everything per-voice is read through `voice`;
+// `active` is the highlighted one, which gets the walls, the anchor pin and
+// full brightness. The other is a read-only view -- the knobs edit one voice
+// at a time, so letting both look editable would be a lie.
+void CurvesAudioProcessorEditor::draw_plot(juce::Graphics& g, int voice,
+                                           juce::Rectangle<float> b,
+                                           bool active) {
     const auto& t = theme();
-    g.fillAll(juce::Colour(t.bg));
-    const auto b = plot_bounds();
     const int mode = processor_.physics_mode();
-
-    // ---- header ----
-    g.setColour(juce::Colour(t.curve));
-    g.setFont(22.0f);
-    g.drawText("CURVES", 16, 10, 220, 26, juce::Justification::centredLeft);
-    g.setColour(juce::Colour(t.text_dim));
-    g.setFont(12.0f);
-    const char* mode_name[] = {"Free", "Flagpole", "Gust", "Elastic"};
-    g.drawText(juce::String("physics: ") + mode_name[std::clamp(mode, 0, 3)]
-                   + "   |   " + juce::String(active_nodes()) + " nodes",
-               116, 10, 420, 26, juce::Justification::centredLeft);
-
+    // Local geometry against THIS canvas rather than the edited one.
+    auto nx = [&](float node) {
+        return b.getX() + (node / float(active_nodes() - 1)) * b.getWidth();
+    };
+    auto vy = [&](float v) {
+        return b.getCentreY() - (v / display_scale_) * b.getHeight() * 0.5f;
+    };
+    juce::Graphics::ScopedSaveState keep(g);
+    if (!active)
+        g.setOpacity(0.5f);
     // ---- plot ground ----
     g.setGradientFill(juce::ColourGradient(juce::Colour(t.plot_top), b.getCentreX(),
                                            b.getY(), juce::Colour(t.plot_bot),
@@ -835,8 +886,8 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     // zoom, so the axis stays truthful whatever magnitude is selected: at
     // High on an 18 dB knob the canvas really is +-36 dB and says so.
     // Axis follows whichever subscriber the curve is showing.
-    const int ax_src = processor_.display_src();
-    const double range_db = processor_.display_depth_db();
+    const int ax_src = processor_.display_src(voice);
+    const double range_db = processor_.display_depth_db(voice);
     const double full_db = range_db * double(display_scale_);
     // smallest step giving at most 4 lines per side
     static constexpr double kSteps[] = {1, 2, 3, 6, 12, 24, 25, 48, 50, 100};
@@ -850,7 +901,7 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     for (double d = step; d <= full_db + 1e-9; d += step) {
         const float v = float(d / std::max(1.0, range_db));
         for (int sign = -1; sign <= 1; sign += 2) {
-            const float y = value_to_y(sign * v);
+            const float y = vy(sign * v);
             g.setColour(juce::Colour(t.grid));
             g.drawLine(b.getX() + 26.0f, y, b.getRight(), y, 0.6f);
             g.setColour(juce::Colour(t.text_dim));
@@ -894,7 +945,9 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
                juce::Justification::centredRight);
 
     // ---- walls: shade the dead zones, then draw the posts ----
-    {
+    // Only on the canvas being EDITED: the posts are a control, and two
+    // sets of draggable posts where only one responds is worse than one.
+    if (active) {
         const float xl = wall_x(0), xh = wall_x(1);
         g.setColour(juce::Colour(t.bg).withAlpha(0.72f));
         if (xl > b.getX() + 0.5f)
@@ -918,7 +971,7 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
 
     // anchor pin: in Flagpole only the pole (high end) is anchored; the low
     // end is the free cloth termination and whips.
-    if (mode == 1) {
+    if (mode == 1 && active) {
         const float px = b.getRight() - 4.0f, py = b.getCentreY();
         g.setColour(juce::Colour(t.anchor).withAlpha(0.25f));
         g.fillEllipse(px - 9.0f, py - 9.0f, 18.0f, 18.0f);
@@ -927,11 +980,11 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     }
 
     // ---- faint reference: the raw sim string ----
-    if (!drawing_) {
+    if (!(drawing_ && active)) {
         juce::Path sim_curve;
         for (int i = 0; i < active_nodes(); ++i) {
-            const float x = node_to_x(float(i));
-            const float y = value_to_y(display_nodes_[i]);
+            const float x = nx(float(i));
+            const float y = vy(display_nodes_[voice][i]);
             if (i == 0) sim_curve.startNewSubPath(x, y);
             else        sim_curve.lineTo(x, y);
         }
@@ -944,11 +997,12 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     // shape on screen is exactly the EQ being applied. While drawing, the
     // deposit preview is shown instead, in the accent colour so it is never
     // mistaken for the applied curve.
-    const auto& nodes = drawing_ ? draw_nodes_ : display_eq_;
+    const auto& nodes = (drawing_ && active) ? draw_nodes_
+                                            : display_eq_[voice];
     juce::Path curve;
     for (int i = 0; i < active_nodes(); ++i) {
-        const float x = node_to_x(float(i));
-        const float y = value_to_y(nodes[i]);
+        const float x = nx(float(i));
+        const float y = vy(nodes[i]);
         if (i == 0) curve.startNewSubPath(x, y);
         else        curve.lineTo(x, y);
     }
@@ -959,14 +1013,52 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     const juce::Colour core(drawing_ ? t.draw : t.curve);
     g.setColour(core);
     g.strokePath(curve, juce::PathStrokeType(1.8f));
+    // The highlight: a ring in the curve colour round the live canvas, and
+    // an L/R tag on each. With two near-identical plots this is the only
+    // thing saying which one the knobs are driving.
+    if (processor_.dual_on()) {
+        g.setColour(juce::Colour(active ? t.curve : t.text_dim)
+                        .withAlpha(active ? 0.85f : 0.45f));
+        g.drawRoundedRectangle(b.reduced(1.0f), 8.0f, active ? 1.8f : 1.0f);
+        g.setFont(11.0f);
+        g.drawText(voice == 0 ? "L" : "R", int(b.getX()) + 8,
+                   int(b.getY()) + 4, 16, 13, juce::Justification::centredLeft);
+    }
+}
+
+void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
+    const auto& t = theme();
+    g.fillAll(juce::Colour(t.bg));
+    const auto b = plot_bounds();
+    const int mode = processor_.physics_mode();
+
+    // ---- header ----
+    g.setColour(juce::Colour(t.curve));
+    g.setFont(22.0f);
+    g.drawText("CURVES", 16, 10, 220, 26, juce::Justification::centredLeft);
+    g.setColour(juce::Colour(t.text_dim));
+    g.setFont(12.0f);
+    const char* mode_name[] = {"Free", "Flagpole", "Gust", "Elastic"};
+    g.drawText(juce::String("physics: ") + mode_name[std::clamp(mode, 0, 3)]
+                   + "   |   " + juce::String(active_nodes()) + " nodes",
+               116, 10, 420, 26, juce::Justification::centredLeft);
+
+    // One canvas per running voice. With Dual off this is the single plot
+    // exactly as before; with Dual on the second string gets its own.
+    const int nvis = processor_.dual_on() ? CurvesAudioProcessor::kNumVoices : 1;
+    for (int vi = 0; vi < nvis; ++vi)
+        draw_plot(g, vi, plot_bounds(vi), vi == processor_.ui_voice());
 
     // ---- hint line ----
+    // Under the LAST canvas, not the active one: with Dual on and L
+    // selected it was landing across the middle of the R plot.
+    const auto hb = plot_bounds(nvis - 1);
     g.setColour(juce::Colour(t.text_dim));
     g.setFont(12.0f);
     g.drawText("bright = the EQ being applied   |   faint = the string   |   "
                "drag to draw   |   right-click to flatten   |   drag the posts to "
                "wall off   |   small dial: drag = random amount, click = new seed",
-               int(b.getX()), int(b.getBottom()) + 4, int(b.getWidth()), 18,
+               int(hb.getX()), int(hb.getBottom()) + 4, int(hb.getWidth()), 18,
                juce::Justification::centred);
 
     // ---- panels ----
