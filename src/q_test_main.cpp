@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <string>
 #include <vector>
 
 using curves::FilterBank;
@@ -296,7 +297,56 @@ static double steady_duck_db(int nb, double q, bool correct, double amp) {
     return 20.0 * std::log10(std::max(bk.b.gains()[band], 1e-9));
 }
 
-int main() {
+// Why the drawn curve suddenly has sharp dips in it.
+//
+// out = x*(1 + S) where S is the summed band response. With Band Q = Flat
+// the bands add with K ~= 17 (128 nodes) to 70 (512), so for any band the
+// string pulls below unity, 1 + K*(g-1) goes NEGATIVE -- it passes THROUGH
+// ZERO on the way. The old curve drew the nominal per-band gain and never
+// showed that. The honest curve draws |1 + S|, which is a deep narrow null
+// exactly at the crossing, and the crossings sweep around as the string
+// moves. That is the "jerky dips at various spots".
+static void null_probe(int nb, double q, bool correct, double depth_db) {
+    Bank bk(nb, q, 0.0, correct);
+    std::vector<double> big(nb), re(nb), im(nb);
+    // A smooth, realistic string shape -- nothing sharp in it at all.
+    for (int i = 0; i < nb; ++i) {
+        const double d = std::sin(2.0 * kPi * 1.5 * i / nb);
+        bk.g[i] = db2lin(depth_db * d);
+        big[i] = bk.g[i] - 1.0;
+    }
+    bk.b.response_curve(big.data(), 1.0, re.data(), im.data());
+    int crossings = 0;
+    double worst = 1e9, nominal_worst = 1e9;
+    double prev = 1.0 + re[0];
+    for (int i = 0; i < nb; ++i) {
+        const double r = 1.0 + re[i];
+        if (i > 0 && ((prev < 0.0) != (r < 0.0))) ++crossings;
+        prev = r;
+        const double mag = std::sqrt(r * r + im[i] * im[i]);
+        worst = std::min(worst, 20.0 * std::log10(std::max(mag, 1e-12)));
+        nominal_worst = std::min(nominal_worst, 20.0 * std::log10(bk.g[i]));
+    }
+    std::printf("%6d %10.2f %9s %12d %13.1fdB %13.1fdB\n",
+                nb, q, correct ? "yes" : "no", crossings, nominal_worst, worst);
+}
+
+int main(int argc, char** argv) {
+
+    if (argc > 1 && std::string(argv[1]) == "nulls") {
+        std::printf("=== L. WHERE THE SHARP DIPS COME FROM ===\n");
+        std::printf("A SMOOTH +-18 dB string shape, nothing sharp in it.\n");
+        std::printf("\"sign flips\" = times 1+Re crosses zero across the band map;\n");
+        std::printf("each one is a magnitude NULL in the drawn curve.\n\n");
+        std::printf("%6s %10s %9s %12s %15s %15s\n", "bands", "Q",
+                    "1/K corr", "sign flips", "nominal min", "drawn min");
+        for (int nb : {128, 512}) {
+            const double qm = matched_q(nb);
+            null_probe(nb, 1.0, false, 18.0);
+            null_probe(nb, qm, true, 18.0);
+        }
+        return 0;
+    }
     std::printf("Matched Q (bandwidth == spacing):  128 -> %.2f   256 -> %.2f   512 -> %.2f\n",
                 matched_q(128), matched_q(256), matched_q(512));
 

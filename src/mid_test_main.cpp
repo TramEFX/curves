@@ -22,7 +22,8 @@ constexpr int kN = 512;
 struct R { double fifth[5]; double peak; };
 
 R run(double env, double lock_d, double travel, double mid_amp,
-      double wind_knob, double seconds = 14.0, double flap = 0.0) {
+      double wind_knob, double seconds = 14.0, double flap = 0.0,
+      double wrinkle = 0.0) {
     const double tick = 24000.0;
     StringParams p;
     p.tick_rate = tick; p.wave_speed = 300.0;
@@ -40,6 +41,7 @@ R run(double env, double lock_d, double travel, double mid_amp,
     sim.wave_density = 0.5 + 4.5 * 0.4;
     sim.wind_phase_speed = 0.12 * std::pow(25.0, wind_knob) * 300.0;
     sim.mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
+    sim.wrinkle = wrinkle;
     sim.mid_ripple = mid_amp;
     sim.mid_env = env;
     sim.mid_lock_d = lock_d;
@@ -161,6 +163,23 @@ int main() {
                     r.fifth[4] / std::max(1.0, r.fifth[3]), r.peak,
                     r.peak / off.peak);
     }
+
+    // O1: Flap and Wrinkle sit OUTSIDE the Motion excitation budget, so
+    // they ADD amplitude instead of redistributing it. The sim is mapped to
+    // +-1 for the EQ, and past that the control signal clamps -- which reads
+    // as the string vibrating hard without travelling, because the peaks are
+    // being flat-topped. This measures the combination rather than
+    // multiplying the two separately-measured factors and hoping.
+    std::printf("\n6. O1 -- FLAP + WRINKLE vs the +-1 clamp (Wind 0.5).\n");
+    std::printf("   peak is the sim displacement; >1.00 means the control\n");
+    std::printf("   signal is being clipped before it reaches the bank.\n\n");
+    std::printf("%7s %9s %9s %9s %9s\n", "flap", "wrinkle", "tip", "peak", "clipped");
+    for (double fl : {0.0, 0.5, 1.0})
+        for (double wr : {0.0, 1.95, 3.9}) {
+            R r = run(1.4, 0.65, 0.829, 1.194, 0.5, 14.0, fl, wr);
+            std::printf("%7.2f %9.2f %9.0f %9.4f %9s\n", fl, wr,
+                        r.fifth[4], r.peak, r.peak > 1.0 ? "YES" : "-");
+        }
 
     return 0;
 }
