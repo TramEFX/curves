@@ -406,6 +406,12 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // sees one channel, so its side signal is zero by construction. The
     // editor dims them to say so.
     addParameter(dual_ = new APF("dual", "Dual L/R", R(0.0f, 1.0f, 1.0f), 0.0f));
+    // Link: every per-voice edit is written to BOTH voices. Dial a sound in
+    // on the pair, then unlink and let them diverge -- which is the usual
+    // way anyone works a stereo pair. Note that fully linked voices are
+    // identical, so Dual + Link sounds mono by definition; that is the
+    // starting point, not the destination.
+    addParameter(link_ = new APF("link", "Link L/R", R(0.0f, 1.0f, 1.0f), 0.0f));
 
     // ---- the two per-voice sets ----
     for (int v = 0; v < kNumVoices; ++v)
@@ -470,7 +476,19 @@ juce::AudioParameterFloat* CurvesAudioProcessor::find_param(
     return nullptr;
 }
 
-void CurvesAudioProcessor::copy_voice(int from, int to) {
+void CurvesAudioProcessor::set_link(bool on) {
+    if (link_ == nullptr)
+        return;
+    // Mirror exactly, seeds included: a "linked" pair that still has
+    // different weather is not linked.
+    if (on && link_->get() <= 0.5f)
+        copy_voice(ui_voice_, 1 - ui_voice_, false);
+    link_->beginChangeGesture();
+    link_->setValueNotifyingHost(on ? 1.0f : 0.0f);
+    link_->endChangeGesture();
+}
+
+void CurvesAudioProcessor::copy_voice(int from, int to, bool reroll_seeds) {
     if (from == to)
         return;
     int n = 0;
@@ -485,8 +503,13 @@ void CurvesAudioProcessor::copy_voice(int from, int to) {
         b->endChangeGesture();
     }
     voices_[to].mods = voices_[from].mods;
-    voices_[to].flutter_seed = next_seed(voices_[from].flutter_seed + 7919);
-    voices_[to].wind_seed = next_seed(voices_[from].wind_seed + 104729);
+    if (reroll_seeds) {
+        voices_[to].flutter_seed = next_seed(voices_[from].flutter_seed + 7919);
+        voices_[to].wind_seed = next_seed(voices_[from].wind_seed + 104729);
+    } else {
+        voices_[to].flutter_seed = voices_[from].flutter_seed.load();
+        voices_[to].wind_seed = voices_[from].wind_seed.load();
+    }
 }
 
 void CurvesAudioProcessor::prepareToPlay(double sampleRate, int) {

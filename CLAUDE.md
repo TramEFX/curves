@@ -62,9 +62,12 @@ doing, and a stray click of theirs lands in the test and corrupts it.
 ## Two voices
 
 `Dual L/R` runs **two independent strings**, voice 0 on left and voice 1 on
-right, each driving a mono bank. 57 parameters: 4 globals (Precision, Mix,
-Leveler, Test Src) plus Dual, and **26 per voice** — voice 1's carry an
-`_r` suffix. The editor shows one voice at a time; L/R picks which, and the
+right, each driving a mono bank. **58 parameters: 6 globals** (Precision,
+Mix, Leveler, Test Src, Dual, Link) and **26 per voice** — voice 1's carry
+an `_r` suffix. `Link L/R` mirrors every per-voice edit onto the other
+voice; switching it on copies the voice you are looking at, seeds included.
+Dual + Link is mono by definition — it is the starting point, not the
+destination. The editor shows one voice at a time; L/R picks which, and the
 per-voice panels tag their titles `[L]`/`[R]`.
 
 - **Width and Place go inert in dual** — a voice sees one channel, so its
@@ -79,9 +82,12 @@ per-voice panels tag their titles `[L]`/`[R]`.
   **clicking it selects that voice** rather than drawing on it. Everything
   geometric resolves through `plot_bounds()`, which answers for the voice
   being *edited* — that is what keeps one copy of the interaction code.
-- Anything that looks a parameter up by a bare id is a bug waiting:
-  `wall_x`/`set_wall` read voice 0's walls while editing voice 1 until they
-  were routed through `voice_param_id`.
+- **Every UI edit goes through `write_voice_param(base, value)`** — it
+  resolves the base id against the edited voice and honours Link. Anything
+  that looks a parameter up by a bare id is a bug waiting: `wall_x`/
+  `set_wall` read voice 0's walls, and the two randomiser dials (which sit
+  outside `knobs_`) always wrote voice 0's, until both were routed through
+  it. `dual_test` section 6 drives the real editor path and guards this.
 - Adding a parameter means adding it to `add_voice_params` **and** to
   `voice_param_ids`, or the editor cannot rebind it.
 

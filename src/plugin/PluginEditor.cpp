@@ -191,7 +191,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     }
 
     for (auto* b : {&scale_button_, &theme_button_, &reset_button_,
-                    &dual_button_, &voice_l_, &voice_r_})
+                    &dual_button_, &link_button_, &voice_l_, &voice_r_})
         addAndMakeVisible(*b);
     // Click to enable. Turning it on copies this voice onto the other and
     // re-rolls its seeds, so the right channel starts as the same weather
@@ -201,6 +201,15 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         processor_.set_dual(now);
         if (!now)
             processor_.set_ui_voice(0);
+        rebind_voice();
+        refresh_voice_buttons();
+        repaint();
+    };
+    // Switching Link ON mirrors the voice you are looking at onto the other,
+    // seeds included -- otherwise "linked" would still show two sounds.
+    link_button_.onClick = [this] {
+        const bool now = !processor_.link_on();
+        processor_.set_link(now);
         rebind_voice();
         refresh_voice_buttons();
         repaint();
@@ -261,14 +270,14 @@ void CurvesAudioProcessorEditor::apply_theme() {
     knob_look_.set_theme(&t);
     theme_button_.setButtonText(t.name);
     for (auto* b : {&scale_button_, &theme_button_, &reset_button_,
-                    &dual_button_, &voice_l_, &voice_r_}) {
+                    &dual_button_, &link_button_, &voice_l_, &voice_r_}) {
         b->setColour(juce::TextButton::buttonColourId, juce::Colour(t.panel));
         b->setColour(juce::TextButton::textColourOffId, juce::Colour(t.curve));
     }
     for (auto& k : knobs_)
         k->label.setColour(juce::Label::textColourId, juce::Colour(t.text_dim));
     repaint();    // Last: the plain button colours above would otherwise wipe the
-    // selected-voice highlight.
+    // selected-voice and Link highlights.
     refresh_voice_buttons();
 
 }
@@ -323,6 +332,7 @@ void CurvesAudioProcessorEditor::resized() {
     // Voice controls sit to the LEFT of the utility buttons: DUAL enables,
     // then L and R pick which set you are looking at.
     dual_button_.setBounds(getWidth() - 356, 12, 68, 24);
+    link_button_.setBounds(getWidth() - 286, 12, 62, 24);
     voice_l_.setBounds(getWidth() - 420, 12, 30, 24);
     voice_r_.setBounds(getWidth() - 388, 12, 30, 24);
     if (knobs_.empty())
@@ -488,16 +498,7 @@ float CurvesAudioProcessorEditor::wall_x(int which) const {
 void CurvesAudioProcessorEditor::set_wall(int which, float x_px) {
     const auto b = plot_bounds();
     const float f = juce::jlimit(0.0f, 1.0f, (x_px - b.getX()) / b.getWidth());
-    const juce::String id = CurvesAudioProcessor::voice_param_id(
-        which == 0 ? "wall_lo" : "wall_hi", processor_.ui_voice());
-    for (auto* p : processor_.getParameters())
-        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
-            if (rp->paramID == id) {
-                rp->beginChangeGesture();
-                rp->setValueNotifyingHost(rp->convertTo0to1(f));
-                rp->endChangeGesture();
-                break;
-            }
+    write_voice_param(which == 0 ? "wall_lo" : "wall_hi", f);
     repaint();
 }
 
@@ -650,6 +651,29 @@ void CurvesAudioProcessorEditor::rebind_voice() {
     }
 }
 
+int CurvesAudioProcessorEditor::bound_voice_of(const char* base) const {
+    for (const auto& k : knobs_) {
+        if (k->base_id != juce::String(base) || k->param == nullptr)
+            continue;
+        for (int v = 0; v < CurvesAudioProcessor::kNumVoices; ++v)
+            if (k->param->paramID
+                == CurvesAudioProcessor::voice_param_id(base, v))
+                return v;
+        return -1;
+    }
+    return -1;
+}
+
+bool CurvesAudioProcessorEditor::nudge_knob(const char* base, float value) {
+    for (auto& k : knobs_) {
+        if (k->base_id != juce::String(base))
+            continue;
+        k->slider.setValue(value, juce::sendNotificationSync);
+        return true;
+    }
+    return false;
+}
+
 void CurvesAudioProcessorEditor::refresh_voice_buttons() {
     const auto& t = theme();
     const bool dual = processor_.dual_on();
@@ -659,6 +683,16 @@ void CurvesAudioProcessorEditor::refresh_voice_buttons() {
                                .withMultipliedAlpha(dual ? 0.55f : 1.0f));
     dual_button_.setColour(juce::TextButton::textColourOffId,
                            juce::Colour(dual ? t.bg : t.curve));
+    // Link is only meaningful with two voices running, so it dims with Dual
+    // off rather than offering to mirror a voice nothing is driving.
+    const bool link = processor_.link_on();
+    link_button_.setColour(juce::TextButton::buttonColourId,
+                           juce::Colour(link ? t.curve : t.panel)
+                               .withMultipliedAlpha(link ? 0.55f
+                                                         : (dual ? 1.0f : 0.4f)));
+    link_button_.setColour(juce::TextButton::textColourOffId,
+                           juce::Colour(link ? t.bg : t.curve)
+                               .withMultipliedAlpha(dual ? 1.0f : 0.5f));
     // The selected voice is HIGHLIGHTED; with Dual off, R is dimmed because
     // there is no second string running to look at.
     for (int i = 0; i < 2; ++i) {
@@ -678,17 +712,12 @@ void CurvesAudioProcessorEditor::apply_physics_preset(int mode) {
     // Writes to the voice currently being edited: with R selected, these
     // must land on "damping_r" and not on voice 0's "damping".
     auto set_param = [this](const char* id, float v) {
-        const juce::String want =
-            CurvesAudioProcessor::voice_param_id(id, processor_.ui_voice());
-        for (auto& k : knobs_) {
-            if (k->param == nullptr || k->param->paramID != want)
-                continue;
-            k->param->beginChangeGesture();
-            k->param->setValueNotifyingHost(k->param->convertTo0to1(v));
-            k->param->endChangeGesture();
-            k->slider.setValue(v, juce::dontSendNotification);
-            break;
-        }
+        write_voice_param(id, v);
+        for (auto& k : knobs_)
+            if (k->base_id == juce::String(id)) {
+                k->slider.setValue(v, juce::dontSendNotification);
+                break;
+            }
     };
     switch (mode) {
         case 1:  // Flagpole: loose, slow settling, moderate tension
@@ -769,30 +798,49 @@ void CurvesAudioProcessorEditor::timerCallback() {
     repaint();
 }
 
+// EVERY parameter write from the UI goes through here. It resolves the
+// base id against the voice being edited, and under Link writes the other
+// voice too. One route means a new control cannot quietly acquire the
+// wrong-voice bug: the randomisers had exactly that -- they sat outside
+// knobs_ and wrote the bare "wind_rnd", so they always moved voice 0.
+void CurvesAudioProcessorEditor::write_voice_param(const char* base,
+                                                   float value) {
+    auto put = [this, value](const juce::String& id) {
+        for (auto* p : processor_.getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+                if (rp->paramID == id) {
+                    rp->beginChangeGesture();
+                    rp->setValueNotifyingHost(rp->convertTo0to1(value));
+                    rp->endChangeGesture();
+                    return;
+                }
+    };
+    put(CurvesAudioProcessor::voice_param_id(base, processor_.ui_voice()));
+    const int m = processor_.mirror_voice();
+    if (m >= 0)
+        put(CurvesAudioProcessor::voice_param_id(base, m));
+}
+
 void CurvesAudioProcessorEditor::sliderValueChanged(juce::Slider* s) {
     // The randomisers are not in knobs_ (they are positioned by hand rather
     // than by the grid), so they need their own route to their parameters.
     if (s == &rnd_wind_ || s == &rnd_flutter_) {
-        const char* id = (s == &rnd_wind_) ? "wind_rnd" : "flutter_rnd";
-        for (auto* p : processor_.getParameters())
-            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
-                if (rp->paramID == juce::String(id)) {
-                    rp->beginChangeGesture();
-                    rp->setValueNotifyingHost(
-                        rp->convertTo0to1((float)s->getValue()));
-                    rp->endChangeGesture();
-                    break;
-                }
+        write_voice_param((s == &rnd_wind_) ? "wind_rnd" : "flutter_rnd",
+                          (float)s->getValue());
         return;
     }
     for (auto& k : knobs_) {
         if (&k->slider != s || k->param == nullptr)
             continue;
-        k->param->beginChangeGesture();
-        k->param->setValueNotifyingHost(
-            k->param->convertTo0to1((float)s->getValue()));
-        k->param->endChangeGesture();
-        if (k->param->paramID == juce::String("physics"))
+        if (k->per_voice) {
+            write_voice_param(k->base_id.toRawUTF8(), (float)s->getValue());
+        } else {
+            k->param->beginChangeGesture();
+            k->param->setValueNotifyingHost(
+                k->param->convertTo0to1((float)s->getValue()));
+            k->param->endChangeGesture();
+        }
+        if (k->base_id == "physics")
             apply_physics_preset((int)s->getValue());
         break;
     }
@@ -1068,6 +1116,8 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     const juce::String vtag =
         processor_.dual_on()
             ? juce::String(processor_.ui_voice() == 0 ? "   [L]" : "   [R]")
+                  + (processor_.link_on() ? juce::String(" LINKED")
+                                          : juce::String())
             : juce::String();
     draw_panel(g, panel_[kString], "STRING" + vtag, true);
     draw_panel(g, panel_[kCloth], "CLOTH & WIND   (Flagpole)" + vtag, mode == 1);

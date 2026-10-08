@@ -164,6 +164,23 @@ private:
     // refreshes its displayed value. Called when you click L or R, and
     // after a state load.
     bool last_dual_ = false;
+    // ---- test surface -------------------------------------------------
+    // The editor's voice binding is load-bearing (it decides which voice a
+    // knob writes to) and was shipped untested -- dual_test covers the
+    // processor only. These let a headless test drive the REAL path.
+public:
+    // Which voice the knob for `base` is currently bound to, or -1.
+    int bound_voice_of(const char* base) const;
+    // Moves a knob through the same route a mouse drag takes.
+    bool nudge_knob(const char* base, float value);
+    void rebind_for_test() { rebind_voice(); refresh_voice_buttons(); }
+    // The randomisers are not in knobs_, so they need their own test route.
+    void set_rnd_for_test(bool wind, float v) {
+        (wind ? rnd_wind_ : rnd_flutter_).setValue(v, juce::sendNotificationSync);
+    }
+private:
+    // The single write route for every per-voice edit; honours Link.
+    void write_voice_param(const char* base, float value);
     void rebind_voice();
     void refresh_voice_buttons();
     void draw_panel(juce::Graphics&, juce::Rectangle<int>,
@@ -190,6 +207,7 @@ private:
     // active one is highlighted; only one voice is editable (and drawn) at
     // a time, which is what keeps a 26-knob panel readable.
     juce::TextButton dual_button_{"DUAL"};
+    juce::TextButton link_button_{"LINK"};
     juce::TextButton voice_l_{"L"};
     juce::TextButton voice_r_{"R"};
     CurvesKnobLook knob_look_;

@@ -94,9 +94,19 @@ public:
     int flutter_seed() const { return uiv().flutter_seed; }
     int wind_seed() const { return uiv().wind_seed; }
     void reroll_flutter_seed() {
-        uiv().flutter_seed = next_seed(uiv().flutter_seed);
+        const int n = next_seed(uiv().flutter_seed);
+        uiv().flutter_seed = n;
+        const int m = mirror_voice();
+        if (m >= 0)
+            voices_[m].flutter_seed = n;
     }
-    void reroll_wind_seed() { uiv().wind_seed = next_seed(uiv().wind_seed); }
+    void reroll_wind_seed() {
+        const int n = next_seed(uiv().wind_seed);
+        uiv().wind_seed = n;
+        const int m = mirror_voice();
+        if (m >= 0)
+            voices_[m].wind_seed = n;
+    }
 
     // ---- which voice the panels are editing -----------------------------
     // Pure appearance: it selects which parameter set the knobs are bound
@@ -107,6 +117,20 @@ public:
     void set_ui_voice(int v) { ui_voice_ = juce::jlimit(0, kNumVoices - 1, v); }
     bool dual_on() const { return dual_ != nullptr && dual_->get() > 0.5f; }
     void set_dual(bool on);
+    // LINK mirrors every per-voice edit onto the other voice, so a patch can
+    // be dialled in on both at once and then unlinked to let them diverge.
+    // Switching it ON copies the voice you are looking at onto the other --
+    // otherwise "linked" would still show two different sounds.
+    bool link_on() const { return link_ != nullptr && link_->get() > 0.5f; }
+    void set_link(bool on);
+    // The voice an edit should ALSO be written to, or -1. One place to ask,
+    // so every edit route (knobs, randomisers, walls, LED modifiers) agrees.
+    int mirror_voice() const {
+        if (!link_on())
+            return -1;
+        const int other = 1 - juce::jlimit(0, kNumVoices - 1, ui_voice_);
+        return other;
+    }
 
     int active_nodes() const { return n_nodes_; }
     // How many voices the LAST processed block actually ran. Dual needs a
@@ -204,9 +228,21 @@ public:
     static bool is_global_knob(int k) { return k == kMix || k == kLeveler; }
     bool knob_on(int k) const { return knob_voice(k).mods[k].on; }
     int knob_mag(int k) const { return knob_voice(k).mods[k].mag; }
-    void set_knob_on(int k, bool v) { knob_voice(k).mods[k].on = v; }
+    // Modifiers mirror under Link too -- a linked pair whose power LEDs and
+    // magnitudes drift apart is not mirrored, and these change the audio
+    // just as much as the knob under them. Global knobs have one set.
+    void set_knob_on(int k, bool v) {
+        knob_voice(k).mods[k].on = v;
+        const int m = mirror_voice();
+        if (m >= 0 && !is_global_knob(k))
+            voices_[m].mods[k].on = v;
+    }
     void set_knob_mag(int k, int v) {
-        knob_voice(k).mods[k].mag = juce::jlimit(0, 2, v);
+        const int c = juce::jlimit(0, 2, v);
+        knob_voice(k).mods[k].mag = c;
+        const int m = mirror_voice();
+        if (m >= 0 && !is_global_knob(k))
+            voices_[m].mods[k].mag = c;
     }
     static const char* mod_knob_id(int k);
     // Band width == band spacing. Depends on node count, so Precision
@@ -316,7 +352,9 @@ private:
     void add_voice_params(VoiceParams& p, int voice);
     // Copies every parameter and modifier of one voice onto another, then
     // re-rolls the destination's seeds. Used when Dual is switched on.
-    void copy_voice(int from, int to);
+    // reroll_seeds: fresh gusts on the destination (what Dual wants), vs an
+    // exact mirror including seeds (what Link wants).
+    void copy_voice(int from, int to, bool reroll_seeds = true);
     juce::AudioParameterFloat* find_param(const juce::String& id) const;
 
     std::atomic<int> active_voices_{1};
@@ -408,6 +446,7 @@ private:
     // automation and preset recall. Which voice you are LOOKING at does
     // not, and rides in the state tree instead.
     juce::AudioParameterFloat* dual_ = nullptr;
+    juce::AudioParameterFloat* link_ = nullptr;
     // ---- SPATIAL subscriber -------------------------------------------
     // Width is expressed in dB, the same unit as Range, because that is
     // literally what it is: how far the SIDE gain departs from the mid at

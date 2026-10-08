@@ -13,6 +13,7 @@
 //      seeds are re-rolled -- "same weather, different gusts"
 //   5. nothing goes non-finite across a Dual toggle mid-stream
 
+#include "plugin/PluginEditor.h"
 #include "plugin/PluginProcessor.h"
 #include <cmath>
 #include <cstdio>
@@ -90,14 +91,23 @@ int main() {
     std::printf("per-voice ids declared      %d\n", nvp);
     std::printf("voice 0 present             %d\n", found0);
     std::printf("voice 1 present ('_r')      %d\n", found1);
-    std::printf("globals present             mix %d  leveler %d  test %d  "
-                "precision %d  dual %d\n",
-                find(proc, "mix") != nullptr, find(proc, "leveler") != nullptr,
-                find(proc, "test") != nullptr, find(proc, "precision") != nullptr,
-                find(proc, "dual") != nullptr);
+    // Count the globals rather than hard-coding a total: the expectation
+    // went stale the moment Link was added, which is exactly the drift a
+    // literal invites.
+    static const char* kGlobals[] = {"mix", "leveler", "test", "precision",
+                                     "dual", "link"};
+    int nglob = 0;
+    for (const char* g : kGlobals) {
+        const bool have = find(proc, g) != nullptr;
+        nglob += have ? 1 : 0;
+        std::printf("  global %-10s %s\n", g, have ? "ok" : "*** MISSING ***");
+    }
+    const int expect = nvp * 2 + (int)(sizeof(kGlobals) / sizeof(kGlobals[0]));
     std::printf("TOTAL parameters            %d   (expect %d)\n",
-                total, nvp * 2 + 5);
-    std::printf("%s\n", (found0 == nvp && found1 == nvp && total == nvp * 2 + 5)
+                total, expect);
+    std::printf("%s\n", (found0 == nvp && found1 == nvp
+                            && nglob == (int)(sizeof(kGlobals) / sizeof(kGlobals[0]))
+                            && total == expect)
                             ? "PASS" : "*** FAIL ***");
 
     std::printf("\n=== 2-4. ROUTING: identical input on both channels ===\n");
@@ -166,5 +176,84 @@ int main() {
     std::printf("gating voice 1's EQ changes only R      %s  (rmsL %.4f rmsR %.4f)\n",
                 (on_gate.rms_r < on_gate.rms_l * 0.9) ? "PASS" : "*** FAIL ***",
                 on_gate.rms_l, on_gate.rms_r);
+    std::printf("\n=== 6. EDITOR BINDING: do the two voices edit independently? ===\n");
+    std::printf("The editor decides which voice a knob writes to. dual_test\n");
+    std::printf("covers the processor only, so this drives the REAL knob path.\n\n");
+    {
+        proc.set_dual(true);
+        std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
+        auto* ce = dynamic_cast<CurvesAudioProcessorEditor*>(ed.get());
+        if (ce == nullptr) {
+            std::printf("*** FAIL *** could not create the editor\n");
+        } else {
+            bool pass = true;
+            proc.set_ui_voice(0);
+            ce->rebind_for_test();
+            const int b0 = ce->bound_voice_of("damping");
+            proc.set_ui_voice(1);
+            ce->rebind_for_test();
+            const int b1 = ce->bound_voice_of("damping");
+            std::printf("  knob follows the highlighted voice      L->%d  R->%d  %s\n",
+                        b0, b1, (b0 == 0 && b1 == 1) ? "PASS" : "*** FAIL ***");
+            pass = pass && (b0 == 0 && b1 == 1);
+
+            // Move the knob with R selected; L must not follow.
+            auto* pl = find(proc, "damping");
+            auto* pr = find(proc, "damping_r");
+            const float before_l = pl ? pl->get() : -1.0f;
+            ce->nudge_knob("damping", 7.5f);
+            const float after_l = pl ? pl->get() : -1.0f;
+            const float after_r = pr ? pr->get() : -1.0f;
+            const bool indep = std::abs(after_r - 7.5f) < 0.01f
+                               && std::abs(after_l - before_l) < 1e-4f;
+            std::printf("  editing R leaves L alone                L %.2f->%.2f  R %.2f  %s\n",
+                        before_l, after_l, after_r, indep ? "PASS" : "*** FAIL ***");
+            pass = pass && indep;
+
+            // The randomisers are NOT in knobs_ and wrote bare ids.
+            auto* wl = find(proc, "wind_rnd");
+            auto* wr = find(proc, "wind_rnd_r");
+            std::printf("  randomisers exist per voice             %s\n",
+                        (wl && wr) ? "yes" : "*** MISSING ***");
+            // The randomisers sit OUTSIDE knobs_ and used to write the bare
+            // id, so they always moved voice 0 whichever voice was live.
+            proc.set_link(false);
+            proc.set_ui_voice(1);
+            ce->rebind_for_test();
+            const float rl0 = wl ? wl->get() : -1.0f;
+            ce->set_rnd_for_test(true, 0.42f);
+            const bool rnd_ok = wr && std::abs(wr->get() - 0.42f) < 0.01f
+                                && wl && std::abs(wl->get() - rl0) < 1e-4f;
+            std::printf("  randomiser edits R only                 L %.2f  R %.2f  %s\n",
+                        wl ? wl->get() : -1.0f, wr ? wr->get() : -1.0f,
+                        rnd_ok ? "PASS" : "*** FAIL ***");
+            pass = pass && rnd_ok;
+
+            // LINK: an edit must now land on BOTH voices.
+            proc.set_link(true);
+            ce->rebind_for_test();
+            ce->nudge_knob("damping", 11.0f);
+            const bool linked = pl && pr
+                                && std::abs(pl->get() - 11.0f) < 0.01f
+                                && std::abs(pr->get() - 11.0f) < 0.01f;
+            std::printf("  LINK on: edit hits both voices          L %.2f  R %.2f  %s\n",
+                        pl ? pl->get() : -1.0f, pr ? pr->get() : -1.0f,
+                        linked ? "PASS" : "*** FAIL ***");
+            pass = pass && linked;
+
+            // ...and unlinking must restore independence.
+            proc.set_link(false);
+            ce->nudge_knob("damping", 4.0f);
+            const bool unlinked = pl && pr
+                                  && std::abs(pr->get() - 4.0f) < 0.01f
+                                  && std::abs(pl->get() - 11.0f) < 0.01f;
+            std::printf("  LINK off: independence restored         L %.2f  R %.2f  %s\n",
+                        pl ? pl->get() : -1.0f, pr ? pr->get() : -1.0f,
+                        unlinked ? "PASS" : "*** FAIL ***");
+            pass = pass && unlinked;
+
+            std::printf("  overall %s\n", pass ? "PASS" : "*** FAIL ***");
+        }
+    }
     return 0;
 }
