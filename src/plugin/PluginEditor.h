@@ -234,6 +234,15 @@ private:
     Knob* flutter_knob_ = nullptr;
     juce::Rectangle<int> rnd_wind_box_, rnd_flutter_box_;
     void setup_randomiser(SeedSlider&, const char* param_id, bool is_wind);
+    // Detail: same small-dial treatment, parked on Smooth. A plain slider,
+    // not a SeedSlider -- there is nothing to re-roll, so a click must not
+    // do anything surprising.
+    juce::Slider detail_knob_;
+    Knob* smooth_knob_ = nullptr;
+    juce::Rectangle<int> detail_box_;
+    // Small dials live outside knobs_, so they do not get rebound when the
+    // voice changes. This re-reads all three from the live voice.
+    void refresh_small_dials();
     int last_test_src_ = -1;
     // Wall being dragged on the canvas: -1 none, 0 low edge, 1 high edge.
     int dragging_wall_ = -1;

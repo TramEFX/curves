@@ -305,5 +305,34 @@ int main() {
         set(proc, "flap", 0.45f);
         set(proc, "test", 0.0f);
     }
+    std::printf("\n=== 8. DETAIL: more smoothing on SMALL waves, big ones kept ===\n");
+    std::printf("fine share = node-to-node difference energy / total. It must\n");
+    std::printf("FALL with Detail while the overall rms stays put.\n\n");
+    {
+        set(proc, "physics", 1.0f);
+        set(proc, "motion", 0.8f);
+        set(proc, "wrinkle", 0.7f);      // plenty of small waves to work on
+        set(proc, "smoothing", 15.0f);
+        set(proc, "test", 1.0f);
+        std::printf("%9s %12s %14s %14s\n", "detail", "ctl rms",
+                    "detail rms", "fine share");
+        // 0.02 rather than 0 for the baseline: the split is skipped
+        // entirely at 0, so there would be nothing to measure against.
+        for (float d : {0.02f, 0.25f, 0.5f, 0.75f, 1.0f}) {
+            set(proc, "detail", d);
+            run(proc, 60);
+            proc.take_control_rms(0);
+            proc.take_fine_share(0);
+            run(proc, 300);
+            // fine share FIRST: it divides by ctl_sum2, which take_control_rms
+            // zeroes on read.
+            const double fine = proc.take_fine_share(0);
+            const double det = proc.take_detail_rms(0);
+            const double rms = proc.take_control_rms(0);
+            std::printf("%9.2f %12.4f %14.4f %14.4f\n", d, rms, det, fine);
+        }
+        set(proc, "detail", 0.0f);
+        set(proc, "test", 0.0f);
+    }
     return 0;
 }

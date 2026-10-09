@@ -422,6 +422,14 @@ void CurvesAudioProcessor::add_voice_params(VoiceParams& p, int voice) {
     // and 5.73 dB at x8. Both effects are the point: this is the knob that
     // buys the ringing, harmonic-comb texture.
     addParameter(p.resonance = new APF(ID("resonance"), NM("Resonance"), R{0.0f, 1.0f}, 0.0f));
+    // Detail: smooth the SMALL waves harder while leaving the big ones
+    // alone. Smoothing is one time constant for the whole control signal,
+    // so slowing the flutter also slows the broad sway. This splits the
+    // signal by spatial scale first -- a bidirectional one-pole across the
+    // NODES, cutting around five waves per string -- and gives the fine
+    // part up to 16x the smoothing. Zero is bit-identical to no split at
+    // all: the stage is skipped outright, like mid_ripple.
+    addParameter(p.detail = new APF(ID("detail"), NM("Detail"), R{0.0f, 1.0f}, 0.0f));
 }
 
 CurvesAudioProcessor::CurvesAudioProcessor()
@@ -505,7 +513,7 @@ const char* const* CurvesAudioProcessor::voice_param_ids(int& count) {
         "physics", "velocity", "wind", "waves", "motion", "character",
         "direction", "wall_lo", "wall_hi", "flutter_hz", "wrinkle", "flap",
         "wind_rnd", "flutter_rnd", "width", "pan_depth", "stereo_lo",
-        "stereo_hi", "q_mode", "resonance"};
+        "stereo_hi", "q_mode", "resonance", "detail"};
     count = (int)(sizeof(kIds) / sizeof(kIds[0]));
     return kIds;
 }
@@ -860,6 +868,11 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         const double tau = std::max(1e-4, knob(v, kSmoothing, p.smoothing->get()) * 1e-3);
         const double tick_rate = fs_ / std::max(1, sim_divisor_);
         v.smooth_alpha = 1.0 - std::exp(-1.0 / (tau * tick_rate));
+        v.detail_amt = std::clamp((double)p.detail->get(), 0.0, 1.0);
+        // Spatial cutoff as a FRACTION of the node count, so "small" means
+        // the same number of waves across the string at every precision.
+        const double tau_nodes = 0.03 * std::max(8, n_nodes_);
+        v.detail_b = 1.0 - std::exp(-1.0 / tau_nodes);
     }
     v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
     // Band Q. set_q is O(N) plus an O(N) overlap sum, so it runs only when
@@ -1110,19 +1123,59 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             const auto& u = v.sim->positions();
             const auto& vel = v.sim->velocities();
             const double a = v.smooth_alpha, va = v.vel_amt, vs = v.vel_scale;
-            for (int i = 0; i < n_nodes_; ++i) {
-                const double disp = (1.0 - va) * u[i] + va * (vs * vel[i]);
-                v.smoothed_disp[i] += a * (disp - v.smoothed_disp[i]);
+            if (v.detail_amt <= 0.0) {
+                for (int i = 0; i < n_nodes_; ++i) {
+                    const double disp = (1.0 - va) * u[i] + va * (vs * vel[i]);
+                    v.smoothed_disp[i] += a * (disp - v.smoothed_disp[i]);
+                }
+            } else {
+                // Split by spatial scale, then smooth each part on its own
+                // time constant. The split is a bidirectional one-pole
+                // across the NODES -- zero phase shift, O(N), any cutoff.
+                const double b = v.detail_b;
+                // 0.97 => the fine part follows ~33x slower than the broad part at
+                // full. 0.94 (16x) measured only a 2.4x drop in detail rms,
+                // which reads as subtle for a dedicated control.
+                const double ad = a * (1.0 - 0.97 * v.detail_amt);
+                for (int i = 0; i < n_nodes_; ++i)
+                    v.disp_tmp[i] = (1.0 - va) * u[i] + va * (vs * vel[i]);
+                double acc = v.disp_tmp[0];
+                for (int i = 0; i < n_nodes_; ++i) {
+                    acc += b * (v.disp_tmp[i] - acc);
+                    v.blur_tmp[i] = acc;
+                }
+                acc = v.blur_tmp[n_nodes_ - 1];
+                for (int i = n_nodes_ - 1; i >= 0; --i) {
+                    acc += b * (v.blur_tmp[i] - acc);
+                    v.blur_tmp[i] = acc;          // the BROAD component
+                }
+                double d2 = 0.0;
+                for (int i = 0; i < n_nodes_; ++i) {
+                    const double broad = v.blur_tmp[i];
+                    const double det = v.disp_tmp[i] - broad;
+                    v.sm_broad[i] += a * (broad - v.sm_broad[i]);
+                    v.sm_detail[i] += ad * (det - v.sm_detail[i]);
+                    v.smoothed_disp[i] = v.sm_broad[i] + v.sm_detail[i];
+                    d2 += v.sm_detail[i] * v.sm_detail[i];
+                }
+                v.ctl_det2.store(v.ctl_det2.load(std::memory_order_relaxed) + d2,
+                                 std::memory_order_relaxed);
             }
             // Track what the control signal is actually reaching, so O1 can
             // be measured rather than modelled.
             double pk = v.ctl_peak.load(std::memory_order_relaxed);
-            double s2 = 0.0;
+            double s2 = 0.0, f2 = 0.0;
             for (int i = 0; i < n_nodes_; ++i) {
                 const double a2 = v.smoothed_disp[i] * v.smoothed_disp[i];
                 s2 += a2;
+                if (i > 0) {
+                    const double d = v.smoothed_disp[i] - v.smoothed_disp[i - 1];
+                    f2 += d * d;
+                }
                 pk = std::max(pk, std::abs(v.smoothed_disp[i]));
             }
+            v.ctl_fine2.store(v.ctl_fine2.load(std::memory_order_relaxed) + f2,
+                              std::memory_order_relaxed);
             v.ctl_peak.store(pk, std::memory_order_relaxed);
             v.ctl_sum2.store(v.ctl_sum2.load(std::memory_order_relaxed) + s2,
                              std::memory_order_relaxed);

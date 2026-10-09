@@ -192,6 +192,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
             const bool is_test = (rp->paramID == "test");
             const bool is_wind = (rp->paramID == "wind");
             const bool is_flut = (rp->paramID == "flutter_hz");
+            const bool is_smooth = (juce::String(d.id) == "smoothing");
             knobs_.push_back(std::move(knob));
             if (is_test)
                 test_knob_ = knobs_.back().get();
@@ -199,6 +200,8 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
                 wind_knob_ = knobs_.back().get();
             if (is_flut)
                 flutter_knob_ = knobs_.back().get();
+            if (is_smooth)
+                smooth_knob_ = knobs_.back().get();
             break;
         }
     }
@@ -248,6 +251,17 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     scale_button_.onClick = [this] { cycle_display_scale(); };
     theme_button_.onClick = [this] { cycle_theme(); };
 
+    {   // the Detail dial, same treatment as the randomisers
+        detail_knob_.setNormalisableRange(
+            juce::NormalisableRange<double>(0.0, 1.0));
+        detail_knob_.setSliderStyle(juce::Slider::RotaryVerticalDrag);
+        detail_knob_.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+        detail_knob_.setLookAndFeel(&knob_look_);
+        detail_knob_.addListener(this);
+        detail_knob_.setTooltip(
+            "Detail: smooths the SMALL waves harder, leaves the big ones");
+        addAndMakeVisible(detail_knob_);
+    }
     rebind_voice();        // a reopened editor may be showing voice 1
     apply_theme();
     resized();  // setSize() above ran before the knobs existed
@@ -310,6 +324,25 @@ constexpr int kGlobalH = 188;
 constexpr int kPhysicsH = 188;
 constexpr int kPanelGap = 10;
 }  // namespace
+
+void CurvesAudioProcessorEditor::refresh_small_dials() {
+    const int voice = processor_.ui_voice();
+    const struct { juce::Slider* sl; const char* base; } d[] = {
+        {&rnd_wind_, "wind_rnd"},
+        {&rnd_flutter_, "flutter_rnd"},
+        {&detail_knob_, "detail"}};
+    for (const auto& e : d) {
+        const juce::String want =
+            CurvesAudioProcessor::voice_param_id(e.base, voice);
+        for (auto* p : processor_.getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+                if (rp->paramID == want) {
+                    e.sl->setValue(rp->convertFrom0to1(rp->getValue()),
+                                   juce::dontSendNotification);
+                    break;
+                }
+    }
+}
 
 void CurvesAudioProcessorEditor::setup_randomiser(SeedSlider& sl,
                                                   const char* param_id,
@@ -427,7 +460,7 @@ void CurvesAudioProcessorEditor::resized() {
 
     // Randomisers sit on the top-right corner of the knob they belong to,
     // overlapping it slightly so the pairing reads at a glance.
-    auto park = [](SeedSlider& sl, Knob* host, juce::Rectangle<int>& box) {
+    auto park = [](juce::Slider& sl, Knob* host, juce::Rectangle<int>& box) {
         if (host == nullptr)
             return;
         const auto hb = host->slider.getBounds();
@@ -440,6 +473,7 @@ void CurvesAudioProcessorEditor::resized() {
     };
     park(rnd_wind_, wind_knob_, rnd_wind_box_);
     park(rnd_flutter_, flutter_knob_, rnd_flutter_box_);
+    park(detail_knob_, smooth_knob_, detail_box_);
 }
 
 // ---- geometry -------------------------------------------------------------
@@ -654,6 +688,7 @@ void CurvesAudioProcessorEditor::push_current() {
 // identical by construction (both sets come from add_voice_params), so only
 // the pointer and the displayed value change.
 void CurvesAudioProcessorEditor::rebind_voice() {
+    refresh_small_dials();   // they live outside knobs_
     const int voice = processor_.ui_voice();
     for (auto& k : knobs_) {
         if (!k->per_voice || k->base_id.isEmpty())
@@ -881,8 +916,10 @@ void CurvesAudioProcessorEditor::write_voice_param(const char* base,
 void CurvesAudioProcessorEditor::sliderValueChanged(juce::Slider* s) {
     // The randomisers are not in knobs_ (they are positioned by hand rather
     // than by the grid), so they need their own route to their parameters.
-    if (s == &rnd_wind_ || s == &rnd_flutter_) {
-        write_voice_param((s == &rnd_wind_) ? "wind_rnd" : "flutter_rnd",
+    if (s == &rnd_wind_ || s == &rnd_flutter_ || s == &detail_knob_) {
+        write_voice_param(s == &rnd_wind_      ? "wind_rnd"
+                          : s == &rnd_flutter_ ? "flutter_rnd"
+                                               : "detail",
                           (float)s->getValue());
         return;
     }

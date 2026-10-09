@@ -150,6 +150,26 @@ public:
     // variance -- the same settings measured 0.702 and 0.330 on two runs --
     // so a peak reading cannot distinguish a parameter effect from where
     // the simulation happened to be. RMS converges.
+    // Fine-scale share of the control signal: the node-to-node difference
+    // is a high-pass across the spectrum axis, so this is how much of the
+    // curve is SMALL waves. Detail should pull it down while leaving the
+    // overall rms alone -- that is the whole claim, so it gets measured.
+    // RMS of the DETAIL component itself, measured with the same spatial
+    // split the smoother uses. The first-difference metric is diluted by
+    // the broad curve's own slope, so it understates what Detail does.
+    // Only accumulates while the split is running, i.e. Detail > 0.
+    double take_detail_rms(int voice) {
+        Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        const double s2 = v.ctl_det2.exchange(0.0, std::memory_order_relaxed);
+        const double n = v.ctl_count.load(std::memory_order_relaxed);
+        return n > 0.0 ? std::sqrt(s2 / n) : 0.0;
+    }
+    double take_fine_share(int voice) {
+        Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        const double f = v.ctl_fine2.exchange(0.0, std::memory_order_relaxed);
+        const double s2 = v.ctl_sum2.load(std::memory_order_relaxed);
+        return s2 > 0.0 ? std::sqrt(f / s2) : 0.0;
+    }
     double take_control_rms(int voice) {
         Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
         const double s2 = v.ctl_sum2.exchange(0.0, std::memory_order_relaxed);
@@ -307,6 +327,11 @@ private:
         double taper_lo = -1.0, taper_hi = -1.0;
         std::vector<double> resp_big, resp_re, resp_im;   // display scratch
         std::array<double, kMaxNodes> smoothed_disp{};
+        // Detail smoothing splits the control signal by SPATIAL scale and
+        // smooths the fine part harder. Only touched when the knob is up.
+        std::array<double, kMaxNodes> sm_broad{}, sm_detail{};
+        std::array<double, kMaxNodes> disp_tmp{}, blur_tmp{};
+        double detail_amt = 0.0, detail_b = 0.0;
         double smooth_alpha = 0.05, vel_amt = 0.0, vel_scale = 0.0;
         std::array<KnobMod, kNumModKnobs> mods{};
         std::atomic<int> flutter_seed{1};
@@ -317,6 +342,8 @@ private:
         std::atomic<int> display_src{0};
         std::atomic<double> ctl_peak{0.0};
         std::atomic<double> ctl_sum2{0.0};
+        std::atomic<double> ctl_fine2{0.0};
+        std::atomic<double> ctl_det2{0.0};
         std::atomic<double> ctl_count{0.0};
     };
     // The per-voice parameter set. Precision, Mix, Leveler, Test Src and
@@ -349,6 +376,7 @@ private:
         juce::AudioParameterFloat* stereo_hi = nullptr;
         juce::AudioParameterFloat* q_mode = nullptr;
         juce::AudioParameterFloat* resonance = nullptr;
+        juce::AudioParameterFloat* detail = nullptr;
     };
     // What prepare_voice() hands the audio loop for this block. These used
     // to be locals in processBlock; with two voices they have to be per
