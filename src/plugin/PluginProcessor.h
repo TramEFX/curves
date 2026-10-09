@@ -19,6 +19,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <vector>
 
 class CurvesAudioProcessor : public juce::AudioProcessor {
@@ -136,6 +137,25 @@ public:
     // How many voices the LAST processed block actually ran. Dual needs a
     // stereo bus to mean anything, so this is not simply the Dual parameter
     // -- and it is what a test should assert on.
+    // Test hook: the largest |control signal| any node has reached since
+    // the last call, for the voice given. This is the quantity that clamps
+    // at +-1, so O1's compensation has to be judged on it END TO END --
+    // through the real budget solve, not a mirror of it.
+    double take_control_peak(int voice) {
+        Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        return v.ctl_peak.exchange(0.0, std::memory_order_relaxed);
+    }
+    // RMS is the statistic to CALIBRATE against. The peak of a chaotic,
+    // randomly-gusting cloth over a finite window has enormous run-to-run
+    // variance -- the same settings measured 0.702 and 0.330 on two runs --
+    // so a peak reading cannot distinguish a parameter effect from where
+    // the simulation happened to be. RMS converges.
+    double take_control_rms(int voice) {
+        Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        const double s2 = v.ctl_sum2.exchange(0.0, std::memory_order_relaxed);
+        const double n = v.ctl_count.exchange(0.0, std::memory_order_relaxed);
+        return n > 0.0 ? std::sqrt(s2 / n) : 0.0;
+    }
     int active_voices() const {
         return active_voices_.load(std::memory_order_relaxed);
     }
@@ -295,6 +315,9 @@ private:
         std::atomic<double> range_db{18.0};
         std::atomic<double> display_depth{18.0};
         std::atomic<int> display_src{0};
+        std::atomic<double> ctl_peak{0.0};
+        std::atomic<double> ctl_sum2{0.0};
+        std::atomic<double> ctl_count{0.0};
     };
     // The per-voice parameter set. Precision, Mix, Leveler, Test Src and
     // Dual are global and stay on the processor -- they are output plumbing

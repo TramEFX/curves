@@ -131,7 +131,50 @@ constexpr double kMidEnv = 1.4;
 // 2.3x travel range) and the response is compensated out of it, exactly as
 // Flutter Hz compensates its own rate, so Wind changes how fast the ripples
 // run down the string rather than how loud they are.
-constexpr double kMidTravelLo = 0.55, kMidTravelHi = 1.25;
+// Wind's mid-band phase speed, as a multiple of the string's own wave
+// speed. The resonance -- and with it the tip whip -- peaks sharply at 1.0:
+// measured tip motion 4045 / 14327 / 10384 at travel 0.80 / 1.00 / 1.20,
+// collapsing to 1465 by 0.35.
+//
+// The range used to be 0.55..1.25, whose log centre is 0.83 -- BELOW
+// resonance. So most of the Wind knob sat detuned, peak whip hid at 73% of
+// travel, and the bottom of the dial reached the tip with 1495 against a
+// possible 14327. That is the "isn't gaining the movement towards the end"
+// report. 0.80..1.25 is log-centred on 1.0, which puts maximum whip at the
+// MIDDLE of the knob and lifts the worst case 2.7x, while keeping a 1.56x
+// speed range so the waves still visibly travel faster with more wind.
+constexpr double kMidTravelLo = 0.80, kMidTravelHi = 1.25;
+
+// O1: Wrinkle sat OUTSIDE the Motion excitation budget, so it ADDED level
+// instead of redistributing it -- measured end to end through the real
+// budget, the control signal's RMS rises 2.76x from Wrinkle alone
+// (0.0387 -> 0.1067 at Motion 1.0). That breaks the "one amount control"
+// rule Wind, Waves and Flutter Hz all already follow.
+//
+// Calibrated on RMS over a 400-block window, NOT on peak: the peak of a
+// chaotic, randomly-gusting cloth has huge run-to-run variance -- identical
+// settings read 0.702 and 0.330 on two runs -- so a peak reading cannot
+// separate a parameter effect from where the simulation happened to be.
+//
+// Flap is deliberately NOT compensated. Its own effect is smaller (1.6x)
+// and its interaction with Wrinkle is non-monotonic across the sweep, so a
+// fitted 2D table would be fitting noise; an earlier attempt at one made
+// Flap REDUCE the motion, which is worse than the problem. Flap mostly
+// moves energy toward the tip rather than adding it.
+constexpr int kWfN = 5;
+constexpr double kWfWr[kWfN] = {0.0, 0.975, 1.95, 2.925, 3.90};
+constexpr double kWfMul[kWfN] = {1.000, 1.269, 1.478, 2.504, 2.757};
+
+double wrinkle_compensation(double wrinkle_units) {
+    const double w = std::clamp(wrinkle_units, kWfWr[0], kWfWr[kWfN - 1]);
+    for (int i = 0; i + 1 < kWfN; ++i) {
+        if (w > kWfWr[i + 1])
+            continue;
+        const double t = (w - kWfWr[i]) / (kWfWr[i + 1] - kWfWr[i]);
+        return std::max(1.0, kWfMul[i] + t * (kWfMul[i + 1] - kWfMul[i]));
+    }
+    return kWfMul[kWfN - 1];
+}
 constexpr double kMidTv[] = {0.35, 0.50, 0.65, 0.80, 1.00, 1.20, 1.45, 1.80, 2.40};
 constexpr double kMidTr[] = {0.286, 0.346, 0.476, 0.794, 1.000, 0.593, 0.286, 0.166, 0.114};
 constexpr int kMidTN = 9;
@@ -664,6 +707,10 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         v.last_physics = phys;
     }
     // 2. Live physics parameters (cheap, per block).
+    // Declared up here because the Wind block below sets mid_flap and the
+    // excitation budget further down divides by both (O1).
+    const double wrinkle_units = 3.9 * knob(v, kWrinkle, p.wrinkle->get());
+    const double flap_amt = knob(v, kFlap, p.flap->get());
     v.sim->set_damping(knob(v, kDamping, p.damping->get()));
     v.sim->set_stiffness(knob(v, kStiffness, p.stiffness->get()));
     v.sim->set_wave_speed(knob(v, kTension, p.tension->get()));
@@ -704,7 +751,7 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         v.sim->mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
         v.sim->mid_lock_d = kMidLockD;
         v.sim->mid_env = kMidEnv;
-        v.sim->mid_flap = knob(v, kFlap, p.flap->get());
+        v.sim->mid_flap = flap_amt;
         v.sim->gust_spread = p.wind_rnd->get();
         v.sim->gust_seed = v.wind_seed.load(std::memory_order_relaxed);
         // Wind also sets how fast the ripples RUN DOWN the string, with the
@@ -743,8 +790,13 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     // individual source dials are solved for, not set directly.
     const double motion = knob(v, kMotion, p.motion->get());
     const double character = knob(v, kCharacter, p.character->get());
+    // Wrinkle and Flap are now INSIDE the budget: the gust and shedding
+    // sources are solved for a target that has already been divided by
+    // what those two will add, so turning them up redistributes the
+    // motion instead of piling on top of it (O1).
     const double target_peak =
-        kMotionPeak * motion * mix_boost(character, prec_idx);
+        kMotionPeak * motion * mix_boost(character, prec_idx)
+        / wrinkle_compensation(wrinkle_units);
     const double wind_dial = dial_for_peak((1.0 - character) * target_peak,
                                            kWindA, kWindP);
     const double shed_dial = dial_for_peak(character * target_peak,
@@ -797,7 +849,7 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     // 1.45 at 1.5 -> 1.82 at 3.0, with the POLE end unchanged (0.83 ->
     // 0.87), i.e. the effect stays where it was asked for.
     // +30% amplitude on user request: 3.0 -> 3.9 at the top of the dial.
-    v.sim->wrinkle = 3.9 * knob(v, kWrinkle, p.wrinkle->get());
+    v.sim->wrinkle = wrinkle_units;
     v.sim->shed_freq_hz = knob(v, kFlutterHz, p.flutter_hz->get());
     v.sim->shed_spread = p.flutter_rnd->get();
     v.sim->shed_seed = v.flutter_seed.load(std::memory_order_relaxed);
@@ -1049,6 +1101,21 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 const double disp = (1.0 - va) * u[i] + va * (vs * vel[i]);
                 v.smoothed_disp[i] += a * (disp - v.smoothed_disp[i]);
             }
+            // Track what the control signal is actually reaching, so O1 can
+            // be measured rather than modelled.
+            double pk = v.ctl_peak.load(std::memory_order_relaxed);
+            double s2 = 0.0;
+            for (int i = 0; i < n_nodes_; ++i) {
+                const double a2 = v.smoothed_disp[i] * v.smoothed_disp[i];
+                s2 += a2;
+                pk = std::max(pk, std::abs(v.smoothed_disp[i]));
+            }
+            v.ctl_peak.store(pk, std::memory_order_relaxed);
+            v.ctl_sum2.store(v.ctl_sum2.load(std::memory_order_relaxed) + s2,
+                             std::memory_order_relaxed);
+            v.ctl_count.store(v.ctl_count.load(std::memory_order_relaxed)
+                                  + double(n_nodes_),
+                              std::memory_order_relaxed);
         }
         }
         if (test_on) {

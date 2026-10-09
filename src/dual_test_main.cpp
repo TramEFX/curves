@@ -277,5 +277,33 @@ int main() {
             std::printf("  overall %s\n", pass ? "PASS" : "*** FAIL ***");
         }
     }
+    std::printf("\n=== 7. O1 END TO END: control-signal peak vs Wrinkle and Flap ===\n");
+    std::printf("Measured through the REAL budget solve. This is the quantity\n");
+    std::printf("that clamps at +-1; it should stay flat as Wrinkle/Flap rise.\n\n");
+    {
+        set(proc, "dual", 0.0f);
+        set(proc, "physics", 1.0f);
+        set(proc, "precision", 0.0f);
+        set(proc, "motion", 0.6f);
+        set(proc, "wind", 0.5f);
+        set(proc, "test", 1.0f);          // internal pink, so input is steady
+        std::printf("%9s %8s %12s %12s\n", "wrinkle", "flap",
+                    "ctl rms", "ctl peak");
+        for (float wr : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f})
+            for (float fl : {0.0f, 1.0f}) {
+                set(proc, "wrinkle", wr);
+                set(proc, "flap", fl);
+                run(proc, 60);                 // settle
+                proc.take_control_rms(0);
+                proc.take_control_peak(0);
+                run(proc, 400);                // long window: rms converges
+                const double rms = proc.take_control_rms(0);
+                std::printf("%9.2f %8.2f %12.4f %12.4f\n", wr, fl, rms,
+                            proc.take_control_peak(0));
+            }
+        set(proc, "wrinkle", 0.0f);
+        set(proc, "flap", 0.45f);
+        set(proc, "test", 0.0f);
+    }
     return 0;
 }

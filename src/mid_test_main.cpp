@@ -23,7 +23,8 @@ struct R { double fifth[5]; double peak; };
 
 R run(double env, double lock_d, double travel, double mid_amp,
       double wind_knob, double seconds = 14.0, double flap = 0.0,
-      double wrinkle = 0.0) {
+      double wrinkle = 0.0, double waves_override = 0.0,
+      double budget_scale = 1.0) {
     const double tick = 24000.0;
     StringParams p;
     p.tick_rate = tick; p.wave_speed = 300.0;
@@ -36,11 +37,14 @@ R run(double env, double lock_d, double travel, double mid_amp,
     sim.set_density_taper(2.0);
     sim.set_cloth_length(1.0);
     sim.set_walls(0.0, 1.0);
-    sim.wind_speed = 25.0 * 0.596 * std::pow(128.0 / kN, 0.25) * 0.913;
+    sim.wind_speed =
+        25.0 * 0.596 * std::pow(128.0 / kN, 0.25) * 0.913 * budget_scale;
     sim.wrinkle_speed = sim.wind_speed;
     sim.wave_density = 0.5 + 4.5 * 0.4;
     sim.wind_phase_speed = 0.12 * std::pow(25.0, wind_knob) * 300.0;
-    sim.mid_waves = 6.0 * std::pow(20.0 / 6.0, wind_knob);
+    sim.mid_waves = waves_override > 0.0
+                        ? waves_override
+                        : 6.0 * std::pow(20.0 / 6.0, wind_knob);
     sim.wrinkle = wrinkle;
     sim.mid_ripple = mid_amp;
     sim.mid_env = env;
@@ -180,6 +184,71 @@ int main() {
             std::printf("%7.2f %9.2f %9.0f %9.4f %9s\n", fl, wr,
                         r.fifth[4], r.peak, r.peak > 1.0 ? "YES" : "-");
         }
+
+    // Wind couples two things: the ripple SIZE (mid_waves 6 -> 20) and the
+    // phase speed (mid_travel 0.55 -> 1.25). Travel is what detunes the
+    // resonance -- so the question is whether SIZE alone can carry the
+    // "faster down the string" feel while travel stays near resonance.
+    std::printf("\n7. TIP REACH vs ripple SIZE, travel pinned at resonance.\n");
+    std::printf("   if tip holds up across waves, Wind can drive size alone.\n\n");
+    std::printf("%8s %9s %9s %9s %9s\n", "waves", "f2", "f3", "tip", "peak");
+    for (double wv : {6.0, 9.0, 12.0, 16.0, 20.0}) {
+        R r = run(1.4, 0.65, 1.0, 1.036, 0.5, 14.0, 0.45, 0.0, wv);
+        std::printf("%8.1f %9.0f %9.0f %9.0f %9.4f\n",
+                    wv, r.fifth[2], r.fifth[3], r.fifth[4], r.peak);
+    }
+
+    // The budget compensation O1 needs: how much peak do Wrinkle and Flap
+    // ADD, across the Wind sweep? If the multiplier is stable in Wind, one
+    // table divides it out of the Motion budget.
+    std::printf("\n8. PEAK MULTIPLIER of Wrinkle / Flap (for the budget).\n");
+    std::printf("   relative to the same patch with both at zero.\n\n");
+    std::printf("%8s %8s %10s %10s %10s\n",
+                "wrinkle", "flap", "Wind 0.25", "Wind 0.50", "Wind 0.75");
+    for (double wr : {0.0, 0.98, 1.95, 2.93, 3.9})
+        for (double fl : {0.0, 1.0}) {
+            std::printf("%8.2f %8.2f", wr, fl);
+            for (double w : {0.25, 0.5, 0.75}) {
+                const double tv = 0.55 * std::pow(1.25 / 0.55, w);
+                R base = run(1.4, 0.65, tv, 1.036, w, 10.0, 0.0, 0.0);
+                R hit = run(1.4, 0.65, tv, 1.036, w, 10.0, fl, wr);
+                std::printf(" %10.3f", hit.peak / std::max(1e-9, base.peak));
+            }
+            std::printf("\n");
+        }
+
+    // Does the O1 compensation actually hold the peak under the clamp?
+    // Same grid as section 6, but the gust budget is now divided by the
+    // measured multiplier, exactly as prepare_voice does it.
+    std::printf("\n9. O1 COMPENSATED -- peak must stay flat and under 1.00.\n\n");
+    std::printf("%8s %8s %9s %9s %10s\n",
+                "wrinkle", "flap", "comp", "peak", "clipped");
+    {
+        const int N = 5;
+        const double wrv[N] = {0.0, 0.98, 1.95, 2.93, 3.90};
+        const double f0[N] = {1.000, 1.263, 1.734, 2.286, 2.797};
+        const double f1[N] = {1.481, 1.667, 2.036, 2.504, 2.991};
+        auto comp = [&](double w, double f) {
+            double r0 = f0[N - 1], r1 = f1[N - 1];
+            for (int i = 0; i + 1 < N; ++i) {
+                if (w > wrv[i + 1]) continue;
+                const double t = (w - wrv[i]) / (wrv[i + 1] - wrv[i]);
+                r0 = f0[i] + t * (f0[i + 1] - f0[i]);
+                r1 = f1[i] + t * (f1[i + 1] - f1[i]);
+                break;
+            }
+            return std::max(1.0, r0 + f * (r1 - r0));
+        };
+        for (double wr : {0.0, 1.95, 3.9})
+            for (double fl : {0.0, 0.5, 1.0}) {
+                const double c = comp(wr, fl);
+                // The budget solves a dial from a target peak; the source
+                // strength goes roughly as the dial, so scale by 1/c.
+                R r = run(1.4, 0.65, 1.0, 1.036, 0.5, 14.0, fl, wr, 0.0, 1.0 / c);
+                std::printf("%8.2f %8.2f %9.3f %9.4f %10s\n", wr, fl, c,
+                            r.peak, r.peak > 1.0 ? "*** YES" : "-");
+            }
+    }
 
     return 0;
 }
