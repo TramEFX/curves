@@ -252,6 +252,28 @@ int main() {
                         unlinked ? "PASS" : "*** FAIL ***");
             pass = pass && unlinked;
 
+            // Band Q reported as "will not move". Discrete 0/1 rotary.
+            for (const char* id : {"q_mode", "physics", "direction"}) {
+                auto* pp = find(proc, CurvesAudioProcessor::voice_param_id(id, 1));
+                const float was = pp ? pp->get() : -1.0f;
+                ce->nudge_knob(id, 1.0f);
+                const float now = pp ? pp->get() : -1.0f;
+                std::printf("  discrete knob %-10s %.2f -> %.2f  %s\n",
+                            id, was, now,
+                            (now > 0.5f) ? "writes ok" : "*** CANNOT WRITE ***");
+                pass = pass && (now > 0.5f);
+            }
+            // How far must a 2-position rotary be dragged? JUCE maps the
+            // FULL range onto getMouseDragSensitivity() pixels, so a knob
+            // with range 0..1 needs half of that to cross the snap point.
+            ed->setSize(1000, 784);
+            const juce::String ov = ce->header_overlap_for_test();
+            std::printf("  header buttons do not overlap           %s\n",
+                        ov.isEmpty() ? "PASS" : ("*** FAIL: " + ov).toRawUTF8());
+            pass = pass && ov.isEmpty();
+            std::printf("  drag sensitivity (px for full range): %d\n",
+                        ce->drag_sensitivity_of("q_mode"));
+
             std::printf("  overall %s\n", pass ? "PASS" : "*** FAIL ***");
         }
     }

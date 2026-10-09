@@ -152,9 +152,20 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
             const auto& range = rp->getNormalisableRange();
             // Discrete params (Physics/Precision/Direction) carry interval 1;
             // continuous ones must stay continuous.
-            if (range.interval > 0.0f)
+            if (range.interval > 0.0f) {
                 knob->slider.setRange(range.start, range.end, range.interval);
-            else
+                // A stepped knob's travel must scale with how many STEPS it
+                // has, not be the same 250 px JUCE gives a continuous one.
+                // Band Q is a 2-position switch: with the default it needed
+                // 125 px of vertical drag to cross the snap point -- about a
+                // third of the window -- so a normal knob-sized drag moved
+                // it part way and it snapped back. It read as broken, and
+                // Direction (also 0..1) had it too.
+                const int steps = juce::jmax(
+                    1, (int)std::lround((range.end - range.start)
+                                        / juce::jmax(1.0e-6f, range.interval)));
+                knob->slider.setMouseDragSensitivity(steps * 34);
+            } else
                 knob->slider.setNormalisableRange(
                     juce::NormalisableRange<double>(range.start, range.end));
             knob->slider.setValue(rp->convertFrom0to1(rp->getValue()),
@@ -326,15 +337,23 @@ void CurvesAudioProcessorEditor::setup_randomiser(SeedSlider& sl,
 }
 
 void CurvesAudioProcessorEditor::resized() {
-    scale_button_.setBounds(getWidth() - 86, 12, 74, 24);
-    theme_button_.setBounds(getWidth() - 172, 12, 78, 24);
-    reset_button_.setBounds(getWidth() - 256, 12, 76, 24);
-    // Voice controls sit to the LEFT of the utility buttons: DUAL enables,
-    // then L and R pick which set you are looking at.
-    dual_button_.setBounds(getWidth() - 356, 12, 68, 24);
-    link_button_.setBounds(getWidth() - 286, 12, 62, 24);
-    voice_l_.setBounds(getWidth() - 420, 12, 30, 24);
-    voice_r_.setBounds(getWidth() - 388, 12, 30, 24);
+    // Laid out right-to-left with explicit gaps. Hand-picked offsets had
+    // LINK sitting on top of RESET -- it rendered as "ESET".
+    {
+        const int y = 12, h = 24, gap = 6;
+        int right = getWidth() - 12;
+        auto put = [&](juce::Component& c, int w) {
+            c.setBounds(right - w, y, w, h);
+            right -= w + gap;
+        };
+        put(scale_button_, 68);
+        put(theme_button_, 68);
+        put(reset_button_, 68);
+        put(link_button_, 62);
+        put(dual_button_, 62);
+        put(voice_r_, 26);
+        put(voice_l_, 26);
+    }
     if (knobs_.empty())
         return;  // setSize() runs before the knobs are created in the ctor
 
@@ -649,6 +668,19 @@ void CurvesAudioProcessorEditor::rebind_voice() {
             break;
         }
     }
+}
+
+juce::String CurvesAudioProcessorEditor::header_overlap_for_test() const {
+    const struct { const juce::Component* c; const char* n; } b[] = {
+        {&scale_button_, "SCALE"}, {&theme_button_, "THEME"},
+        {&reset_button_, "RESET"}, {&link_button_, "LINK"},
+        {&dual_button_, "DUAL"},   {&voice_r_, "R"}, {&voice_l_, "L"}};
+    const int n = (int)(sizeof(b) / sizeof(b[0]));
+    for (int i = 0; i < n; ++i)
+        for (int j = i + 1; j < n; ++j)
+            if (b[i].c->getBounds().intersects(b[j].c->getBounds()))
+                return juce::String(b[i].n) + " over " + b[j].n;
+    return {};
 }
 
 int CurvesAudioProcessorEditor::bound_voice_of(const char* base) const {

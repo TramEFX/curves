@@ -174,6 +174,15 @@ public:
     // Moves a knob through the same route a mouse drag takes.
     bool nudge_knob(const char* base, float value);
     void rebind_for_test() { rebind_voice(); refresh_voice_buttons(); }
+    // Returns the first pair of header buttons whose rectangles intersect,
+    // or an empty string. Hand-picked offsets put LINK on top of RESET.
+    juce::String header_overlap_for_test() const;
+    int drag_sensitivity_of(const char* base) const {
+        for (const auto& k : knobs_)
+            if (k->base_id == juce::String(base))
+                return k->slider.getMouseDragSensitivity();
+        return -1;
+    }
     // The randomisers are not in knobs_, so they need their own test route.
     void set_rnd_for_test(bool wind, float v) {
         (wind ? rnd_wind_ : rnd_flutter_).setValue(v, juce::sendNotificationSync);
