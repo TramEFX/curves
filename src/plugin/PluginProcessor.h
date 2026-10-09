@@ -166,7 +166,7 @@ public:
         const Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
         return (i >= 0 && i < (int)v.gain_targets.size()) ? v.gain_targets[i] : 0.0;
     }
-    bool q_matched() const { return uiv().last_q_matched; }
+    double q_matched() const { return uiv().last_q_amt; }
     // Effective Range dB: the knob AFTER its magnitude modifier, which is
     // what the audio path actually uses. The canvas labels its dB axis from
     // this, so the marks stay truthful at any magnitude setting.
@@ -300,7 +300,7 @@ private:
         int sim_counter = 0;
         int last_physics = -1;
         double last_q = -1.0;
-        bool last_q_matched = false;
+        double last_q_amt = -1.0;
         double last_wall_lo = -1.0, last_wall_hi = -1.0;
         std::vector<double> gain_targets, side_targets, pan_targets;
         std::vector<double> spatial_w;

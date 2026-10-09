@@ -382,7 +382,10 @@ class StringSim:
         # travel relies on the oscillators being identical, so a frequency
         # spread steepens the ramp with time until the direction inverts
         # (measured +0.269 -> -0.43). A static offset simply persists.
-        CP = 8
+        # 8 spanned the whole string, so a reseed only reshaped a slow
+        # envelope and the wavefront stayed coherent -- "extremely even at
+        # any setting". 28 breaks the front up. Frequency stays untouched.
+        CP = 28
         sa = (self.shed_seed + 977) & 0xFFFFFFFF
         sj = (self.shed_seed + 5501) & 0xFFFFFFFF
         ca = [self.hash_pm1(sa, c) for c in range(CP + 1)]
@@ -393,9 +396,9 @@ class StringSim:
             x = (i * CP / (self.n - 1)) if self.n > 1 else 0.0
             c0 = min(CP - 1, int(x))
             f = x - c0
-            self._shed_amp[i] = 1.0 + self.shed_spread * 0.55 * (
+            self._shed_amp[i] = 1.0 + self.shed_spread * 0.95 * (
                 ca[c0] * (1.0 - f) + ca[c0 + 1] * f)
-            self._shed_jit[i] = self.shed_spread * 1.1 * (
+            self._shed_jit[i] = self.shed_spread * 0.7 * (
                 cj[c0] * (1.0 - f) + cj[c0 + 1] * f)
         self._rnd_shed_spread = self.shed_spread
         self._rnd_shed_seed = self.shed_seed

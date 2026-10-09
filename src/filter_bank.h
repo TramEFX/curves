@@ -51,9 +51,21 @@ public:
     // folded into the audio-path scalar, so gains() keeps reporting the
     // nominal value, which is now also the actual response. WYSIWYG holds
     // structurally rather than by remembering to mirror it.
-    void set_overlap_correction(bool on);
+    // amount 0 = no correction (the historical bank), 1 = fully corrected.
+    // Blended as K^amount so BOTH endpoints are exact and the middle is a
+    // smooth morph: snapping the correction on at the first touch of the
+    // knob would jump the level by up to 96x.
+    void set_overlap_correction(double amount);
     double overlap_k() const { return overlap_k_; }
-    bool overlap_corrected() const { return overlap_on_; }
+    double overlap_corrected() const { return overlap_amt_; }
+    // How much of the overlap is still UNCORRECTED, as a factor. 1 = none
+    // left. The canvas widens its dB axis by this, so a partly corrected
+    // bank gets a partly widened axis.
+    double overlap_k_residual() const {
+        if (num_bands_ < 2) return 1.0;
+        const double k = overlap_factor(fc_[num_bands_ / 2]);
+        return (k > 1e-6) ? k / overlap_k_ : 1.0;
+    }
     // Sum of the Q-normalised bandpasses at f -- the overlap factor there.
     double overlap_factor(double f) const;
 
@@ -225,7 +237,7 @@ private:
     double q_ = 1.0, k_ = 1.0;          // k = 1/Q, the SVF damping
     double overlap_k_ = 1.0;            // K: how much the bands add up
     double ok_ = 1.0;                   // k_ / overlap_k_, the audio scalar
-    bool overlap_on_ = false;
+    double overlap_amt_ = 0.0;
     double steady_amount_ = 0.0, steady_threshold_ = 0.25;
     double atk_alpha_ = 0.0, rel_alpha_ = 0.0;
     std::vector<double> fc_;            // band center frequencies

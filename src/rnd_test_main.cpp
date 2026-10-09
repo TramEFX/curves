@@ -146,5 +146,41 @@ int main() {
         std::printf("%10.2f %8d %12.4f %12.4f\n", sp, 7, d, peak_of(*s2, 24.0));
         delete s2;
     }
+    // Does the flutter SEED change anything? Section B only swept spread
+    // at one seed, which cannot answer that. Owner reports the waves look
+    // "extremely even at any setting", so the question is whether reseeding
+    // moves the result and by how much.
+    std::printf("\nC. FLUTTER seeds at fixed spread -- do they differ?\n");
+    std::printf("   \"unevenness\" = sd across nodes of the wake amplitude\n");
+    std::printf("   field, which is what a seed is supposed to reshape.\n\n");
+    std::printf("%10s %12s %12s %14s\n",
+                "spread", "seed", "peak |u|", "amp field sd");
+    for (double sp : {0.5, 1.0}) {
+        double lo = 1e9, hi = -1e9;
+        for (int sd : {1, 7, 99, 20260103}) {
+            StringSim* s = make();
+            s->wind_speed = 0.0;
+            s->shed_gain = 30.0;
+            s->shed_freq_hz = 3.0;
+            s->shed_spread = sp;
+            s->shed_seed = sd;
+            const double pk = peak_of(*s, 24.0);
+            // the per-node amplitude field the seed builds
+            const auto& amp = s->shed_amp_field();
+            double m = 0.0;
+            for (double a2 : amp) m += a2;
+            m /= std::max<std::size_t>(1, amp.size());
+            double v = 0.0;
+            for (double a2 : amp) v += (a2 - m) * (a2 - m);
+            v = std::sqrt(v / std::max<std::size_t>(1, amp.size()));
+            lo = std::min(lo, pk);
+            hi = std::max(hi, pk);
+            std::printf("%10.2f %12d %12.4f %14.4f\n", sp, sd, pk, v);
+            delete s;
+        }
+        std::printf("%10.2f %12s %12.4f  <- range across seeds\n\n",
+                    sp, "RANGE", hi - lo);
+    }
+
     return 0;
 }

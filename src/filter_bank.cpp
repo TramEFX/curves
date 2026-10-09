@@ -43,8 +43,8 @@ void FilterBank::set_q(double q) {
     refresh_overlap();
 }
 
-void FilterBank::set_overlap_correction(bool on) {
-    overlap_on_ = on;
+void FilterBank::set_overlap_correction(double amount) {
+    overlap_amt_ = std::clamp(amount, 0.0, 1.0);
     refresh_overlap();
 }
 
@@ -86,9 +86,10 @@ double FilterBank::overlap_factor(double f) const {
 // beyond the map, which is correct and must not be corrected away.
 void FilterBank::refresh_overlap() {
     overlap_k_ = 1.0;
-    if (overlap_on_ && num_bands_ > 1) {
+    if (overlap_amt_ > 0.0 && num_bands_ > 1) {
         const double k = overlap_factor(fc_[num_bands_ / 2]);
-        if (k > 1e-6) overlap_k_ = k;
+        if (k > 1e-6)
+            overlap_k_ = std::pow(k, overlap_amt_);
     }
     ok_ = k_ / overlap_k_;
     rebuild_response_kernel();

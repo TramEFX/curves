@@ -164,7 +164,9 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
                 const int steps = juce::jmax(
                     1, (int)std::lround((range.end - range.start)
                                         / juce::jmax(1.0e-6f, range.interval)));
-                knob->slider.setMouseDragSensitivity(steps * 34);
+                // 34 px/step read as too twitchy in use; 60 is a
+                // deliberate movement without being a haul.
+                knob->slider.setMouseDragSensitivity(steps * 60);
             } else
                 knob->slider.setNormalisableRange(
                     juce::NormalisableRange<double>(range.start, range.end));
@@ -827,6 +829,29 @@ void CurvesAudioProcessorEditor::timerCallback() {
             }
         refresh_voice_buttons();
     }
+    // Low Hz / High Hz taper the SPATIAL deviation, so they do nothing
+    // whenever the spatial subscriber is inert -- which is any time Width
+    // and Place are both zero, and always in Dual. They were two live-
+    // looking knobs with no possible effect; now they dim with the pair
+    // they belong to. Re-evaluated every tick because Width can move.
+    {
+        auto val = [this](const char* id) {
+            for (const auto& k : knobs_)
+                if (k->base_id == juce::String(id) && k->param != nullptr)
+                    return (double)k->slider.getValue();
+            return 0.0;
+        };
+        const bool spatial_live =
+            !dual && (val("width") > 1e-6 || val("pan_depth") > 1e-6);
+        if (spatial_live != last_spatial_live_) {
+            last_spatial_live_ = spatial_live;
+            for (auto& k : knobs_)
+                if (k->base_id == "stereo_lo" || k->base_id == "stereo_hi") {
+                    k->slider.setEnabled(spatial_live);
+                    k->label.setAlpha(spatial_live ? 1.0f : 0.4f);
+                }
+        }
+    }
     repaint();
 }
 
@@ -1158,9 +1183,9 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
     // mode: it changes every per-band depth, so it must be readable at a
     // glance rather than inferred from a 0/1 knob.
     draw_panel(g, panel_[kSubscriber],
-               (processor_.q_matched() ? juce::String("SUBSCRIBERS   (Matched Q)")
-                                      : juce::String("SUBSCRIBERS   (Flat Q)"))
-                   + vtag,
+               juce::String("SUBSCRIBERS   (Band Q ")
+                   + juce::String(juce::roundToInt(processor_.q_matched() * 100.0))
+                   + "%)" + vtag,
                true);
 
     // Per-knob modifier LEDs. Power: yellow lit / black off. Magnitude:

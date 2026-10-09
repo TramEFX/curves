@@ -414,7 +414,7 @@ void CurvesAudioProcessor::add_voice_params(VoiceParams& p, int voice) {
     // 128 and 512 nodes) while delivering ~24x the asked-for depth on the
     // string's coarse average. Matched trades that for honest depth and
     // real resolution. See q_test.
-    addParameter(p.q_mode = new APF(ID("q_mode"), NM("Band Q"), R(0.0f, 1.0f, 1.0f), 0.0f));
+    addParameter(p.q_mode = new APF(ID("q_mode"), NM("Band Q"), R{0.0f, 1.0f}, 0.0f));
     // Resonance pushes Q ABOVE matched: x1 to x8. Narrower bands ring
     // longer (T60 = 6.91*Q/(pi*f), so 754 ms at 58 Hz already at matched Q
     // on 128 nodes) and stop filling the gaps between each other, which
@@ -865,13 +865,22 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     // Band Q. set_q is O(N) plus an O(N) overlap sum, so it runs only when
     // the setting actually moves -- not per block.
     {
-        const bool matched = p.q_mode->get() > 0.5f;
+        // Band Q is a GRADIENT, not a switch. Q blends geometrically from 1
+        // to matched (pow hits both endpoints exactly), and the overlap
+        // correction blends as K^amount alongside it -- so 0 is still the
+        // historical bank bit-for-bit and 1 is still fully corrected, with
+        // a continuous morph between. A 0/1 switch could not be dialled,
+        // and snapping the correction on at the first touch would jump the
+        // level by up to 96x.
+        const double amt = std::clamp((double)p.q_mode->get(), 0.0, 1.0);
         const double res = knob(v, kResonance, p.resonance->get());
-        const double q = matched ? matched_q(n_nodes_) * std::pow(2.0, 3.0 * res) : 1.0;
-        if (matched != v.last_q_matched || std::abs(q - v.last_q) > 1e-9) {
+        const double q =
+            std::pow(matched_q(n_nodes_), amt) * std::pow(2.0, 3.0 * res);
+        if (std::abs(amt - v.last_q_amt) > 1e-9
+            || std::abs(q - v.last_q) > 1e-9) {
             v.bank.set_q(q);
-            v.bank.set_overlap_correction(matched);
-            v.last_q_matched = matched;
+            v.bank.set_overlap_correction(amt);
+            v.last_q_amt = amt;
             v.last_q = q;
         }
     }
@@ -937,11 +946,15 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     // exactly the knob value and the axis is unchanged from before. The
     // widening in Flat mode IS the defect, made legible: you asked for 18
     // and the axis says 44.
-    if (src != 2 && !v.bank.overlap_corrected() && n_nodes_ > 1) {
-        const double K = v.bank.overlap_factor(band_fc_[n_nodes_ / 2]);
-        const double g = std::pow(10.0, depth / 20.0);
-        const double act = 1.0 + K * (g - 1.0);
-        if (act > 1.0) depth = 20.0 * std::log10(act);
+    // The axis widens by whatever the bank is NOT correcting. At Band Q 0
+    // that is the full K; at 1 it is nothing and the axis equals the knob.
+    if (src != 2 && n_nodes_ > 1) {
+        const double resid = v.bank.overlap_k_residual();
+        if (resid > 1.0001) {
+            const double g = std::pow(10.0, depth / 20.0);
+            const double act = 1.0 + resid * (g - 1.0);
+            if (act > 1.0) depth = 20.0 * std::log10(act);
+        }
     }
     v.display_src.store(src, std::memory_order_relaxed);
     v.display_depth.store(depth, std::memory_order_relaxed);

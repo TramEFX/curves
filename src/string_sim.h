@@ -338,6 +338,9 @@ public:
     // That is the same failure the 2026-10-01 direction work already fixed
     // once; a frequency gradient cannot set a travel direction.
     // A static phase offset, by contrast, simply persists.
+    // The per-node wake amplitude field the seed builds. Exposed so a test
+    // can measure how uneven a reseed actually makes things.
+    const std::vector<double>& shed_amp_field() const { return shed_amp_; }
     double shed_spread = 0.0;
     int shed_seed = 1;
     double gust_spread = 0.0;   // gust site rate + wavenumber spread

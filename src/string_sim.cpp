@@ -260,7 +260,23 @@ void StringSim::rebuild_randomisation() {
     // frequency, so the phase relationships the ramp sets up persist.
     shed_amp_.assign(n_, 1.0);
     shed_jit_.assign(n_, 0.0);
-    constexpr int kCP = 8;
+    // 8 control points span the WHOLE string, so the fields varied over a
+    // scale far longer than the waves themselves: reseeding reshaped a slow
+    // envelope while the wavefront stayed coherent, which reads as "the
+    // waves are extremely even at any setting" however hard the dial is
+    // turned. 28 puts a control point roughly every 18 nodes at 512, which
+    // is short enough to break the front up. Frequency is still untouched:
+    // a frequency spread sets a travel direction and inverts it (measured
+    // +0.269 -> -0.43), which is why only amplitude and a STATIC phase
+    // offset are randomised.
+    //
+    // Depth went into AMPLITUDE (0.55 -> 0.95) rather than phase, because
+    // amplitude cannot touch the ramp. Pushing the phase jitter instead
+    // (1.1 -> 1.7 at this spacing) INVERTED the travel direction outright:
+    // measured +0.286 -> -0.054 at spread 1. The jitter is 0.7 now -- finer
+    // control points make a given jitter more disruptive, so it had to come
+    // down as the spacing came down.
+    constexpr int kCP = 28;
     double ca[kCP + 1], cj[kCP + 1];
     for (int c = 0; c <= kCP; ++c) {
         ca[c] = hash_pm1(static_cast<unsigned>(shed_seed) + 977u,
@@ -274,9 +290,9 @@ void StringSim::rebuild_randomisation() {
                              : 0.0;
         const int c0 = std::min(kCP - 1, static_cast<int>(x));
         const double f = x - c0;
-        shed_amp_[i] = 1.0 + shed_spread * 0.55
+        shed_amp_[i] = 1.0 + shed_spread * 0.95
                                  * (ca[c0] * (1.0 - f) + ca[c0 + 1] * f);
-        shed_jit_[i] = shed_spread * 1.1
+        shed_jit_[i] = shed_spread * 0.7
                        * (cj[c0] * (1.0 - f) + cj[c0 + 1] * f);
     }
     rnd_shed_spread_ = shed_spread;

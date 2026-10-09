@@ -164,6 +164,7 @@ private:
     // refreshes its displayed value. Called when you click L or R, and
     // after a state load.
     bool last_dual_ = false;
+    bool last_spatial_live_ = true;
     // ---- test surface -------------------------------------------------
     // The editor's voice binding is load-bearing (it decides which voice a
     // knob writes to) and was shipped untested -- dual_test covers the
