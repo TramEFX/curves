@@ -17,6 +17,7 @@
 #include "plugin/PluginProcessor.h"
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <vector>
 
 namespace {
@@ -324,6 +325,11 @@ int main() {
     std::printf("fine share = node-to-node difference energy / total. It must\n");
     std::printf("FALL with Detail while the overall rms stays put.\n\n");
     {
+        // set_knob_on writes to the HIGHLIGHTED voice, and section 6 leaves
+        // it on 1. Measuring voice 0 while toggling voice 1's Smooth is a
+        // test bug, not a feature bug -- it cost a round trip once already.
+        proc.set_ui_voice(0);
+        set(proc, "dual", 0.0f);
         set(proc, "physics", 1.0f);
         set(proc, "motion", 0.8f);
         set(proc, "wrinkle", 0.7f);      // plenty of small waves to work on
@@ -333,8 +339,9 @@ int main() {
         // the knob has to earn its place.
         set(proc, "smoothing", 2.0f);
         set(proc, "test", 1.0f);
-        std::printf("%9s %12s %18s %10s\n", "detail", "ctl rms",
-                    "buzz (fine share)", "rms");
+        proc.set_band_probe(true);
+        std::printf("%9s %12s %12s %12s\n", "detail",
+                    "SMALL waves", "BIG waves", "small/big");
         // 0.02 rather than 0 for the baseline: the split is skipped
         // entirely at 0, so there would be nothing to measure against.
         for (float d : {0.02f, 0.25f, 0.5f, 0.75f, 1.0f}) {
@@ -345,12 +352,45 @@ int main() {
             run(proc, 300);
             // fine share FIRST: it divides by ctl_sum2, which take_control_rms
             // zeroes on read.
-            const double fine = proc.take_fine_share(0);
-            proc.take_detail_rms(0);
-            const double rms = proc.take_control_rms(0);
-            std::printf("%9.2f %12.4f %18.4f %10.2f\n", d, rms, fine,
-                        rms / 0.0001);
+            const double fine = proc.take_band_fine(0);
+            const double broad = proc.take_band_broad(0);
+            proc.take_control_rms(0);
+            std::printf("%9.2f %12.5f %12.5f %12.3f\n", d, fine, broad,
+                        fine / std::max(1e-9, broad));
         }
+        // Detail must go inert when Smooth is powered OFF: it is a
+        // modifier on the smoother, not a second smoother.
+        set(proc, "detail", 1.0f);
+        proc.set_knob_on(CurvesAudioProcessor::kSmoothing, false);
+        run(proc, 60);
+        proc.take_band_fine(0);
+        run(proc, 300);
+        const double off_fine = proc.take_band_fine(0);
+        proc.set_knob_on(CurvesAudioProcessor::kSmoothing, true);
+        run(proc, 60);
+        proc.take_band_fine(0);
+        run(proc, 300);
+        const double on_fine = proc.take_band_fine(0);
+        std::printf("\n  Smooth OFF  -> small %.5f   (Detail must be inert)\n",
+                    off_fine);
+        std::printf("  Smooth ON   -> small %.5f   %s\n", on_fine,
+                    (off_fine > on_fine * 2.0) ? "PASS" : "*** FAIL ***");
+        // What the 16th-order blur costs. It is paid only when Detail is
+        // up, but 512 nodes with wind was already near a full core.
+        proc.set_band_probe(false);
+        set(proc, "precision", 2.0f);
+        for (int w = 0; w < 2; ++w) {
+            set(proc, "detail", w ? 1.0f : 0.0f);
+            run(proc, 40);
+            const clock_t t0 = clock();
+            run(proc, 400);
+            const double ms = 1000.0 * double(clock() - t0) / CLOCKS_PER_SEC;
+            const double audio_ms = 400.0 * 256.0 / 48.0;
+            std::printf("  512 nodes, Detail %s: %7.1f ms for %.0f ms audio"
+                        "  = %4.1f%% of a core\n",
+                        w ? "ON " : "OFF", ms, audio_ms, 100.0 * ms / audio_ms);
+        }
+        set(proc, "precision", 0.0f);
         set(proc, "detail", 0.0f);
         set(proc, "test", 0.0f);
     }

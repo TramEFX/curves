@@ -177,6 +177,23 @@ public:
         const double n = v.ctl_count.load(std::memory_order_relaxed);
         return n > 0.0 ? std::sqrt(s2 / n) : 0.0;
     }
+    // Two-band probe: splits the control signal at a FIXED reference scale
+    // (independent of the Detail knob) so "small waves gone" and "big waves
+    // kept" can be read separately instead of through one number that
+    // conflates them. Off by default -- it costs an O(N) blur per tick.
+    void set_band_probe(bool on) { band_probe_ = on; }
+    double take_band_fine(int voice) {
+        Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        const double f = v.ctl_fine2.exchange(0.0, std::memory_order_relaxed);
+        const double n = v.ctl_count.load(std::memory_order_relaxed);
+        return n > 0.0 ? std::sqrt(f / n) : 0.0;
+    }
+    double take_band_broad(int voice) {
+        Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        const double b = v.ctl_broad2.exchange(0.0, std::memory_order_relaxed);
+        const double n = v.ctl_count.load(std::memory_order_relaxed);
+        return n > 0.0 ? std::sqrt(b / n) : 0.0;
+    }
     double take_fine_share(int voice) {
         Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
         const double f = v.ctl_fine2.exchange(0.0, std::memory_order_relaxed);
@@ -358,6 +375,7 @@ private:
         std::atomic<double> ctl_fine2{0.0};
         std::atomic<double> ctl_det2{0.0};
         std::atomic<double> ctl_dsum2{0.0};
+        std::atomic<double> ctl_broad2{0.0};
         std::array<double, kMaxNodes> ctl_prev{};
         std::atomic<double> ctl_count{0.0};
     };
@@ -410,6 +428,7 @@ private:
     void rebuild_voice(Voice& v, const VoiceParams& p);
     void apply_physics(Voice& v, int mode);
     void rebuild_band_map(Voice& v);
+    void accumulate_bands(Voice& v, const double* ctl);
     void publish_display();
     // Maps a voice's parameters onto its engine; everything that used to be
     // the first two thirds of processBlock.
@@ -424,6 +443,7 @@ private:
     juce::AudioParameterFloat* find_param(const juce::String& id) const;
 
     std::atomic<int> active_voices_{1};
+    bool band_probe_ = false;
     int ui_voice_ = 0;               // which voice the panels are editing
     Voice& uiv() { return voices_[juce::jlimit(0, kNumVoices - 1, ui_voice_)]; }
     const Voice& uiv() const {

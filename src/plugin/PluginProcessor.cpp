@@ -697,6 +697,41 @@ double CurvesAudioProcessor::matched_q(int n) {
 }
 
 // band_fc_ is filled by rebuild(); this only pushes it into one voice's bank.
+// Two-band probe on the control signal the AUDIO actually uses, split at a
+// fixed reference scale (tau = 0.005*N, about thirty waves across the
+// string) so "small waves gone" and "big waves kept" read separately. Test
+// instrument; off unless a test turns it on.
+void CurvesAudioProcessor::accumulate_bands(Voice& v, const double* ctl) {
+    const double rb = 1.0 - std::exp(-1.0 / (0.005 * std::max(8, n_nodes_)));
+    for (int i = 0; i < n_nodes_; ++i)
+        v.blur_tmp[i] = ctl[i];
+    for (int pass = 0; pass < 2; ++pass) {
+        double acc = v.blur_tmp[0];
+        for (int i = 0; i < n_nodes_; ++i) {
+            acc += rb * (v.blur_tmp[i] - acc);
+            v.blur_tmp[i] = acc;
+        }
+        acc = v.blur_tmp[n_nodes_ - 1];
+        for (int i = n_nodes_ - 1; i >= 0; --i) {
+            acc += rb * (v.blur_tmp[i] - acc);
+            v.blur_tmp[i] = acc;
+        }
+    }
+    double fine = 0.0, broad = 0.0;
+    for (int i = 0; i < n_nodes_; ++i) {
+        const double d = ctl[i] - v.blur_tmp[i];
+        fine += d * d;
+        broad += v.blur_tmp[i] * v.blur_tmp[i];
+    }
+    v.ctl_fine2.store(v.ctl_fine2.load(std::memory_order_relaxed) + fine,
+                      std::memory_order_relaxed);
+    v.ctl_broad2.store(v.ctl_broad2.load(std::memory_order_relaxed) + broad,
+                       std::memory_order_relaxed);
+    v.ctl_count.store(v.ctl_count.load(std::memory_order_relaxed)
+                          + double(n_nodes_),
+                      std::memory_order_relaxed);
+}
+
 void CurvesAudioProcessor::rebuild_band_map(Voice& v) {
     for (int i = 0; i < n_nodes_; ++i)
         v.bank.set_band_frequency(i, band_fc_[i]);
@@ -886,23 +921,28 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         const double tau = std::max(1e-4, knob(v, kSmoothing, p.smoothing->get()) * 1e-3);
         const double tick_rate = fs_ / std::max(1, sim_divisor_);
         v.smooth_alpha = 1.0 - std::exp(-1.0 / (tau * tick_rate));
-        v.detail_amt = std::clamp((double)p.detail->get(), 0.0, 1.0);
-        // The cutoff SWEEPS: tau = 0.08*N*knob nodes, so half travel sits
-        // at 0.04*N (cutoff around four waves across the string, where the
-        // buzz measures 2.3x down and already below what 15 ms of Smooth
-        // leaves) and full travel at 0.08*N.
+        // Detail rides on Smooth: with Smooth powered off it must do
+        // nothing either. It is a modifier on the smoother, not a second
+        // independent smoother, and leaving it live when its parent is off
+        // is the same lie as a knob that looks active and is not.
+        v.detail_amt = v.mods[kSmoothing].on
+                           ? std::clamp((double)p.detail->get(), 0.0, 1.0)
+                           : 0.0;
+        // The cutoff SWEEPS: tau = 0.018*N*knob nodes -- a QUARTER of the
+        // reach it had. The old 0.08*N dragged the cutoff down to half a
+        // wavelength of the whole string by full travel, which is why the
+        // surviving waves ended up bigger than the string itself. The
+        // sharper knee (16th order) does the killing now instead.
         //
-        // Calibrated against the measurement, not modelled. The first
-        // attempt came from an attenuation model and left the buzz 19%
-        // down at half; the second (0.16*N*knob^2) silenced it but took
-        // the overall level down 48% at full, which breaks the "preserves
-        // big ones" half of the brief. Linear to 0.08*N keeps the big
-        // waves while still reaching the mid band at the top.
+        // Measured, not modelled: small waves 0.00172 -> 0.00041 by half
+        // travel and 0.00015 at full, with the big band showing no trend
+        // (dual_test section 8, which splits at a fixed reference scale so
+        // the two can be read apart).
         //
         // As a fraction of N so "small" means the same number of waves
         // across the string at every precision.
         const double tau_nodes =
-            0.08 * std::max(8, n_nodes_) * v.detail_amt;
+            0.018 * std::max(8, n_nodes_) * v.detail_amt;
         v.detail_b = (tau_nodes > 1e-3) ? 1.0 - std::exp(-1.0 / tau_nodes) : 1.0;
     }
     v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
@@ -1122,8 +1162,40 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
       // Targets from the control signal as it stands RIGHT NOW. disp was
       // already smoothed at the tick rate in its own (log) domain, so Range
       // enters exactly once and memorylessly.
+      // DETAIL: a spatial low-pass across the nodes whose cutoff sweeps
+      // with the knob -- small waves flattened first, longer ones as it
+      // rises. Sixteenth order (eight bidirectional one-pole passes, zero
+      // phase): a SHARP knee at a high cutoff, rather than a gentle one
+      // dragged down until the surviving waves are longer than the string.
+      //
+      // Run once per CHUNK, not per sim tick. Per tick it cost 45 points of
+      // CPU at 512 nodes (47% -> 92% of a core) for no benefit: the targets
+      // are only re-aimed per chunk, so everything in between was thrown
+      // away. 1500 blurs a second instead of 24000.
+      const double* ctl = v.smoothed_disp.data();
+      if (v.detail_amt > 0.0) {
+          constexpr int kDetailPasses = 8;
+          const double db = v.detail_b;
+          for (int i = 0; i < n_nodes_; ++i)
+              v.disp_tmp[i] = v.smoothed_disp[i];
+          for (int pass = 0; pass < kDetailPasses; ++pass) {
+              double acc = v.disp_tmp[0];
+              for (int i = 0; i < n_nodes_; ++i) {
+                  acc += db * (v.disp_tmp[i] - acc);
+                  v.disp_tmp[i] = acc;
+              }
+              acc = v.disp_tmp[n_nodes_ - 1];
+              for (int i = n_nodes_ - 1; i >= 0; --i) {
+                  acc += db * (v.disp_tmp[i] - acc);
+                  v.disp_tmp[i] = acc;
+              }
+          }
+          ctl = v.disp_tmp.data();
+      }
+      if (band_probe_)
+          accumulate_bands(v, ctl);
       for (int i = 0; i < n_nodes_; ++i) {
-          const double d = std::clamp(v.smoothed_disp[i], -1.0, 1.0);
+          const double d = std::clamp(ctl[i], -1.0, 1.0);
           const double db = d * range_db;
           // 10^(db/20) == 2^(db/6.0206); exp2 is markedly cheaper than pow.
           v.gain_targets[i] = std::exp2(db * (1.0 / 6.020599913279624));
@@ -1158,49 +1230,9 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             const auto& u = v.sim->positions();
             const auto& vel = v.sim->velocities();
             const double a = v.smooth_alpha, va = v.vel_amt, vs = v.vel_scale;
-            if (v.detail_amt <= 0.0) {
-                for (int i = 0; i < n_nodes_; ++i) {
-                    const double disp = (1.0 - va) * u[i] + va * (vs * vel[i]);
-                    v.smoothed_disp[i] += a * (disp - v.smoothed_disp[i]);
-                }
-            } else {
-                // DETAIL: a spatial low-pass across the nodes whose cutoff
-                // SWEEPS with the knob -- at low settings only the finest
-                // ripples are flattened, and progressively longer waves go
-                // as it rises. A fixed split point with variable time
-                // smoothing was tried first and read as "just more overall
-                // smoothness", because the boundary never moved.
-                //
-                // Fourth order (two bidirectional one-pole passes, zero
-                // phase). First order was too gentle to silence the buzz
-                // without also eating the mid band: 1.7 octaves apart, a
-                // 12 dB/oct slope leaves the buzz only 79% down, while
-                // 24 dB/oct takes it to 96% with the mid band still at 55%.
-                // Deliberately not steeper than that -- the string still
-                // has to look like it obeys physics, so this is a slope,
-                // not a brick wall.
-                const double b = v.detail_b;
-                for (int i = 0; i < n_nodes_; ++i)
-                    v.disp_tmp[i] = (1.0 - va) * u[i] + va * (vs * vel[i]);
-                for (int pass = 0; pass < 2; ++pass) {
-                    double acc = v.disp_tmp[0];
-                    for (int i = 0; i < n_nodes_; ++i) {
-                        acc += b * (v.disp_tmp[i] - acc);
-                        v.disp_tmp[i] = acc;
-                    }
-                    acc = v.disp_tmp[n_nodes_ - 1];
-                    for (int i = n_nodes_ - 1; i >= 0; --i) {
-                        acc += b * (v.disp_tmp[i] - acc);
-                        v.disp_tmp[i] = acc;
-                    }
-                }
-                double d2 = 0.0;
-                for (int i = 0; i < n_nodes_; ++i) {
-                    v.smoothed_disp[i] += a * (v.disp_tmp[i] - v.smoothed_disp[i]);
-                    d2 += v.smoothed_disp[i] * v.smoothed_disp[i];
-                }
-                v.ctl_det2.store(v.ctl_det2.load(std::memory_order_relaxed) + d2,
-                                 std::memory_order_relaxed);
+            for (int i = 0; i < n_nodes_; ++i) {
+                const double disp = (1.0 - va) * u[i] + va * (vs * vel[i]);
+                v.smoothed_disp[i] += a * (disp - v.smoothed_disp[i]);
             }
             // Track what the control signal is actually reaching, so O1 can
             // be measured rather than modelled.
@@ -1215,8 +1247,13 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 }
                 pk = std::max(pk, std::abs(v.smoothed_disp[i]));
             }
-            v.ctl_fine2.store(v.ctl_fine2.load(std::memory_order_relaxed) + f2,
-                              std::memory_order_relaxed);
+            // Skipped while the band probe owns ctl_fine2: this is the
+            // first difference of the UNBLURRED signal at 16x the rate, so
+            // it swamped the probe's reading and made Detail look inert.
+            if (!band_probe_)
+                v.ctl_fine2.store(
+                    v.ctl_fine2.load(std::memory_order_relaxed) + f2,
+                    std::memory_order_relaxed);
             double dd = 0.0;
             for (int i = 0; i < n_nodes_; ++i) {
                 const double d = v.smoothed_disp[i] - v.ctl_prev[i];
@@ -1228,9 +1265,10 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             v.ctl_peak.store(pk, std::memory_order_relaxed);
             v.ctl_sum2.store(v.ctl_sum2.load(std::memory_order_relaxed) + s2,
                              std::memory_order_relaxed);
-            v.ctl_count.store(v.ctl_count.load(std::memory_order_relaxed)
-                                  + double(n_nodes_),
-                              std::memory_order_relaxed);
+            if (!band_probe_)
+                v.ctl_count.store(v.ctl_count.load(std::memory_order_relaxed)
+                                      + double(n_nodes_),
+                                  std::memory_order_relaxed);
         }
         }
         if (test_on) {
