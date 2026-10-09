@@ -345,6 +345,36 @@ int main(int argc, char** argv) {
             null_probe(nb, 1.0, false, 18.0);
             null_probe(nb, qm, true, 18.0);
         }
+        // Why the worst dip sits at the TOP EDGE of the plot.
+        // K is the sum of the neighbouring bands' responses, and the
+        // outermost bands have no neighbours beyond the map -- so K falls
+        // off at both ends. With the correction OFF, the response is
+        // 1 + K(f)*big(f): as K sweeps down toward the edge it drags the
+        // product through ZERO, and a zero is a bottomless null. That is
+        // the cliff, and it is real, not a kernel artifact.
+        std::printf("\nK across the band map (512 nodes, Flat Q = 1):\n");
+        std::printf("%10s %10s %12s %14s %16s\n", "band", "freq",
+                    "K there", "cut g=0.5 ->", "nulls at a cut of");
+        {
+            const int nb = 512;
+            FilterBank probe;
+            probe.prepare(nb, kFs, 2);
+            for (int i = 0; i < nb; ++i)
+                probe.set_band_frequency(i, std::min(node_f(i, nb), 0.45 * kFs));
+            probe.set_q(1.0);
+            for (int i : {0, 8, 32, 128, 256, 384, 480, 504, 511}) {
+                const double f = node_f(i, nb);
+                const double K = probe.overlap_factor(f);
+                const double resp = 1.0 + K * (0.5 - 1.0);
+                // A complete null needs 1 + K*big = 0, i.e. big = -1/K.
+                // At K = 96 that is a nominal cut of NINE HUNDREDTHS of a dB.
+                const double null_db =
+                    20.0 * std::log10(std::max(1.0 - 1.0 / K, 1e-9));
+                std::printf("%10d %9.0fHz %12.2f %10.2f %s %12.3f dB\n",
+                            i, f, K, resp,
+                            resp < 0.0 ? "(inverted)" : "          ", null_db);
+            }
+        }
         return 0;
     }
     std::printf("Matched Q (bandwidth == spacing):  128 -> %.2f   256 -> %.2f   512 -> %.2f\n",
