@@ -158,6 +158,19 @@ public:
     // split the smoother uses. The first-difference metric is diluted by
     // the broad curve's own slope, so it understates what Detail does.
     // Only accumulates while the split is running, i.e. Detail > 0.
+    // Mean rate of the control signal, in Hz: rms(d/dt) / rms / 2pi. Cheap
+    // and, unlike a zero-crossing count, not fooled by a slow offset. It is
+    // VALIDATED against wave speed before being trusted -- two rate metrics
+    // in this project have given confidently wrong answers before.
+    double take_control_rate(int voice) {
+        Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
+        const double d2 = v.ctl_dsum2.exchange(0.0, std::memory_order_relaxed);
+        const double s2 = v.ctl_sum2.load(std::memory_order_relaxed);
+        if (s2 <= 0.0 || d2 <= 0.0)
+            return 0.0;
+        const double tick = fs_ / std::max(1, sim_divisor_);
+        return std::sqrt(d2 / s2) * tick / (2.0 * 3.14159265358979323846);
+    }
     double take_detail_rms(int voice) {
         Voice& v = voices_[juce::jlimit(0, kNumVoices - 1, voice)];
         const double s2 = v.ctl_det2.exchange(0.0, std::memory_order_relaxed);
@@ -344,6 +357,8 @@ private:
         std::atomic<double> ctl_sum2{0.0};
         std::atomic<double> ctl_fine2{0.0};
         std::atomic<double> ctl_det2{0.0};
+        std::atomic<double> ctl_dsum2{0.0};
+        std::array<double, kMaxNodes> ctl_prev{};
         std::atomic<double> ctl_count{0.0};
     };
     // The per-voice parameter set. Precision, Mix, Leveler, Test Src and

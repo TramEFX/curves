@@ -721,6 +721,21 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     const double flap_amt = knob(v, kFlap, p.flap->get());
     v.sim->set_damping(knob(v, kDamping, p.damping->get()));
     v.sim->set_stiffness(knob(v, kStiffness, p.stiffness->get()));
+    // Wave speed is in NODES per second, so a fixed Tension gives a
+    // fundamental f0 = c/span that falls as 1/N -- measured 9.44 / 4.41 /
+    // 2.52 Hz at 128 / 256 / 512, i.e. the whole cloth runs 3.75x faster at
+    // low precision. Scaling c with the node count holds f0 constant, so
+    // Precision changes RESOLUTION and nothing else.
+    // NOTE (measured, not fixed): wave speed is in NODES per second, so a
+    // fixed Tension gives a fundamental f0 = c/span that falls as 1/N --
+    // the whole cloth runs 3.75x faster at 128 nodes than at 512 (9.44 /
+    // 4.41 / 2.52 Hz measured). Scaling c by n/128 here DOES flatten that
+    // to 1.47x, but it wrecks the level: the per-precision gain tables
+    // (kNodeWindGain, node_norm, kTensionP) were all calibrated against the
+    // unscaled speed, and the control rms spread goes from 1.4x to 6.2x
+    // (0.0406/0.0454/0.0569 -> 0.0406/0.0145/0.0065). Fixing the rate means
+    // re-deriving those tables at the new speed. See SPEC-0.0.2 section 5,
+    // O13; dual_test section 9 is the harness.
     v.sim->set_wave_speed(knob(v, kTension, p.tension->get()));
     // Wind = gust PHASE VELOCITY: how fast the flapping pattern travels
     // along the cloth.
@@ -818,6 +833,9 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     // string audibly quieter at high Tension). The node term plus kNodeWindGain hold
     // it across precision modes - the two sources scale differently with
     // resolution, so each carries its own per-precision gain.
+    // The knob value, NOT the node-scaled wave speed: the budget's tension
+    // normalisation was calibrated against the dial, and scaling it here
+    // would double-count the precision term that kTensionP already carries.
     const double tension_v = knob(v, kTension, p.tension->get());
     const double tension_norm =
         std::pow(std::max(1.0, tension_v) / 300.0, kTensionP[prec_idx]);
@@ -1175,6 +1193,14 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                 pk = std::max(pk, std::abs(v.smoothed_disp[i]));
             }
             v.ctl_fine2.store(v.ctl_fine2.load(std::memory_order_relaxed) + f2,
+                              std::memory_order_relaxed);
+            double dd = 0.0;
+            for (int i = 0; i < n_nodes_; ++i) {
+                const double d = v.smoothed_disp[i] - v.ctl_prev[i];
+                dd += d * d;
+                v.ctl_prev[i] = v.smoothed_disp[i];
+            }
+            v.ctl_dsum2.store(v.ctl_dsum2.load(std::memory_order_relaxed) + dd,
                               std::memory_order_relaxed);
             v.ctl_peak.store(pk, std::memory_order_relaxed);
             v.ctl_sum2.store(v.ctl_sum2.load(std::memory_order_relaxed) + s2,

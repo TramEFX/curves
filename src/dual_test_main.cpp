@@ -334,5 +334,48 @@ int main() {
         set(proc, "detail", 0.0f);
         set(proc, "test", 0.0f);
     }
+    std::printf("\n=== 9. PHYSICS RATE vs PRECISION ===\n");
+    std::printf("VALIDATE FIRST: the string's fundamental goes as wave speed,\n");
+    std::printf("so doubling Tension must roughly double the measured rate.\n\n");
+    {
+        set(proc, "physics", 1.0f);
+        set(proc, "motion", 0.6f);
+        set(proc, "wind", 0.5f);
+        set(proc, "wrinkle", 0.0f);
+        set(proc, "detail", 0.0f);
+        set(proc, "smoothing", 2.0f);     // minimal, so the metric sees the sim
+        set(proc, "test", 1.0f);
+        set(proc, "precision", 0.0f);
+        std::printf("%10s %12s\n", "tension", "rate Hz");
+        for (float t : {150.0f, 300.0f, 600.0f}) {
+            set(proc, "tension", t);
+            run(proc, 60);
+            proc.take_control_rate(0);
+            proc.take_control_rms(0);
+            run(proc, 300);
+            const double r = proc.take_control_rate(0);
+            proc.take_control_rms(0);
+            std::printf("%10.0f %12.3f\n", t, r);
+        }
+        set(proc, "tension", 300.0f);
+        std::printf("\nNow the same patch at each precision:\n");
+        std::printf("%10s %8s %12s %12s %10s\n", "precision", "nodes",
+                    "rate Hz", "ctl rms", "finite");
+        for (int pr = 0; pr < 3; ++pr) {
+            set(proc, "precision", (float)pr);
+            run(proc, 80);
+            proc.take_control_rate(0);
+            proc.take_control_rms(0);
+            run(proc, 300);
+            const double r = proc.take_control_rate(0);
+            const double rm = proc.take_control_rms(0);
+            const double pk = proc.take_control_peak(0);
+            std::printf("%10d %8d %12.3f %12.4f %10s\n", pr,
+                        proc.active_nodes(), r, rm,
+                        (std::isfinite(rm) && pk < 2.0) ? "ok" : "*** BAD");
+        }
+        set(proc, "precision", 0.0f);
+        set(proc, "test", 0.0f);
+    }
     return 0;
 }

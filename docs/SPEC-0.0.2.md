@@ -1787,6 +1787,22 @@ travel is honest. Needs an ear check at its current range (P7).
   3 multiplies per band per block). It needs a second control-signal
   subscriber and a decision about what drives Q — the same string shape as
   gain, its velocity, or an independent mode.
+- **O13 · Physics runs 3.75× faster at low Precision.** Wave speed is in
+  *nodes* per second, so a fixed Tension gives a fundamental `f0 = c/span`
+  that falls as `1/N`. Measured control-signal rate **9.44 / 4.41 /
+  2.52 Hz** at 128 / 256 / 512 with an identical patch, so Precision
+  changes the *tempo* of the cloth and not just its resolution.
+  Scaling `c` by `n/128` flattens it to **1.47×** and is stable (no
+  non-finite samples, peak bounded, scenarios unaffected) — **but it wrecks
+  the level**, because `kNodeWindGain`, `node_norm` and `kTensionP` were all
+  calibrated against the unscaled speed: the control rms spread goes from
+  1.4× (0.0406 / 0.0454 / 0.0569) to **6.2×** (0.0406 / 0.0145 / 0.0065).
+  Trading a rate error for a worse level error is not a fix, so it was
+  backed out. Doing it properly means re-deriving those three per-precision
+  tables at the scaled speed, which is a measured-calibration pass of its
+  own and wants ears at the end. `dual_test` section 9 is the harness, and
+  its rate metric is validated against wave speed first (Tension 300 → 600
+  gives 7.69 → 14.67 Hz, 1.91× against a predicted 2×).
 - **O12 · The bank could be made to DELIVER the asked response, not just
   draw it honestly.** O10 fixed the display; the audio still delivers the
   summed response rather than the requested shape. Because the kernel is
