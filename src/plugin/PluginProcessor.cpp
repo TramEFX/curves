@@ -887,22 +887,39 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         const double tick_rate = fs_ / std::max(1, sim_divisor_);
         v.smooth_alpha = 1.0 - std::exp(-1.0 / (tau * tick_rate));
         v.detail_amt = std::clamp((double)p.detail->get(), 0.0, 1.0);
-        // Spatial cutoff as a FRACTION of the node count, so "small" means
-        // the same number of waves across the string at every precision.
-        const double tau_nodes = 0.03 * std::max(8, n_nodes_);
-        v.detail_b = 1.0 - std::exp(-1.0 / tau_nodes);
+        // The cutoff SWEEPS: tau = 0.08*N*knob nodes, so half travel sits
+        // at 0.04*N (cutoff around four waves across the string, where the
+        // buzz measures 2.3x down and already below what 15 ms of Smooth
+        // leaves) and full travel at 0.08*N.
+        //
+        // Calibrated against the measurement, not modelled. The first
+        // attempt came from an attenuation model and left the buzz 19%
+        // down at half; the second (0.16*N*knob^2) silenced it but took
+        // the overall level down 48% at full, which breaks the "preserves
+        // big ones" half of the brief. Linear to 0.08*N keeps the big
+        // waves while still reaching the mid band at the top.
+        //
+        // As a fraction of N so "small" means the same number of waves
+        // across the string at every precision.
+        const double tau_nodes =
+            0.08 * std::max(8, n_nodes_) * v.detail_amt;
+        v.detail_b = (tau_nodes > 1e-3) ? 1.0 - std::exp(-1.0 / tau_nodes) : 1.0;
     }
     v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
     // Band Q. set_q is O(N) plus an O(N) overlap sum, so it runs only when
     // the setting actually moves -- not per block.
     {
-        // Band Q is a GRADIENT, not a switch. Q blends geometrically from 1
-        // to matched (pow hits both endpoints exactly), and the overlap
-        // correction blends as K^amount alongside it -- so 0 is still the
-        // historical bank bit-for-bit and 1 is still fully corrected, with
-        // a continuous morph between. A 0/1 switch could not be dialled,
-        // and snapping the correction on at the first touch would jump the
-        // level by up to 96x.
+        // Band Q sets BANDWIDTH ONLY. Q blends geometrically from 1 to
+        // matched; the overlap correction is FULL at every setting.
+        //
+        // It used to blend the correction alongside Q so both endpoints
+        // stayed bit-exact, which was a mistake: the residual overlap is
+        // then K^(1-amount), so the knob silently rode the EQ depth as well
+        // as the bandwidth, and below about 60% the residual was still
+        // large enough to invert cuts and bring the nulls back. Correcting
+        // fully throughout costs the historical uncorrected endpoint --
+        // which is the configuration measured at 31-43 dB of display error,
+        // 17-67x level and a null on any 0.09 dB cut, so it is no loss.
         const double amt = std::clamp((double)p.q_mode->get(), 0.0, 1.0);
         const double res = knob(v, kResonance, p.resonance->get());
         const double q =
@@ -910,7 +927,7 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         if (std::abs(amt - v.last_q_amt) > 1e-9
             || std::abs(q - v.last_q) > 1e-9) {
             v.bank.set_q(q);
-            v.bank.set_overlap_correction(amt);
+            v.bank.set_overlap_correction(1.0);
             v.last_q_amt = amt;
             v.last_q = q;
         }
@@ -1147,34 +1164,40 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                     v.smoothed_disp[i] += a * (disp - v.smoothed_disp[i]);
                 }
             } else {
-                // Split by spatial scale, then smooth each part on its own
-                // time constant. The split is a bidirectional one-pole
-                // across the NODES -- zero phase shift, O(N), any cutoff.
+                // DETAIL: a spatial low-pass across the nodes whose cutoff
+                // SWEEPS with the knob -- at low settings only the finest
+                // ripples are flattened, and progressively longer waves go
+                // as it rises. A fixed split point with variable time
+                // smoothing was tried first and read as "just more overall
+                // smoothness", because the boundary never moved.
+                //
+                // Fourth order (two bidirectional one-pole passes, zero
+                // phase). First order was too gentle to silence the buzz
+                // without also eating the mid band: 1.7 octaves apart, a
+                // 12 dB/oct slope leaves the buzz only 79% down, while
+                // 24 dB/oct takes it to 96% with the mid band still at 55%.
+                // Deliberately not steeper than that -- the string still
+                // has to look like it obeys physics, so this is a slope,
+                // not a brick wall.
                 const double b = v.detail_b;
-                // 0.97 => the fine part follows ~33x slower than the broad part at
-                // full. 0.94 (16x) measured only a 2.4x drop in detail rms,
-                // which reads as subtle for a dedicated control.
-                const double ad = a * (1.0 - 0.97 * v.detail_amt);
                 for (int i = 0; i < n_nodes_; ++i)
                     v.disp_tmp[i] = (1.0 - va) * u[i] + va * (vs * vel[i]);
-                double acc = v.disp_tmp[0];
-                for (int i = 0; i < n_nodes_; ++i) {
-                    acc += b * (v.disp_tmp[i] - acc);
-                    v.blur_tmp[i] = acc;
-                }
-                acc = v.blur_tmp[n_nodes_ - 1];
-                for (int i = n_nodes_ - 1; i >= 0; --i) {
-                    acc += b * (v.blur_tmp[i] - acc);
-                    v.blur_tmp[i] = acc;          // the BROAD component
+                for (int pass = 0; pass < 2; ++pass) {
+                    double acc = v.disp_tmp[0];
+                    for (int i = 0; i < n_nodes_; ++i) {
+                        acc += b * (v.disp_tmp[i] - acc);
+                        v.disp_tmp[i] = acc;
+                    }
+                    acc = v.disp_tmp[n_nodes_ - 1];
+                    for (int i = n_nodes_ - 1; i >= 0; --i) {
+                        acc += b * (v.disp_tmp[i] - acc);
+                        v.disp_tmp[i] = acc;
+                    }
                 }
                 double d2 = 0.0;
                 for (int i = 0; i < n_nodes_; ++i) {
-                    const double broad = v.blur_tmp[i];
-                    const double det = v.disp_tmp[i] - broad;
-                    v.sm_broad[i] += a * (broad - v.sm_broad[i]);
-                    v.sm_detail[i] += ad * (det - v.sm_detail[i]);
-                    v.smoothed_disp[i] = v.sm_broad[i] + v.sm_detail[i];
-                    d2 += v.sm_detail[i] * v.sm_detail[i];
+                    v.smoothed_disp[i] += a * (v.disp_tmp[i] - v.smoothed_disp[i]);
+                    d2 += v.smoothed_disp[i] * v.smoothed_disp[i];
                 }
                 v.ctl_det2.store(v.ctl_det2.load(std::memory_order_relaxed) + d2,
                                  std::memory_order_relaxed);

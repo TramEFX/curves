@@ -317,7 +317,7 @@ static void null_probe(int nb, double q, bool correct, double depth_db) {
     }
     bk.b.response_curve(big.data(), 1.0, re.data(), im.data());
     int crossings = 0;
-    double worst = 1e9, nominal_worst = 1e9;
+    double worst = 1e9, nominal_worst = 1e9, best = -1e9;
     double prev = 1.0 + re[0];
     for (int i = 0; i < nb; ++i) {
         const double r = 1.0 + re[i];
@@ -325,10 +325,12 @@ static void null_probe(int nb, double q, bool correct, double depth_db) {
         prev = r;
         const double mag = std::sqrt(r * r + im[i] * im[i]);
         worst = std::min(worst, 20.0 * std::log10(std::max(mag, 1e-12)));
+        best = std::max(best, 20.0 * std::log10(std::max(mag, 1e-12)));
         nominal_worst = std::min(nominal_worst, 20.0 * std::log10(bk.g[i]));
     }
-    std::printf("%6d %10.2f %9s %12d %13.1fdB %13.1fdB\n",
-                nb, q, correct ? "yes" : "no", crossings, nominal_worst, worst);
+    std::printf("%6d %10.2f %9s %12d %13.1fdB %13.1fdB %12.1fdB\n",
+                nb, q, correct ? "yes" : "no", crossings, nominal_worst,
+                worst, best);
 }
 
 int main(int argc, char** argv) {
@@ -338,12 +340,18 @@ int main(int argc, char** argv) {
         std::printf("A SMOOTH +-18 dB string shape, nothing sharp in it.\n");
         std::printf("\"sign flips\" = times 1+Re crosses zero across the band map;\n");
         std::printf("each one is a magnitude NULL in the drawn curve.\n\n");
-        std::printf("%6s %10s %9s %12s %15s %15s\n", "bands", "Q",
-                    "1/K corr", "sign flips", "nominal min", "drawn min");
+std::printf("%6s %10s %9s %12s %13s %13s %13s\n", "bands", "Q",
+                    "1/K corr", "sign flips", "nominal min", "drawn min",
+                    "drawn max");
         for (int nb : {128, 512}) {
             const double qm = matched_q(nb);
-            null_probe(nb, 1.0, false, 18.0);
+            // Band Q now corrects FULLY at every setting, so every point
+            // on the knob must be null-free, not just the top.
+            null_probe(nb, 1.0, true, 18.0);
+            null_probe(nb, std::pow(qm, 0.25), true, 18.0);
+            null_probe(nb, std::pow(qm, 0.50), true, 18.0);
             null_probe(nb, qm, true, 18.0);
+            null_probe(nb, 1.0, false, 18.0);   // the retired uncorrected mode
         }
         // Why the worst dip sits at the TOP EDGE of the plot.
         // K is the sum of the neighbouring bands' responses, and the
