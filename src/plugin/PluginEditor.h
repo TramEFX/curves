@@ -244,6 +244,8 @@ private:
     // voice changes. This re-reads all three from the live voice.
     void refresh_small_dials();
     int last_test_src_ = -1;
+    int last_tip_ = -1;
+    int last_draw_mode_ = -1;
     // Wall being dragged on the canvas: -1 none, 0 low edge, 1 high edge.
     int dragging_wall_ = -1;
     float wall_x(int which) const;

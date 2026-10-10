@@ -109,6 +109,7 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"precision", "Precision", kGlobal},
         {"leveler", "Leveler", kGlobal},
         {"mix", "Mix", kGlobal},            {"test", "Test Src", kGlobal},
+        {"draw_mode", "Draw", kGlobal},     {"tip", "Tip", kGlobal},
         // STRING -- the physics that always applies, per voice
         {"physics", "Physics", kString},
         {"damping", "Damping", kString},    {"stiffness", "Stiffness", kString},
@@ -453,7 +454,7 @@ void CurvesAudioProcessorEditor::resized() {
     // GLOBAL holds 8 controls since Mix was added. Keep it ONE row -- it
     // is the "one obvious spot", and a second row made Test Noise wrap
     // out of the panel's height and clip.
-    place(kGlobal, panel_[kGlobal], 2);
+    place(kGlobal, panel_[kGlobal], 3);   // 6 controls since Draw and Tip
     place(kSubscriber, panel_[kSubscriber], 5);
     place(kString, panel_[kString], 3);
     place(kCloth, panel_[kCloth], 4);
@@ -636,6 +637,7 @@ void CurvesAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
     if (!plot_bounds().contains(e.position.toFloat()))
         return;
     drawing_ = true;
+    processor_.set_drawing(true);   // PAUSED mode freezes the voice now
     // Deposit onto the string's *current* state, not a stale buffer.
     std::array<float, CurvesAudioProcessor::kMaxNodes> eq_snap{};
     processor_.pull_display(processor_.ui_voice(), draw_nodes_, eq_snap,
@@ -665,14 +667,52 @@ void CurvesAudioProcessorEditor::mouseDrag(const juce::MouseEvent& e) {
 void CurvesAudioProcessorEditor::mouseUp(const juce::MouseEvent&) {
     dragging_wall_ = -1;
     drawing_ = false;  // release: the string rings from the held shape
+    processor_.set_drawing(false);
 }
 
+// The stroke is painted with a TIP: a shape the pointer pokes the string
+// with, rather than a single node. Point is the original one-node-wide
+// behaviour; the others spread the deposit over a kernel so a drag leaves a
+// smooth contour instead of a row of spikes.
 void CurvesAudioProcessorEditor::deposit_stroke(float n0, float v0, float n1, float v1) {
-    const int lo = std::max(0, int(std::floor(std::min(n0, n1))));
-    const int hi = std::min(active_nodes() - 1, int(std::ceil(std::max(n0, n1))));
+    const int n = active_nodes();
+    const int tip = processor_.tip();
+    // Half-width as a fraction of the string, so a tip is the same size at
+    // every Precision.
+    static const float kHalf[CurvesAudioProcessor::kNumTips] =
+        {0.0f, 0.030f, 0.100f, 0.015f};
+    const int w = std::max(0, int(kHalf[juce::jlimit(
+        0, (int)CurvesAudioProcessor::kNumTips - 1, tip)] * n));
+
+    const int lo = std::max(0, int(std::floor(std::min(n0, n1))) - w);
+    const int hi = std::min(n - 1, int(std::ceil(std::max(n0, n1))) + w);
     for (int i = lo; i <= hi; ++i) {
-        const float t = std::abs(n1 - n0) > 1e-6f ? (float(i) - n0) / (n1 - n0) : 1.0f;
-        draw_nodes_[i] = juce::jlimit(-1.0f, 1.0f, juce::jmap(t, v0, v1));
+        // Value the stroke wants at this node: linear along the segment,
+        // clamped to the ends so the tip skirts carry the endpoint value.
+        const float t = std::abs(n1 - n0) > 1e-6f
+                            ? juce::jlimit(0.0f, 1.0f,
+                                           (float(i) - n0) / (n1 - n0))
+                            : 1.0f;
+        const float target = juce::jlimit(-1.0f, 1.0f, juce::jmap(t, v0, v1));
+        if (w == 0) {
+            if (i >= int(std::floor(std::min(n0, n1)))
+                && i <= int(std::ceil(std::max(n0, n1))))
+                draw_nodes_[i] = target;
+            continue;
+        }
+        // Distance from the stroke path, in nodes.
+        const float centre = juce::jlimit(std::min(n0, n1), std::max(n0, n1),
+                                          float(i));
+        const float d = std::abs(float(i) - centre) / float(w);
+        if (d >= 1.0f)
+            continue;
+        float k;
+        if (tip == CurvesAudioProcessor::kTipSpike)
+            k = 1.0f - d;                                   // triangular
+        else
+            k = 0.5f * (1.0f + std::cos(3.14159265f * d));  // raised cosine
+        draw_nodes_[i] = juce::jlimit(
+            -1.0f, 1.0f, draw_nodes_[i] + k * (target - draw_nodes_[i]));
     }
     dirty_ = true;
 }
@@ -836,6 +876,27 @@ void CurvesAudioProcessorEditor::timerCallback() {
                 juce::String("Test: ")
                     + CurvesAudioProcessor::test_src_name(src),
                 juce::dontSendNotification);
+        }
+    }
+    // Draw and Tip are stepped switches; name the position on the label so
+    // the knob angle is not the only indication, same as Test Src.
+    for (auto& k : knobs_) {
+        if (k->base_id == "tip") {
+            const int t = juce::jlimit(0, CurvesAudioProcessor::kNumTips - 1,
+                                       (int)std::lround(k->slider.getValue()));
+            if (t != last_tip_) {
+                last_tip_ = t;
+                k->label.setText(juce::String("Tip: ")
+                                     + CurvesAudioProcessor::tip_name(t),
+                                 juce::dontSendNotification);
+            }
+        } else if (k->base_id == "draw_mode") {
+            const int d = (k->slider.getValue() > 0.5) ? 1 : 0;
+            if (d != last_draw_mode_) {
+                last_draw_mode_ = d;
+                k->label.setText(d ? "Draw: paused" : "Draw: live",
+                                 juce::dontSendNotification);
+            }
         }
     }
     const int mode = processor_.physics_mode();

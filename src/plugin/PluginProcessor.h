@@ -116,6 +116,23 @@ public:
     // audio path and wants automation and preset recall.
     int ui_voice() const { return ui_voice_; }
     void set_ui_voice(int v) { ui_voice_ = juce::jlimit(0, kNumVoices - 1, v); }
+    // Drawing modes. LIVE deposits into a running string, which is what
+    // made a drag come out toothed: displace() zeroes velocity, but the sim
+    // keeps ticking between deposits and rebuilds it, so every mouse move
+    // started a fresh ring. PAUSED freezes the drawn voice for the duration
+    // of the stroke, so the shape lands exactly as drawn.
+    enum DrawMode { kDrawLive = 0, kDrawPaused };
+    // Pointer shapes: what the stroke pokes the string WITH.
+    enum Tip { kTipPoint = 0, kTipRound, kTipWide, kTipSpike, kNumTips };
+    static const char* tip_name(int i);
+    int draw_mode() const {
+        return draw_mode_ ? (int)std::lround(draw_mode_->get()) : 0;
+    }
+    int tip() const { return tip_ ? (int)std::lround(tip_->get()) : 0; }
+    void set_drawing(bool on) {
+        drawing_.store(on, std::memory_order_relaxed);
+    }
+
     bool dual_on() const { return dual_ != nullptr && dual_->get() > 0.5f; }
     void set_dual(bool on);
     // LINK mirrors every per-voice edit onto the other voice, so a patch can
@@ -540,6 +557,9 @@ private:
     // not, and rides in the state tree instead.
     juce::AudioParameterFloat* dual_ = nullptr;
     juce::AudioParameterFloat* link_ = nullptr;
+    juce::AudioParameterFloat* draw_mode_ = nullptr;
+    juce::AudioParameterFloat* tip_ = nullptr;
+    std::atomic<bool> drawing_{false};
     // ---- SPATIAL subscriber -------------------------------------------
     // Width is expressed in dB, the same unit as Range, because that is
     // literally what it is: how far the SIDE gain departs from the mid at

@@ -96,7 +96,7 @@ int main() {
     // went stale the moment Link was added, which is exactly the drift a
     // literal invites.
     static const char* kGlobals[] = {"mix", "leveler", "test", "precision",
-                                     "dual", "link"};
+                                     "dual", "link", "draw_mode", "tip"};
     int nglob = 0;
     for (const char* g : kGlobals) {
         const bool have = find(proc, g) != nullptr;

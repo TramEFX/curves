@@ -292,6 +292,11 @@ double flutter_rate_compensation(double ratio) {
 }
 }  // namespace
 
+const char* CurvesAudioProcessor::tip_name(int i) {
+    static const char* kNames[kNumTips] = {"point", "round", "wide", "spike"};
+    return kNames[juce::jlimit(0, (int)kNumTips - 1, i)];
+}
+
 const char* CurvesAudioProcessor::mod_knob_id(int k) {
     static const char* kIds[kNumModKnobs] = {
         "damping", "stiffness", "tension", "smoothing", "drive", "steady",
@@ -465,6 +470,10 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // identical, so Dual + Link sounds mono by definition; that is the
     // starting point, not the destination.
     addParameter(link_ = new APF("link", "Link L/R", R(0.0f, 1.0f, 1.0f), 0.0f));
+    addParameter(draw_mode_ = new APF("draw_mode", "Draw",
+                                      R(0.0f, 1.0f, 1.0f), 0.0f));
+    addParameter(tip_ = new APF("tip", "Tip",
+                                R(0.0f, (float)kNumTips - 1, 1.0f), 0.0f));
 
     // ---- the two per-voice sets ----
     for (int v = 0; v < kNumVoices; ++v)
@@ -963,7 +972,7 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         // As a fraction of N so "small" means the same number of waves
         // across the string at every precision.
         const double tau_nodes =
-            0.009 * std::max(8, n_nodes_) * v.detail_amt;
+            0.0045 * std::max(8, n_nodes_) * v.detail_amt;
         v.detail_b = (tau_nodes > 1e-3) ? 1.0 - std::exp(-1.0 / tau_nodes) : 1.0;
     }
     v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
@@ -1301,8 +1310,15 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
       }
       for (int s = base; s < base + len; ++s) {
         // Every active voice advances on the same divisor grid.
+        const bool freeze = (draw_mode() == kDrawPaused)
+                            && drawing_.load(std::memory_order_relaxed);
         for (int vi = 0; vi < nv; ++vi) {
         Voice& v = voices_[vi];
+        // PAUSED draw: hold the voice being drawn on perfectly still for
+        // the stroke. The other voice carries on -- only the one under the
+        // pointer is being painted.
+        if (freeze && vi == juce::jlimit(0, nv - 1, ui_voice_))
+            continue;
         if (++v.sim_counter >= sim_divisor_) {
             v.sim->tick();
             v.sim_counter = 0;
