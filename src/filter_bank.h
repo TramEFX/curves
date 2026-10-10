@@ -91,6 +91,27 @@ public:
                         double* out_re, double* out_im) const;
     int response_window() const { return resp_w_; }
 
+    // PRE-DISTORTION (O12). The bank delivers target (*) kernel, so every
+    // residual we have chased with scalars -- the positive bias, the
+    // cut/boost skew, troughs filling in, depth moving with Band Q -- is
+    // one defect: what you ask for and what you get differ by a
+    // convolution. Sending it target (/) kernel instead fixes all four at
+    // once, and lets the scalar corrections come back out.
+    //
+    // The inverse is precomputed once per Q change, so the per-chunk cost
+    // is a single short convolution. It is built by EARLY-STOPPED
+    // LANDWEBER, which is self-regularising: where the forward kernel has
+    // little response the iteration simply has not converged, so the
+    // inverse under-corrects instead of demanding the enormous gains a
+    // true inverse would. That matters because at Band Q 0 the bank passes
+    // 0.00 dB of detail -- a genuine null space, and no inverse can
+    // recover what was annihilated.
+    //
+    // in/out are per-band EXCESS (g - 1), length num_bands.
+    void predistort(const double* big_in, double* big_out) const;
+    // How close kernel (*) inverse comes to an impulse: 0 = exact.
+    double predistort_residual() const { return inv_residual_; }
+
     // Per-band dynamic EQ ("Steady"): bands whose bandpass energy exceeds
     // the threshold get their own contribution squeezed. amount 0 = off.
     // Threshold is linear amplitude on the bandpass signal.
@@ -231,6 +252,7 @@ private:
     void recompute_coefficients();
     void refresh_overlap();
     void rebuild_response_kernel();
+    void build_inverse_kernel();
 
     int num_bands_ = 0;
     double fs_ = 48000.0;
@@ -245,6 +267,9 @@ private:
     // Response kernel, indexed by lag + resp_w_. 1/K is folded in.
     int resp_w_ = 0;
     std::vector<double> kern_re_, kern_im_;
+    int inv_w_ = 0;
+    std::vector<double> inv_re_;
+    double inv_residual_ = 1.0;
     std::vector<double> a1_, a2_, a3_;  // SVF coefficients (g, k fixed per band)
     std::vector<double> g_;             // current linear gain per band
     std::vector<double> ramp_;          // per-frame geometric step toward target

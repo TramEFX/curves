@@ -621,6 +621,8 @@ void CurvesAudioProcessor::rebuild_voice(Voice& v, const VoiceParams& p) {
     v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
     rebuild_band_map(v);
     v.gain_targets.assign(n_nodes_, 1.0);
+    v.predist_in.assign(n_nodes_, 0.0);
+    v.predist_out.assign(n_nodes_, 0.0);
     // Display response scratch. Allocated here so publish_display never
     // allocates on the audio thread.
     v.resp_big.assign(n_nodes_, 0.0);
@@ -1257,50 +1259,40 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
               v.pan_targets[i] = d * pan_amt * w;
           }
       }
-      // ZERO-MEAN THE GAINS -- SLOWLY, and with a floor under the cuts.
+      // PRE-DISTORTION (O12). The bank delivers target (*) kernel, so send
+      // it target (/) kernel. This replaces the zero-mean scalar that used
+      // to sit here: that corrected the MEAN by shifting the whole curve,
+      // which skewed the excursions (-25.6/+8.2 for a +-18 ask) and, being
+      // peak-sensitive, let one crest move the entire string. Inverting
+      // the convolution fixes the bias, the skew and the filled-in troughs
+      // together, because they were always the same defect.
       //
-      // The standing bias is real (+7.3 dB on a symmetric shape: a parallel
-      // additive bank averages gains LINEARLY and a dB-symmetric curve is
-      // violently asymmetric in linear terms). But correcting it with the
-      // INSTANTANEOUS arithmetic mean caused two worse faults, both
-      // reported:
-      //
-      //  - the arithmetic mean of exponential gains is dominated by the
-      //    largest one, so a small wave riding onto a big crest spiked the
-      //    mean and pulled the WHOLE curve down. A local event moving the
-      //    entire string: the "glitch and bounce".
-      //  - it pushed cuts deeper (-25.6 dB for a +-18 ask), toward where
-      //    1 + S passes through zero. A magnitude through zero is a sharp
-      //    POINT, and only on the cut side: the "pitches into a point that
-      //    gets clipped", negative only.
-      //
-      // So: smooth the normaliser over ~400 ms, which removes the standing
-      // bias while being far too slow to react to a passing crest; and
-      // floor the gains so the response cannot reach the null that makes
-      // the cusp.
+      // The floor stays as a guard: a deep cut pre-distorts to a gain the
+      // bank cannot realise, and the geometric ramp needs positives.
       {
-          double m = 0.0;
-          for (int i = 0; i < n_nodes_; ++i) m += v.gain_targets[i];
-          m /= std::max(1, n_nodes_);
-          if (v.norm_mean <= 0.0)
-              v.norm_mean = m;
-          // 1 s. The correction is UNAVOIDABLY peak-sensitive -- the bias
-          // is caused by the peaks, so a statistic that ignores them (dB
-          // mean, median) would correct nothing -- which means the only
-          // defence against a passing crest moving the whole string is to
-          // be far slower than the crest. 400 ms still moved noticeably on
-          // a slow one.
-          const double na = 1.0 - std::exp(-double(len) / (1.0 * fs_));
-          v.norm_mean += na * (m - v.norm_mean);
-          const double inv = (v.norm_mean > 1e-9) ? 1.0 / v.norm_mean : 1.0;
-          // -30 dB floor: 1 + S*(g-1) stays clear of zero, so no cusp.
-          constexpr double kGainFloor = 0.0316;
-          for (int i = 0; i < n_nodes_; ++i)
-              v.gain_targets[i] = std::max(v.gain_targets[i] * inv, kGainFloor);
-          if (spatial_on)
+          // Blended by BAND Q. The inverse is only well conditioned where
+          // the forward kernel passes something: at Band Q 0 the bank
+          // transmits 0.00 dB of detail -- a true null space -- and asking
+          // the inverse to recover it makes things worse, not better
+          // (measured mean +11.3 dB against +7.3 with no correction at
+          // all). Fading it in with Band Q means the bottom of the knob is
+          // left exactly as it was and the top, where it works, gets it in
+          // full.
+          const double pd = std::clamp(v.last_q_amt, 0.0, 1.0);
+          constexpr double kGainFloor = 0.0316;   // -30 dB
+          auto apply = [&](std::vector<double>& tgt) {
               for (int i = 0; i < n_nodes_; ++i)
-                  v.side_targets[i] = std::max(v.side_targets[i] * inv,
-                                               kGainFloor);
+                  v.predist_in[i] = tgt[i] - 1.0;
+              v.bank.predistort(v.predist_in.data(), v.predist_out.data());
+              for (int i = 0; i < n_nodes_; ++i) {
+                  const double b =
+                      v.predist_in[i] + pd * (v.predist_out[i] - v.predist_in[i]);
+                  tgt[i] = std::max(1.0 + b, kGainFloor);
+              }
+          };
+          apply(v.gain_targets);
+          if (spatial_on)
+              apply(v.side_targets);
       }
       v.bank.set_block_targets(v.gain_targets.data(), len);
       if (spatial_on)

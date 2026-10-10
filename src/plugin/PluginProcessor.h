@@ -385,7 +385,7 @@ private:
         std::array<double, kMaxNodes> sm_broad{}, sm_detail{};
         std::array<double, kMaxNodes> disp_tmp{}, blur_tmp{};
         double detail_amt = 0.0, detail_b = 0.0;
-        double norm_mean = -1.0;   // slow gain normaliser, see prepare_voice
+        std::vector<double> predist_in, predist_out;
         double smooth_alpha = 0.05, vel_amt = 0.0, vel_scale = 0.0;
         std::array<KnobMod, kNumModKnobs> mods{};
         std::atomic<int> flutter_seed{1};

@@ -93,6 +93,7 @@ void FilterBank::refresh_overlap() {
     }
     ok_ = k_ / overlap_k_;
     rebuild_response_kernel();
+    build_inverse_kernel();
 }
 
 // The kernel for response_curve(). Hn depends only on the lag because the
@@ -134,6 +135,75 @@ void FilterBank::rebuild_response_kernel() {
         if (den <= 0.0) continue;
         kern_re_[lag + resp_w_] = (ku * ku / den) * inv_k;
         kern_im_[lag + resp_w_] = (ku * d / den) * inv_k;
+    }
+}
+
+// Build the inverse of the REAL part of the response kernel.
+//
+// Matching the real part rather than the magnitude is deliberate: the
+// response is 1 + Re + jIm, the imaginary parts of the neighbours cancel on
+// a symmetric log map, and what survives only matters where 1 + Re is near
+// zero -- which the gain floor already keeps us away from. Matching |1+S|
+// exactly would make this a nonlinear solve for no measurable gain.
+void FilterBank::build_inverse_kernel() {
+    inv_w_ = std::min(num_bands_ - 1, 64);
+    if (inv_w_ < 1) {
+        inv_re_.assign(1, 1.0);
+        inv_residual_ = 0.0;
+        return;
+    }
+    const int w = inv_w_, m = 2 * w + 1;
+    // Truncated forward kernel. Its lags sum to 1 by construction (the 1/K
+    // in rebuild_response_kernel is exactly that normalisation), so the
+    // convolution operator's largest eigenvalue is 1 at DC and Landweber
+    // is stable for a step below 2.
+    std::vector<double> kf(m, 0.0);
+    for (int lag = -w; lag <= w; ++lag) {
+        const int src = lag + resp_w_;
+        if (src >= 0 && src < (int)kern_re_.size())
+            kf[lag + w] = kern_re_[src];
+    }
+    std::vector<double> inv(m, 0.0), conv(m, 0.0);
+    inv[w] = 1.0;                       // start from an impulse
+    constexpr int kIters = 40;
+    constexpr double kStep = 1.0;
+    for (int it = 0; it < kIters; ++it) {
+        for (int i = 0; i < m; ++i) {
+            double acc = 0.0;
+            for (int j = 0; j < m; ++j) {
+                const int k = i - j + w;
+                if (k >= 0 && k < m)
+                    acc += inv[j] * kf[k];
+            }
+            conv[i] = acc;
+        }
+        for (int i = 0; i < m; ++i) {
+            const double want = (i == w) ? 1.0 : 0.0;
+            inv[i] += kStep * (want - conv[i]);
+        }
+    }
+    double res = 0.0;
+    for (int i = 0; i < m; ++i) {
+        const double want = (i == w) ? 1.0 : 0.0;
+        res = std::max(res, std::abs(conv[i] - want));
+    }
+    inv_residual_ = res;
+    inv_re_.swap(inv);
+}
+
+void FilterBank::predistort(const double* big_in, double* big_out) const {
+    const int w = inv_w_;
+    if (w < 1 || (int)inv_re_.size() != 2 * w + 1) {
+        for (int i = 0; i < num_bands_; ++i) big_out[i] = big_in[i];
+        return;
+    }
+    for (int i = 0; i < num_bands_; ++i) {
+        double acc = 0.0;
+        const int lo = std::max(-w, i - (num_bands_ - 1));
+        const int hi = std::min(w, i);
+        for (int lag = lo; lag <= hi; ++lag)
+            acc += inv_re_[lag + w] * big_in[i - lag];
+        big_out[i] = acc;
     }
 }
 

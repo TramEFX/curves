@@ -327,13 +327,23 @@ static void null_probe(int nb, double q, bool correct, double depth_db) {
         double m = 0.0;
         for (int k = 0; k < nb; ++k) m += bk.g[k];
         m /= nb;
-        if (m > 1e-9)
-            for (int k = 0; k < nb; ++k) {
-                // mirrors the processor: normalise, then floor at -30 dB
-                // so the response cannot reach the null that makes a cusp
-                bk.g[k] = std::max(bk.g[k] / m, 0.0316);
-                big[k] = bk.g[k] - 1.0;
-            }
+        (void)m;
+        // mirrors the processor: PRE-DISTORT, then floor at -30 dB
+        std::vector<double> pin(nb), pout(nb);
+        for (int k = 0; k < nb; ++k) pin[k] = bk.g[k] - 1.0;
+        bk.b.predistort(pin.data(), pout.data());
+        // mirrors the processor: blended by Band Q, which here is how far
+        // Q has travelled from 1 toward matched, on a log scale.
+        const double qm = matched_q(nb);
+        const double pd = (qm > 1.0)
+                              ? std::clamp(std::log(q / 1.0) / std::log(qm),
+                                           0.0, 1.0)
+                              : 1.0;
+        for (int k = 0; k < nb; ++k) {
+            const double b = pin[k] + pd * (pout[k] - pin[k]);
+            bk.g[k] = std::max(1.0 + b, 0.0316);
+            big[k] = bk.g[k] - 1.0;
+        }
     }
     bk.b.response_curve(big.data(), 1.0, re.data(), im.data());
     int crossings = 0;
@@ -374,7 +384,8 @@ std::printf("%6s %10s %9s %12s %13s %13s %13s %12s\n", "bands", "Q",
             null_probe(nb, std::pow(qm, 0.25), true, 18.0);
             null_probe(nb, std::pow(qm, 0.50), true, 18.0);
             null_probe(nb, qm, true, 18.0);
-            null_probe(nb, 1.0, false, 18.0);   // the retired uncorrected mode
+            null_probe(nb, qm * 4.0, true, 18.0);
+            null_probe(nb, qm * 8.0, true, 18.0);
         }
         // Why the worst dip sits at the TOP EDGE of the plot.
         // K is the sum of the neighbouring bands' responses, and the

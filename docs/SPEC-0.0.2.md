@@ -1803,17 +1803,35 @@ travel is honest. Needs an ear check at its current range (P7).
   own and wants ears at the end. `dual_test` section 9 is the harness, and
   its rate metric is validated against wave speed first (Tension 300 → 600
   gives 7.69 → 14.67 Hz, 1.91× against a predicted 2×).
-- **O12 · The bank could be made to DELIVER the asked response, not just
-  draw it honestly.** O10 fixed the display; the audio still delivers the
-  summed response rather than the requested shape. Because the kernel is
-  fixed and the spacing geometric, the inverse is also a fixed kernel — a
-  deconvolution, precomputed per Q change and applied as one convolution per
-  block. That would give honest depth, honest shape **and** deep cuts next
-  to boosts, which no choice of Q can. Risk: inverse filtering is
-  ill-conditioned where the forward kernel has a near-null space, which at
-  `Q = 1` is most of the spectrum (§5 B1, resolution table), so it is
-  plausible only at matched Q or above, and it needs a stability bound and
-  ears. Recorded now because the kernel work for O10 is most of the setup.
+- **O12 · Pre-distortion — BUILT (2026-10-09), and it corrected my own
+  diagnosis.** The bank delivers `target ⊛ kernel`, so it is now sent
+  `target ⊘ kernel`: the inverse of the kernel's REAL part, precomputed
+  once per Q change by early-stopped Landweber (self-regularising — where
+  the forward kernel passes nothing the iteration simply has not
+  converged, so it under-corrects rather than demanding impossible gains)
+  and applied as one short convolution per chunk.
+
+  It fixes the **excursions** completely from matched Q upward: a ±18 dB
+  request now measures −17.8/+18.0 dB at matched and an exact ±18.0 at
+  matched ×4. The cut/boost skew is gone.
+
+  **It does not fix the mean, and that corrected my diagnosis.** I had
+  attributed the +7.3 dB standing bias to linear averaging of the real
+  part. It is not: inverting the real part exactly leaves the mean at
+  +6.8 dB. The bias is the **quadrature term** — the response is
+  `|1 + Re + jIm|`, real per-band gains can only set `Re`, and the
+  magnitude is therefore always ≥ the target, inflated wherever `Im` is
+  large (on slopes). Real gains in a parallel bank cannot cancel it. The
+  only lever is narrower bands, which shrink the neighbour contributions
+  that produce `Im`: mean **+6.8 dB at matched Q, +2.9 at matched ×4,
+  +1.2 at matched ×8**.
+
+  Blended by Band Q, because at Band Q 0 the bank transmits 0.00 dB of
+  detail — a genuine null space — and deconvolving there made the mean
+  *worse* (+11.3 dB against +7.3 uncorrected). The bottom of the knob is
+  therefore left exactly as it was and the top gets the correction in
+  full. Costs about 3 points of CPU at 512 nodes.
+
 - **O4 · Per-node Q — the GLOBAL half is now built** (`Band Q`,
   `Resonance`; see B1). What remains is per-node modulation, tracked as
   O11. Previously read: `Q = 1.0` fixed, despite being a
