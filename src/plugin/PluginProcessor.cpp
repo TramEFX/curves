@@ -347,7 +347,16 @@ void CurvesAudioProcessor::add_voice_params(VoiceParams& p, int voice) {
     // instance ran at half the set time. Fixing that doubled the real
     // smoothing at any given setting; 15 ms restores the previous feel.
     addParameter(p.smoothing = new APF(ID("smoothing"), NM("Smoothing ms"), R{2.0f, 100.0f}, 15.0f));
-    addParameter(p.drive = new APF(ID("drive"), NM("Max gain dB"), R{3.0f, 39.0f}, 18.0f));
+    // 3..30, not 39. I raised this to 30 and then 39 on request, but the
+    // architecture cannot deliver it: measured at matched x4, the CUT side
+    // saturates near -31 dB and then goes BACKWARDS (-29.3 at a 30 dB ask,
+    // -31.1 at 40, -22.0 at 54) while boosts keep climbing, because the
+    // quadrature leakage from neighbouring boosts fills the cuts in. Past
+    // about 30 dB it stops being an EQ and becomes a broadband boost --
+    // mean response +11 dB at 30, +19.5 at 40, +32 at 54 against +0.9 at
+    // 12. Handing over a range that breaks the effect is not more power.
+    // Note the magnitude modifier still doubles this at High.
+    addParameter(p.drive = new APF(ID("drive"), NM("Max gain dB"), R{3.0f, 30.0f}, 18.0f));
     addParameter(p.steady = new APF(ID("steady"), NM("Steady (per-band)"), R{0.0f, 1.0f}, 0.35f));
     addParameter(p.physics = new APF(ID("physics"), NM("Physics"), R(0.0f, 3.0f, 1.0f), 0.0f));
     addParameter(p.velocity = new APF(ID("velocity"), NM("Velocity"), R{0.0f, 1.0f}, 0.0f));
@@ -1279,7 +1288,18 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
           // left exactly as it was and the top, where it works, gets it in
           // full.
           const double pd = std::clamp(v.last_q_amt, 0.0, 1.0);
-          constexpr double kGainFloor = 0.0316;   // -30 dB
+          // The floor has to follow the REQUESTED depth. A fixed -30 dB
+          // was fine at Range 18 and badly wrong past it: with EQ dB at 37
+          // and its magnitude on High the request is +-75 dB, so every cut
+          // clamped at -30 while boosts ran to +72. That asymmetry IS the
+          // "strong bias towards positive dB" -- not a property of the
+          // bank at all, just my floor sitting in the middle of the range.
+          // Six dB below the deepest request, so it never clips a gain the
+          // user actually asked for, and still keeps the response off the
+          // null that makes a cusp.
+          const double floor_db = -(range_db + 6.0);
+          const double kGainFloor =
+              std::max(1e-6, std::pow(10.0, floor_db / 20.0));
           auto apply = [&](std::vector<double>& tgt) {
               for (int i = 0; i < n_nodes_; ++i)
                   v.predist_in[i] = tgt[i] - 1.0;

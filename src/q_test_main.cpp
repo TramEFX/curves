@@ -341,7 +341,10 @@ static void null_probe(int nb, double q, bool correct, double depth_db) {
                               : 1.0;
         for (int k = 0; k < nb; ++k) {
             const double b = pin[k] + pd * (pout[k] - pin[k]);
-            bk.g[k] = std::max(1.0 + b, 0.0316);
+            // mirrors the processor: floor six dB below the request
+            const double fl = std::max(1e-6,
+                                       std::pow(10.0, -(depth_db + 6.0) / 20.0));
+            bk.g[k] = std::max(1.0 + b, fl);
             big[k] = bk.g[k] - 1.0;
         }
     }
@@ -386,7 +389,21 @@ std::printf("%6s %10s %9s %12s %13s %13s %13s %12s\n", "bands", "Q",
             null_probe(nb, qm, true, 18.0);
             null_probe(nb, qm * 4.0, true, 18.0);
             null_probe(nb, qm * 8.0, true, 18.0);
+            // and at the depth the owner is actually running
+            null_probe(nb, qm, true, 75.0);
+            null_probe(nb, qm * 4.0, true, 75.0);
         }
+        std::printf("\nUSABLE DEPTH: how far can the EQ be pushed before the\n");
+        std::printf("quadrature leakage stops it being an EQ at all?\n\n");
+        std::printf("%6s %10s %10s %13s %13s %12s\n", "bands", "Q",
+                    "ask +-dB", "drawn min", "drawn max", "MEAN");
+        {
+            const int nb = 128;
+            const double qm = matched_q(nb);
+            for (double dep : {12.0, 18.0, 24.0, 30.0, 40.0, 54.0})
+                null_probe(nb, qm * 4.0, true, dep);
+        }
+        
         // Why the worst dip sits at the TOP EDGE of the plot.
         // K is the sum of the neighbouring bands' responses, and the
         // outermost bands have no neighbours beyond the map -- so K falls
