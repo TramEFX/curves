@@ -13,18 +13,23 @@ log that runs to 2026-10-02).
 
 ---
 
-## State at a glance — 2026-10-06
+## State at a glance — 2026-10-09
 
 | | |
 |---|---|
 | What it is | **A physics sandbox for spectral control.** Physics mode and subscriber are both axes; the cloth is one mode, EQ gain is one subscriber |
 | Repo | `github.com/TramEFX/curves` (private), branch `main` |
-| Head | `c547496` (Band Q) + O10 |
+| Head | `1c5bc28` (RAW + magnitude minis) |
 | Milestones | M0 ✅ · M1 ✅ (owner ear test) · M2 code-complete, **feel gate still pending** |
-| Parameters | 30, in 28 spec entries |
+| Parameters | **63** — 27 per voice (×2, voice 1 suffixed `_r`) + 9 global |
 | Validation | 12 scenarios, **119,936 cells, 0 mismatches** Python↔C++ |
-| Cost @48 kHz | ~7% / ~23% / ~45% of one core at 128 / 256 / 512 nodes |
+| Cost @48 kHz | ~9% / ~25% / ~34% of a core at 128 / 256 / 512 nodes; **Dual roughly doubles it** (60.3% at 512) |
 | Formats | VST3 (auto-deploys to Common Files), CLAP (build tree only), Standalone |
+
+> **Two voices.** Dual L/R runs two independent strings, one per channel,
+> each with a complete parameter set. Link mirrors edits between them. The
+> plot splits into two canvases and the highlighted one is the editable
+> one. See `CLAUDE.md` §"Two voices" for the traps.
 
 > **Status lives in `SPEC-0.0.2.md` §5** — blocked / pending / open, with
 > numbered items (B1, P3, O4 …). **Nothing is blocked** as of 2026-10-06:
@@ -817,6 +822,162 @@ Updated: `ORCHESTRATION.md` §1 (with the correction stated explicitly rather
 than quietly rewritten), `SPEC-0.0.2.md` (scope note, §1 dataflow, the
 Physics entry), `CLAUDE.md` (lead paragraph). Also corrected stale figures in
 `CLAUDE.md` — it still said 11 scenarios / 104,576 cells and 22 parameters.
+
+## 2026-10-08 → 10-09 · Two voices, pre-distortion, and a long tuning cycle
+
+The biggest stretch so far. Dual voices, an honest EQ, and a run of
+owner-reported faults — several of which were **mine, introduced earlier in
+the same session**. Those are recorded as prominently as the wins, because
+the pattern in them is the useful part.
+
+### Dual L/R — two independent strings
+
+Voice 0 drives left, voice 1 right, each through its own mono bank. Stereo
+from two physics simulations diverging, not from one string's mid/side —
+the thing the architecture was pointed at from the start.
+
+Done as a refactor first: every per-string member moved into a `Voice`
+struct and two thirds of `processBlock` became
+`prepare_voice(Voice&, VoiceParams&)`, with the single-voice path verified
+unchanged. **63 parameters**: 27 per voice (voice 1's suffixed `_r`) and 9
+globals. Both sets are real automatable parameters.
+
+`Link` mirrors every per-voice edit — knobs, randomisers, walls, LEDs —
+and copies on enable. Dual + Link is mono by definition; it is the starting
+point, not the destination.
+
+**Both strings are drawn.** The plot splits into two stacked canvases; the
+highlighted one carries the walls, anchor and full brightness, the other is
+a dimmed read-only view, and clicking it selects that voice.
+
+> **Three bugs of one kind.** `wall_x`/`set_wall`, the two randomiser
+> dials, and the physics preset all looked parameters up by their **bare
+> id**, so they silently read or wrote voice 0 while voice 1 was selected.
+> Every UI edit now goes through one route, `write_voice_param(base, value)`.
+> `dual_test` section 6 drives the real editor path and guards it — the
+> editor binding had shipped completely untested.
+
+### O12 — per-band pre-distortion, and a diagnosis it corrected
+
+The bank delivers `target ⊛ kernel`, so it is now sent `target ⊘ kernel`:
+the inverse of the kernel's real part, precomputed per Q change by
+**early-stopped Landweber** (self-regularising — where the forward kernel
+passes nothing the iteration has simply not converged, so it under-corrects
+instead of demanding impossible gains) and applied as one short convolution
+per chunk. Blended by Band Q, because at Band Q 0 the bank transmits
+**0.00 dB** of detail — a genuine null space — and deconvolving there made
+things worse.
+
+**It fixes the excursions and not the mean, which corrected what I had
+claimed.** I attributed the +7.3 dB standing bias to linear averaging of
+the real part and said inverting the convolution would fix "all four at
+once". Inverting the real part *exactly* leaves the mean at +6.8 dB.
+
+The bias is the **quadrature term**: the response is `|1 + Re + jIm|`, real
+per-band gains can only set `Re`, so the magnitude is always ≥ the target
+and is inflated wherever `Im` is large — on slopes. **No choice of real
+gains in a parallel bank can cancel it.** The only lever is narrower bands:
+
+| Q | drawn min | drawn max | mean |
+|---|---|---|---|
+| matched | −17.8 | 18.0 | +6.83 |
+| matched ×4 | **−18.0** | **18.0** | **+2.91** |
+| matched ×8 | **−18.0** | **18.0** | **+1.24** |
+
+### The usable depth ceiling
+
+Measured at matched ×4, as the requested depth rises the **cut side
+saturates near −31 dB and then reverses** (−29.3 at a 30 dB ask, −31.1 at
+40, −22.0 at 54) while boosts keep climbing. Quadrature leakage from
+neighbouring boosts fills the cuts in faster than they deepen. Mean lift
+goes +0.85 / +2.91 / +6.53 / +11.08 / +19.51 / +31.96 dB at 12 / 18 / 24 /
+30 / 40 / 54.
+
+**Past about 30 dB it is not an EQ, it is a broadband boost with spikes.**
+I had raised EQ dB 24 → 30 → 39 on request *without measuring whether the
+architecture could deliver it*. Capped at 30. Handing over a range that
+breaks the effect is not more power.
+
+### Faults I introduced and then had to fix
+
+- **Zero-mean gain correction → a cusp and a whole-string bounce.** I
+  divided the gains by their **instantaneous arithmetic mean**, which for
+  exponential gains is dominated by the largest one — so a small wave
+  riding onto a big crest spiked the mean and pulled the **entire curve**
+  down. It also deepened cuts toward where `1 + S` crosses zero, and a
+  magnitude through zero is a **sharp point**, cut-side only. Replaced by
+  O12; the scalar is gone.
+- **A fixed −30 dB gain floor.** Fine at Range 18, badly wrong past it:
+  with EQ dB at 37 on High magnitude the ask is ±75 dB, so every cut
+  clamped at −30 while boosts ran to +72. That asymmetry was most of a
+  reported "strong bias towards positive dB" — my floor sitting in the
+  middle of the range, not a property of the bank. Now six dB below the
+  deepest ask.
+- **Stepped knobs needed a third of the window to move.** JUCE maps the
+  full range onto 250 px, so Band Q (0..1, snap at 0.5) needed 125 px of
+  drag. Indistinguishable from a dead control. Now 60 px per step.
+- **LINK drawn on top of RESET** — hand-picked offsets overlapped by 30 px.
+  A test now asserts none of the header buttons intersect.
+- **Band Q rode the EQ depth.** Blending the overlap correction alongside Q
+  left a residual `K^(1−amount)`, so the knob changed depth as well as
+  bandwidth and brought the nulls back below ~60%. The correction is full
+  at every setting now; B1 is closed.
+
+### Character was switching off three controls
+
+The budget split was a straight `1 − character`, so at Character 1 the wind
+dial went to zero — and `wind_speed` is the amplitude reference for the
+gust field, the mid-band ripples **and** Wrinkle (`wrinkle_speed` rides on
+`gust_speed`). That is the entire "Wind isn't working / Wrinkle only works
+with Character down / Wrinkle won't turn off" cluster: one control silently
+killing three others. Both shares now carry a 0.22 floor and still sum to
+1. Character and Waves became **magnitude minis** on Flutter and Wind, with
++30% each, which is how they were being used.
+
+### The dual dropout
+
+Flagpole + Dual at 512 nodes measured **90.7% of a core** — the reported
+hitch after a couple of seconds. The sim was ticking at 24 kHz there to
+drive a control signal that is smoothed and then sampled once per
+32-sample chunk. Divisor 2 → 4 at 512: **identical physics** (rate
+2.518 Hz, control rms 0.0569 either way — dt-converged, as the docs
+claimed) and Dual drops to 60.3%.
+
+### Other work
+
+**Detail**, a mini dial on Smooth: a spatial low-pass across the nodes
+whose cutoff sweeps, 24th order, run once per chunk (per tick it cost 45
+points of CPU for no benefit). Rides Smooth's power. **Draw modes and
+tips** — `paused` freezes the drawn voice so a drag lands as drawn rather
+than as a row of teeth, and four pointer shapes. **RAW** strips every
+modifier and leaves the bare string, measured at 155× less control rms.
+**Flutter's randomiser** now moves the rate too, as one global multiplier —
+a per-node frequency spread sets a travel direction and inverts it.
+**Low/High Hz** dim when the spatial pair is inert. **O10's honest curve**
+and the Steady detector normalisation landed at the start of the stretch.
+
+### What kept going wrong with the measurements
+
+Four separate times an instrument read something other than what it
+claimed, and each one sent me the wrong way for a round:
+
+- **Peak of a chaotic cloth is not reproducible.** Identical settings
+  measured 0.702 and 0.330 on consecutive runs. I calibrated against that
+  noise twice and got two different wrong answers, one of which made Flap
+  *reduce* the motion. RMS over a long window is the statistic.
+- **A 1.5-cycle probe shape is not zero-mean in dB** (+3.8 dB of its own),
+  so the first bias measurement said +9.3 dB when the bank's share is +7.3.
+- **The band probe shared a counter with a tick-rate accumulator** sampling
+  the unblurred signal 16× more often, which swamped it — Detail measured
+  as completely inert while working fine.
+- **The band probe's "small" boundary sat inside the mid band**, counting
+  waves Detail is meant to keep.
+
+Plus one test that was simply configured wrong: section 8 ran at 15 ms
+Smoothing, where the temporal smoother has already removed the buzz the
+knob exists to remove.
+
+---
 
 ## 2026-10-06 · O10 — the curve is the response now, and a bug Band Q exposed
 

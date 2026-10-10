@@ -2,8 +2,11 @@
 
 **Status: current.** Supersedes `SPEC-0.0.1.md`, which is kept for history.
 
-An exhaustive knob-by-knob reference covering all **30 parameters** in
-**28 entries** (the two Walls share one, as do the two Randomisers). For every control it states:
+An exhaustive knob-by-knob reference covering all **63 parameters**:
+**27 per voice**, declared twice (voice 1's carry an `_r` suffix), plus
+**9 globals** — Precision, Mix, Leveler, Test Src, Dual, Link, Raw, Draw
+and Tip. The two Walls share one entry, as do the two Randomisers. For
+every control it states:
 
 1. **Assigned parameters** — the exact engine variables it writes.
 2. **What it does** — the effect, in plain language.
@@ -888,6 +891,17 @@ rate, scale or geometry.
 #### 14 · Character  `character`
 **0…1 · default 0.0 · Cloth**
 
+**Now a magnitude mini on Flutter Hz's left shoulder**, not a full dial,
+and the shedding it drives is +30% (gain 90 → 117). It is how MUCH flutter
+there is, which is how it is used in practice.
+
+> **It used to switch off three other controls.** The budget split was a
+> straight `1 − character`, so at Character 1 the wind dial went to zero —
+> and `wind_speed` is the amplitude reference for the gust field, the
+> mid-band ripples AND Wrinkle (`wrinkle_speed` rides on `gust_speed`).
+> Both shares now carry a 0.22 floor and still sum to 1, so Character
+> stays a balance without being able to silence anything.
+
 | Assigns | The split of `target_peak` between `wind_speed` and `shed_gain` |
 |---|---|
 
@@ -1025,6 +1039,10 @@ boost clamp binding, which is honest — very fast flutter genuinely is subtle.
 
 #### 17 · Waves  `waves`
 **0…1 · default 0.24 · Cloth**
+
+**Now a magnitude mini on Wind's left shoulder**, not a full dial, and
+its range is +30%: `wave_density = 0.5 + 9.75·knob` (was 7.5). It is how
+BIG the wind's waves are.
 
 | Assigns | `sim_->wave_density = 0.5 + 7.5·Waves`, plus a gust-dial compensation |
 |---|---|
@@ -1372,6 +1390,148 @@ or the band map move.
 ---
 
 #### 27 · Band Q  `q_mode`
+**0…1 · default 0 · Subscribers · per voice**
+
+| Assigns | `FilterBank::set_q`, and `set_overlap_correction(1.0)` always |
+|---|---|
+
+**What it does.** Sets **bandwidth only**. Q blends geometrically from 1 to
+matched-to-spacing, `Q = matched_q(N)^amount`, where matched is
+`sqrt(2^BW)/(2^BW − 1)` with `BW` the band spacing in octaves — 19.85 /
+39.86 / 79.88 at 128 / 256 / 512 nodes.
+
+**The overlap correction is full at every setting.** It used to blend
+alongside Q so both endpoints stayed bit-exact; that left a residual
+overlap of `K^(1−amount)`, so the knob silently rode the EQ depth as well
+as the bandwidth and, below about 60%, brought the cut inversion and the
+nulls back. See §5 B1.
+
+**Measured.** Zero sign flips at every setting. A flat shape gets exactly
+the asked depth at every Q. A *varying* shape does not, and that is the
+resolution limit rather than a depth error: 1.4-octave bands cannot render
+a shape finer than their own width, so a broad setting smears the curve —
+drawn min/max for a ±18 dB shape runs −5.4/+14.5 dB at 0 and −16.9/+17.8
+at 1.
+
+---
+
+#### 28 · Resonance  `resonance`
+**0…1 · default 0 · Subscribers · per voice**
+
+| Assigns | `Q = matched_q(N)^BandQ · 2^(3·Resonance)` — ×1 to ×8 |
+|---|---|
+
+**What it does.** Narrows the bands past matched. Each band rings longer
+and the bands stop filling the gaps between one another, so the response
+becomes a comb. `T60 = 6.91·Q/(π·f)`, confirmed at every point tested: at
+128 nodes, 754 ms at 58 Hz already at matched Q, 3.0 s at Resonance 0.67.
+Ring time falls as `1/f`, so the texture is bass-weighted.
+
+**It is also the lever on EQ accuracy.** The residual mean lift is the
+quadrature term, which only narrower bands can shrink: **+6.8 dB at
+matched, +2.9 at matched ×4, +1.2 at matched ×8** (§5 P7).
+
+---
+
+#### 29 · Detail  `detail`
+**0…1 · default 0 · Subscribers · per voice · mini dial on Smooth**
+
+| Assigns | spatial low-pass across the nodes, `τ = 0.0045·N·knob` nodes |
+|---|---|
+
+**What it does.** Smooths the **small** waves harder while leaving the big
+ones. Smoothing is one time constant for the whole control signal, so
+slowing the flutter also slows the broad sway; this splits by **spatial
+scale** first. The cutoff **sweeps** with the knob — smallest waves
+flattened first, progressively longer ones as it rises.
+
+**24th order** (twelve bidirectional one-pole passes, zero phase). A
+sharp knee at a high cutoff, not a gentle one dragged down: the earlier
+4th-order version had to pull the cutoff to half a wavelength of the whole
+string to silence the buzz, which left barely two humps.
+
+**Rides Smooth's power.** With Smooth off it does nothing — it is a
+modifier on the smoother, not a second one. Verified inert.
+
+**Runs once per CHUNK, not per sim tick.** Per tick it cost 45 points of
+CPU at 512 nodes for no benefit, since the targets are only re-aimed per
+chunk.
+
+---
+
+#### 30 · Dual L/R  `dual` · **global**
+**0…1 step 1 · default 0 · header button**
+
+Two independent strings: voice 0 drives **left**, voice 1 **right**, each
+through its own mono bank. Stereo then comes from two physics simulations
+genuinely diverging rather than from one string's mid/side.
+
+Switching it on **copies the current voice onto the other and re-rolls its
+seeds** — the same patch with different weather, so it is audibly stereo at
+once and still recognisably what you had. **Width and Place go inert**: a
+voice sees one channel, so its side signal is zero by construction.
+
+Roughly doubles the sim cost: 512 nodes measured 33.8% of a core alone and
+60.3% in Dual.
+
+---
+
+#### 31 · Link L/R  `link` · **global**
+**0…1 step 1 · default 0 · header button**
+
+Mirrors every per-voice edit onto the other voice — knobs, randomisers,
+walls, and the power/magnitude LEDs. Switching it on copies the voice you
+are looking at, seeds included. Dual + Link is mono by definition: it is
+the starting point for dialling a patch in on both, then unlinking to let
+them diverge.
+
+---
+
+#### 32 · Raw string  `raw` · **global**
+**0…1 step 1 · default 0 · header button**
+
+Strips every modifier and leaves the bare string. Physics is forced to
+**Free** for the duration (so the anchors and the mass taper go too) and
+wind, shedding, wrinkle and the mid-band ripples are zeroed. What is left
+is the **STRING** panel — Damping, Stiffness, Tension, Velocity — plus
+whatever you draw on it.
+
+**Measured** at 155× less control-signal rms than the same patch with the
+cloth running (0.04642 → 0.00030). Pair it with `Draw: paused` and a tip:
+with no forcing the string only moves when you give it something.
+
+---
+
+#### 33 · Draw  `draw_mode` · **global**
+**0…1 step 1 · default 0 (live)**
+
+- **live** — deposit into the running string.
+- **paused** — freeze the drawn voice for the duration of the stroke.
+
+`displace()` zeroes velocity, but in live mode the sim keeps ticking
+between deposits and rebuilds it, so every mouse move started a fresh ring
+and a drag came out as a row of teeth. Paused holds the voice still so the
+shape lands exactly as drawn. Only the voice under the pointer freezes.
+
+---
+
+#### 34 · Tip  `tip` · **global**
+**0…3 step 1 · default 0 (point)**
+
+What the pointer pokes the string with. Widths are fractions of the node
+count, so a tip is the same size at every Precision, and the skirts blend
+into what is already there rather than overwriting it.
+
+| tip | shape | half-width |
+|---|---|---|
+| point | single node | 0 |
+| round | raised cosine | 3% of the string |
+| wide | raised cosine | 10% |
+| spike | triangular | 1.5% |
+
+---
+
+## 27 · Band Q  `q_mode`
 **0…1 step 1 · default 0 (Flat) · Subscribers**
 
 | Assigns | `FilterBank::set_q` and `set_overlap_correction` |
@@ -1493,9 +1653,19 @@ list. Fixed items are kept with a date so a defect is not rediscovered.
 
 ### ⛔ BLOCKED — needs a decision before the work can continue
 
-*Nothing is blocked. B1 was the only blocker; the route is chosen, built and
-measured (below), and it unblocked B2. What remains is an ear test, which is
-**P7**.*
+*Nothing is blocked.*
+
+**B1 is CLOSED (2026-10-09).** Band Q became a continuous gradient and the
+overlap correction is now **full at every setting**, so the knob sets
+bandwidth alone. Blending the correction alongside Q — the first attempt —
+left a residual overlap of `K^(1−amount)`, which made the knob ride the EQ
+depth and, below about 60%, brought the cut inversion and the nulls back.
+Measured after the fix: **zero sign flips at every Band Q**, and the dB
+axis widens only by whatever is still uncorrected, which is now nothing.
+
+The cost is the uncorrected endpoint, which was the configuration measured
+at 31–43 dB of display error, 17–67× level and a null on any 0.09 dB cut.
+No loss.
 
 **B1 · Band overlap — ROUTE CHOSEN AND BUILT (2026-10-06). Default is still
 `Band Q = Flat` pending ears; see P7.**
@@ -1671,107 +1841,49 @@ travel is honest. Needs an ear check at its current range (P7).
 - **P6 · Shedding has no Tension compensation** — peak falls 80.7× across the
   Tension dial at Character 1. Belongs with the Character work.
 
-- **P7 · `Band Q = Matched` needs an ear test, and the default depends on
-  it.** Everything measurable says Flat is broken — 31–43 dB WYSIWYG error,
-  17–67× full-scale output, **zero** spectral resolution, depth coupled to
-  Precision, cuts inverting. Nothing measurable says how Matched *sounds*,
-  and every sound tuned so far was tuned against Flat. Flipping the default
-  is an owner call, and it changes how projects saved before 2026-10-06
-  sound (old states carry no `q_mode`, so they take the constructor
-  default).
+- **P7 · Band Q is a gradient now; where it should sit is an ear call.**
+  The old question — whether `Matched` becomes the default — is gone, since
+  the correction is full throughout and 0 no longer means "uncorrected".
+  What is left is taste. Measured guidance: the **excursions** are accurate
+  from matched Q upward (a ±18 dB ask delivers −17.8/+18.0 at matched and
+  an exact ±18.0 at matched ×4), and the **mean lift** falls with Q —
+  +6.8 dB at matched, +2.9 at matched ×4, +1.2 at matched ×8. So Band Q up
+  **and** some Resonance is where the EQ is most honest. The owner reports
+  preferring the upper half anyway.
 
-  **Checklist, with what counts as a pass.** Work top to bottom; items 1–3
-  are expected-behaviour confirmations, not judgements, and getting them out
-  of the way first stops them being mistaken for faults later.
+- **P8 · Usable EQ depth is bounded at about ±30 dB, and the knob is capped
+  there.** Measured at matched ×4 as the ask rises:
 
-  **1 · Flat mode now draws a much blunter curve. Expected, not a bug.**
-  The bright curve is the bank's true response as of O10, and at `Q = 1`
-  the bank genuinely smears over ~1.4 octaves. So in Flat the bright line
-  will lose nearly all the detail the faint string line has.
-  *Pass:* the bright line in Flat is visibly smooth/blunt while the faint
-  line wiggles; flipping to Matched makes the bright line track the faint
-  one closely. **That contrast is the resolution finding, visible.**
+  | ask ± | drawn min | drawn max | mean |
+  |---|---|---|---|
+  | 12 dB | −12.0 | 12.0 | +0.85 |
+  | 18 dB | −18.0 | 18.0 | +2.91 |
+  | 24 dB | −23.8 | 24.0 | +6.53 |
+  | 30 dB | −29.3 | 30.0 | +11.08 |
+  | 40 dB | **−31.1** | 40.0 | +19.51 |
+  | 54 dB | **−22.0** | 54.0 | +31.96 |
 
-  **2 · Flat mode's dB axis now reads much wider than the knob.** With
-  Range at 18 the axis will label around ±44 dB at 128 nodes, because that
-  is what the bank is really doing. In Matched the axis equals the knob
-  again.
-  *Pass:* axis label changes when `Band Q` is flipped, and in Matched it
-  matches the Range knob.
+  The **cut side saturates near −31 dB and then reverses** while boosts
+  keep climbing: quadrature leakage from neighbouring boosts fills the cuts
+  in faster than they deepen. Past ~30 dB it stops being an EQ and becomes
+  a broadband boost with spikes. EQ dB was raised 24 → 30 → 39 on request
+  before this was measured, and is now capped at **30**. Note the magnitude
+  modifier still doubles it at High, which puts High + 30 past the limit.
 
-  **3 · Matched should be dramatically quieter at the same settings.**
-  Measured 17× → 1.5× peak at 128 nodes, 67× → 1.5× at 512.
-  *Pass:* flipping to Matched drops the level hard, and the Leveler's gain
-  reduction falls with it. If Matched is *not* much quieter, something is
-  wrong — stop and say so.
+- **P9 · Low Hz / High Hz are structurally inert in Dual.** They taper the
+  *spatial* deviation, so they do nothing whenever Width and Place are both
+  zero — and always in Dual, where a voice sees one channel and its side
+  signal is zero by construction. They now dim with the pair they belong
+  to, which is honest but not a feature. Giving them a job in Dual needs a
+  design decision, not a fix.
 
-  **4 · Re-tune EQ dB.** 3.74 of 24 was compensation for a ~24× overshoot
-  that no longer exists.
-  *Check:* what value in Matched gives the depth 3.74 gave in Flat. Expect
-  it to land far higher. Record the number — it recalibrates the default.
-
-  **5 · Re-check Steady.** Its detector was Q-sensitive and is now
-  normalised (verified Q-invariant to 0.01 dB on a tone). But a *narrower*
-  band genuinely captures less broadband energy, so the same threshold
-  means something different against real material.
-  *Check:* does Steady still tame what it used to at the same setting? If
-  it now feels weak on broadband material, the threshold wants rescaling
-  with bandwidth — that is a real follow-up, not a bug.
-
-  **6 · Re-check the Leveler.** It was absorbing an enormous gain error and
-  will have far less to do.
-  *Check:* whether its default 0.5 is still right, or now over-works a
-  signal that no longer needs it.
-
-  **7 · Place (B2) is unblocked — check its travel.** The cross-feed is
-  corrected by the same scalar, so hard pan should arrive near the top of
-  the knob rather than at 0.014.
-  *Pass:* placement sweeps smoothly across most of the knob's range. Mono
-  compatibility is structural (`L+R = 2·mid` identically, so the cross-feed
-  cannot change it) and does not need testing again.
-
-  **8 · Width.** Inherits the same correction.
-  *Check:* Width in dB now means what it says against the EQ's dB.
-
-  **9 · Resonance sweep — the actual new sound.** At 0 the bank is a clean
-  EQ. Ring time is `6.91·Q/(π·f)`, so it is strongly bass-weighted.
-  *Listen at 0 / 0.33 / 0.67 / 1.0 for:* ring appearing on low content
-  first (754 ms at 58 Hz already at 0, 3 s at 0.67); the response turning
-  comb-like as the gaps stop being filled (ripple 0.93 → 3.24 → 5.73 dB);
-  and whether the texture is the shimmer the convolution trick produces.
-  *Pass:* it is musically useful somewhere in the range. If the ring is
-  only ever bass mud, the `1/f` weighting is the reason and a
-  frequency-dependent Q is the follow-up.
-
-  **10 · Precision should finally be audible.** At `Q = 1` it measured
-  **0.00 dB** of resolution difference at every scale, so 128 vs 512 was
-  inaudible. In Matched, resolution is set by node spacing.
-  *Pass:* in Matched, switching 128 → 512 audibly sharpens the spectral
-  detail. **If it does not, the resolution claim is wrong and I want to
-  know.** In Flat it should still sound the same at any Precision.
-
-  **11 · Smoothing against ring.** Ring is a *new* time constant that
-  Smoothing does not control — Smoothing governs how fast the curve moves,
-  not how long a band rings.
-  *Check:* at high Resonance, whether fast Smoothing plus long ring smears
-  into mush, and whether the two controls feel like they fight.
-
-  **12 · CPU and glitching.** The honest curve costs 1.17% of a core at 512
-  nodes (193 µs per publish at 60 Hz); the bank itself is unchanged at
-  11.74%. 512 nodes with wind was already ~101% of a core before any of
-  this.
-  *Check:* small buffer sizes (64/128) at 512 nodes for dropouts, and CPU
-  when the input goes **silent** at high Resonance — long ring-downs are
-  where denormals would bite if `ScopedNoDenormals` were not covering it.
-
-  **13 · Mix.** Folded into the response convolution exactly (the sum is
-  linear in the per-band excess).
-  *Pass:* at Mix 0.5 the drawn curve is still exactly what you hear.
-
-  **14 · The honest answer to "should Matched be the default".** It is a
-  sound judgement, not a measurement. The measurements only establish that
-  Flat is wrong in five independent ways — they say nothing about which one
-  you want to *make records with*.
+- **P10 · Two Flagpole reports not yet reproduced.** (a) Switching
+  Direction is said to leave the flapping end anchored — but
+  `recompute_cloth` already moves the anchor with `low_pole`, so the sim
+  logic reads correct and a speculative patch would be guessing. (b) A
+  pluck in Flagpole feels heavily damped even with Damping off, which is
+  plausibly the aerodynamic drag doing its job, but is unmeasured. Both
+  want a focused repro.
 
 ### 🔧 OPEN — known, costed, nobody blocked
 
