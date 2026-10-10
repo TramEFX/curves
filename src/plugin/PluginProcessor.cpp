@@ -479,6 +479,7 @@ CurvesAudioProcessor::CurvesAudioProcessor()
     // identical, so Dual + Link sounds mono by definition; that is the
     // starting point, not the destination.
     addParameter(link_ = new APF("link", "Link L/R", R(0.0f, 1.0f, 1.0f), 0.0f));
+    addParameter(raw_ = new APF("raw", "Raw string", R(0.0f, 1.0f, 1.0f), 0.0f));
     addParameter(draw_mode_ = new APF("draw_mode", "Draw",
                                       R(0.0f, 1.0f, 1.0f), 0.0f));
     addParameter(tip_ = new APF("tip", "Tip",
@@ -545,6 +546,14 @@ juce::AudioParameterFloat* CurvesAudioProcessor::find_param(
             if (rp->paramID == id)
                 return rp;
     return nullptr;
+}
+
+void CurvesAudioProcessor::set_raw(bool on) {
+    if (raw_ == nullptr)
+        return;
+    raw_->beginChangeGesture();
+    raw_->setValueNotifyingHost(on ? 1.0f : 0.0f);
+    raw_->endChangeGesture();
 }
 
 void CurvesAudioProcessor::set_link(bool on) {
@@ -766,7 +775,10 @@ void CurvesAudioProcessor::rebuild_band_map(Voice& v) {
 void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
                                          int prec_idx, VoiceBlock& out) {
     // Physics preset: anchors + force field when it changes.
-    const int phys = static_cast<int>(p.physics->get());
+    // RAW forces Free: no anchors, no mass taper, no force field. The
+    // forcing terms are zeroed below as well, since they are set every
+    // block regardless of mode.
+    const int phys = raw_on() ? (int)kFree : static_cast<int>(p.physics->get());
     if (phys != v.last_physics) {
         apply_physics(v, phys);
         v.last_physics = phys;
@@ -856,7 +868,9 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     // flattens past ~7, so 8 is where it genuinely stops doing anything
     // rather than an arbitrary stop. The default knob moved 0.40 -> 0.24
     // so the shipped density stays 2.3 and the stock character is intact.
-    v.sim->wave_density = 0.5 + 7.5 * knob(v, kWaves, p.waves->get());
+    // 7.5 -> 9.75: Waves asked for +30% as the wave-size control, and it
+    // now lives as a mini knob beside Wind rather than a full dial.
+    v.sim->wave_density = 0.5 + 9.75 * knob(v, kWaves, p.waves->get());
     v.sim->set_wind_origin(p.direction->get() > 0.5f ? 1 : 0);
     // Walls: only rebuild the geometry when they actually move.
     const double wlo = p.wall_lo->get(), whi = p.wall_hi->get();
@@ -877,9 +891,24 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     const double target_peak =
         kMotionPeak * motion * mix_boost(character, prec_idx)
         / wrinkle_compensation(wrinkle_units);
-    const double wind_dial = dial_for_peak((1.0 - character) * target_peak,
+    // Character is the gust <-> shedding balance, and the owner uses it as
+    // the FLUTTER MAGNITUDE knob -- which is what it effectively is, since
+    // shedding is the flutter. But a straight (1 - character) split let it
+    // reach zero, and at Character 1 that killed the gust field outright:
+    // wind_speed went to 0, which also zeroes the mid-band ripples AND
+    // Wrinkle, because wrinkle_speed rides on gust_speed. That is the
+    // whole "Wind isn't working / Wrinkle only works with Character down"
+    // cluster -- one control silently switching off three others.
+    //
+    // Both shares now have a floor and still sum to 1, so Character stays
+    // a balance and the budget is still one amount control, but neither
+    // source can be switched off by it.
+    constexpr double kMinShare = 0.22;
+    const double wind_share = kMinShare + (1.0 - 2.0 * kMinShare) * (1.0 - character);
+    const double shed_share = kMinShare + (1.0 - 2.0 * kMinShare) * character;
+    const double wind_dial = dial_for_peak(wind_share * target_peak,
                                            kWindA, kWindP);
-    const double shed_dial = dial_for_peak(character * target_peak,
+    const double shed_dial = dial_for_peak(shed_share * target_peak,
                                            kShedA, kShedP);
 
     // Source strengths. Both dials come from the budget above; these two
@@ -925,7 +954,9 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
             knob(v, kFlutterHz, p.flutter_hz->get()) / f0);
         // Flutter Hz's power LED gates shedding entirely.
         v.sim->shed_gain = mechanism_on(v, kFlutterHz)
-                              ? 90.0 * shed_dial * comp * kNodeShedGain[prec_idx]
+                              // 90 -> 117: Character asked for +30% as a
+                              // flutter magnitude control.
+                              ? 117.0 * shed_dial * comp * kNodeShedGain[prec_idx]
                               : 0.0;
     }
     // Wrinkle 0..1 -> 0..3. Measured tip/pole detail ratio 1.11 (off) ->
@@ -985,6 +1016,16 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         const double tau_nodes =
             0.0045 * std::max(8, n_nodes_) * v.detail_amt;
         v.detail_b = (tau_nodes > 1e-3) ? 1.0 - std::exp(-1.0 / tau_nodes) : 1.0;
+    }
+    if (raw_on()) {
+        // Strip every modifier. Damping, Stiffness, Tension and Velocity
+        // are applied above and stay; everything the cloth adds goes, so
+        // the bare string drives the EQ.
+        v.sim->wind_speed = 0.0;
+        v.sim->wrinkle_speed = 0.0;
+        v.sim->wrinkle = 0.0;
+        v.sim->mid_ripple = 0.0;
+        v.sim->shed_gain = 0.0;
     }
     v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
     // Band Q. set_q is O(N) plus an O(N) overlap sum, so it runs only when

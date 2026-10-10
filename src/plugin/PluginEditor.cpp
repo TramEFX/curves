@@ -115,10 +115,13 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
         {"damping", "Damping", kString},    {"stiffness", "Stiffness", kString},
         {"tension", "Tension", kString},    {"velocity", "Velocity", kString},
         // CLOTH & WIND
+        // Waves and Character are no longer full dials: they are magnitude
+        // minis on Wind and Flutter Hz respectively, which is how they are
+        // actually used -- how big the waves are, and how much flutter.
         {"motion", "Motion", kCloth},       {"wind", "Wind", kCloth},
-        {"character", "Character", kCloth}, {"flutter_hz", "Flutter Hz", kCloth},
-        {"waves", "Waves", kCloth},         {"wrinkle", "Wrinkle", kCloth},
-        {"flap", "Flap", kCloth},           {"direction", "Direction", kCloth},
+        {"flutter_hz", "Flutter Hz", kCloth},
+        {"wrinkle", "Wrinkle", kCloth},     {"flap", "Flap", kCloth},
+        {"direction", "Direction", kCloth},
         // SUBSCRIBERS - what the one control signal drives. Smoothing is
         // the control smoother and Steady is the bank's dynamic EQ, so both
         // describe how the signal drives the subscribers rather than how
@@ -208,8 +211,14 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     }
 
     for (auto* b : {&scale_button_, &theme_button_, &reset_button_,
-                    &dual_button_, &link_button_, &voice_l_, &voice_r_})
+                    &dual_button_, &link_button_, &raw_button_,
+                    &voice_l_, &voice_r_})
         addAndMakeVisible(*b);
+    raw_button_.onClick = [this] {
+        processor_.set_raw(!processor_.raw_on());
+        refresh_voice_buttons();
+        repaint();
+    };
     // Click to enable. Turning it on copies this voice onto the other and
     // re-rolls its seeds, so the right channel starts as the same weather
     // with different gusts -- audibly stereo at once, still the same patch.
@@ -252,6 +261,16 @@ CurvesAudioProcessorEditor::CurvesAudioProcessorEditor(CurvesAudioProcessor& p)
     scale_button_.onClick = [this] { cycle_display_scale(); };
     theme_button_.onClick = [this] { cycle_theme(); };
 
+    for (auto* m : {&waves_knob_, &character_knob_}) {
+        m->setNormalisableRange(juce::NormalisableRange<double>(0.0, 1.0));
+        m->setSliderStyle(juce::Slider::RotaryVerticalDrag);
+        m->setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+        m->setLookAndFeel(&knob_look_);
+        m->addListener(this);
+        addAndMakeVisible(*m);
+    }
+    waves_knob_.setTooltip("Waves: how big the wind's waves are");
+    character_knob_.setTooltip("Character: how much flutter");
     {   // the Detail dial, same treatment as the randomisers
         detail_knob_.setNormalisableRange(
             juce::NormalisableRange<double>(0.0, 1.0));
@@ -298,7 +317,8 @@ void CurvesAudioProcessorEditor::apply_theme() {
     knob_look_.set_theme(&t);
     theme_button_.setButtonText(t.name);
     for (auto* b : {&scale_button_, &theme_button_, &reset_button_,
-                    &dual_button_, &link_button_, &voice_l_, &voice_r_}) {
+                    &dual_button_, &link_button_, &raw_button_,
+                    &voice_l_, &voice_r_}) {
         b->setColour(juce::TextButton::buttonColourId, juce::Colour(t.panel));
         b->setColour(juce::TextButton::textColourOffId, juce::Colour(t.curve));
     }
@@ -331,7 +351,9 @@ void CurvesAudioProcessorEditor::refresh_small_dials() {
     const struct { juce::Slider* sl; const char* base; } d[] = {
         {&rnd_wind_, "wind_rnd"},
         {&rnd_flutter_, "flutter_rnd"},
-        {&detail_knob_, "detail"}};
+        {&detail_knob_, "detail"},
+        {&waves_knob_, "waves"},
+        {&character_knob_, "character"}};
     for (const auto& e : d) {
         const juce::String want =
             CurvesAudioProcessor::voice_param_id(e.base, voice);
@@ -385,6 +407,7 @@ void CurvesAudioProcessorEditor::resized() {
         put(scale_button_, 68);
         put(theme_button_, 68);
         put(reset_button_, 68);
+        put(raw_button_, 56);
         put(link_button_, 62);
         put(dual_button_, 62);
         put(voice_r_, 26);
@@ -457,7 +480,7 @@ void CurvesAudioProcessorEditor::resized() {
     place(kGlobal, panel_[kGlobal], 3);   // 6 controls since Draw and Tip
     place(kSubscriber, panel_[kSubscriber], 5);
     place(kString, panel_[kString], 3);
-    place(kCloth, panel_[kCloth], 4);
+    place(kCloth, panel_[kCloth], 3);   // 6 dials since Waves and Character moved
 
     // Randomisers sit on the top-right corner of the knob they belong to,
     // overlapping it slightly so the pairing reads at a glance.
@@ -475,6 +498,17 @@ void CurvesAudioProcessorEditor::resized() {
     park(rnd_wind_, wind_knob_, rnd_wind_box_);
     park(rnd_flutter_, flutter_knob_, rnd_flutter_box_);
     park(detail_knob_, smooth_knob_, detail_box_);
+    // LEFT shoulder: the randomisers hold the right one.
+    auto park_left = [](juce::Slider& sl, Knob* host, juce::Rectangle<int>& box) {
+        if (host == nullptr)
+            return;
+        const auto hb = host->slider.getBounds();
+        const int d = juce::jmax(26, hb.getWidth() / 2);
+        box = {hb.getX() - d + 8, hb.getY() - 6, d, d};
+        sl.setBounds(box);
+    };
+    park_left(waves_knob_, wind_knob_, waves_box_);
+    park_left(character_knob_, flutter_knob_, character_box_);
 }
 
 // ---- geometry -------------------------------------------------------------
@@ -792,6 +826,12 @@ void CurvesAudioProcessorEditor::refresh_voice_buttons() {
                                .withMultipliedAlpha(dual ? 0.55f : 1.0f));
     dual_button_.setColour(juce::TextButton::textColourOffId,
                            juce::Colour(dual ? t.bg : t.curve));
+    const bool raw = processor_.raw_on();
+    raw_button_.setColour(juce::TextButton::buttonColourId,
+                          juce::Colour(raw ? t.curve : t.panel)
+                              .withMultipliedAlpha(raw ? 0.55f : 1.0f));
+    raw_button_.setColour(juce::TextButton::textColourOffId,
+                          juce::Colour(raw ? t.bg : t.curve));
     // Link is only meaningful with two voices running, so it dims with Dual
     // off rather than offering to mirror a voice nothing is driving.
     const bool link = processor_.link_on();
@@ -900,9 +940,10 @@ void CurvesAudioProcessorEditor::timerCallback() {
         }
     }
     const int mode = processor_.physics_mode();
-    if (mode != last_mode_) {
-        last_mode_ = mode;
-        const bool cloth_live = (mode == 1);
+    const int mode_key = mode + (processor_.raw_on() ? 100 : 0);
+    if (mode_key != last_mode_) {
+        last_mode_ = mode_key;
+        const bool cloth_live = (mode == 1) && !processor_.raw_on();
         for (auto& k : knobs_)
             if (k->group == kCloth) {
                 k->slider.setEnabled(cloth_live);
@@ -910,6 +951,8 @@ void CurvesAudioProcessorEditor::timerCallback() {
             }
         rnd_wind_.setEnabled(cloth_live);
         rnd_flutter_.setEnabled(cloth_live);
+        waves_knob_.setEnabled(cloth_live);
+        character_knob_.setEnabled(cloth_live);
     }
     // In Dual, each voice sees ONE channel, so its side signal is zero by
     // construction and Width and Place can do nothing. Dimming them says so
@@ -977,10 +1020,13 @@ void CurvesAudioProcessorEditor::write_voice_param(const char* base,
 void CurvesAudioProcessorEditor::sliderValueChanged(juce::Slider* s) {
     // The randomisers are not in knobs_ (they are positioned by hand rather
     // than by the grid), so they need their own route to their parameters.
-    if (s == &rnd_wind_ || s == &rnd_flutter_ || s == &detail_knob_) {
-        write_voice_param(s == &rnd_wind_      ? "wind_rnd"
-                          : s == &rnd_flutter_ ? "flutter_rnd"
-                                               : "detail",
+    if (s == &rnd_wind_ || s == &rnd_flutter_ || s == &detail_knob_
+        || s == &waves_knob_ || s == &character_knob_) {
+        write_voice_param(s == &rnd_wind_       ? "wind_rnd"
+                          : s == &rnd_flutter_  ? "flutter_rnd"
+                          : s == &detail_knob_  ? "detail"
+                          : s == &waves_knob_   ? "waves"
+                                                : "character",
                           (float)s->getValue());
         return;
     }
@@ -1275,7 +1321,10 @@ void CurvesAudioProcessorEditor::paint(juce::Graphics& g) {
                                           : juce::String())
             : juce::String();
     draw_panel(g, panel_[kString], "STRING" + vtag, true);
-    draw_panel(g, panel_[kCloth], "CLOTH & WIND   (Flagpole)" + vtag, mode == 1);
+    draw_panel(g, panel_[kCloth],
+               processor_.raw_on() ? juce::String("CLOTH & WIND   (RAW: bypassed)")
+                                   : juce::String("CLOTH & WIND   (Flagpole)") + vtag,
+               mode == 1 && !processor_.raw_on());
     draw_panel(g, panel_[kGlobal], "GLOBAL", true);
     // Name the Q mode in the title the way CLOTH & WIND names the physics
     // mode: it changes every per-band depth, so it must be readable at a

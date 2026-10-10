@@ -96,7 +96,8 @@ int main() {
     // went stale the moment Link was added, which is exactly the drift a
     // literal invites.
     static const char* kGlobals[] = {"mix", "leveler", "test", "precision",
-                                     "dual", "link", "draw_mode", "tip"};
+                                     "dual", "link", "draw_mode", "tip",
+                                     "raw"};
     int nglob = 0;
     for (const char* g : kGlobals) {
         const bool have = find(proc, g) != nullptr;
@@ -413,6 +414,33 @@ int main() {
         set(proc, "precision", 0.0f);
         set(proc, "test", 0.0f);
     }
+    std::printf("\n=== 8b. RAW: every modifier off, bare string only ===\n\n");
+    {
+        proc.set_ui_voice(0);
+        set(proc, "dual", 0.0f);
+        set(proc, "physics", 1.0f);      // Flagpole, so there IS weather
+        set(proc, "motion", 0.9f);
+        set(proc, "wind", 0.5f);
+        set(proc, "wrinkle", 0.8f);
+        set(proc, "test", 1.0f);
+        set(proc, "raw", 0.0f);
+        run(proc, 80);
+        proc.take_control_rms(0);
+        run(proc, 200);
+        const double cloth = proc.take_control_rms(0);
+        set(proc, "raw", 1.0f);
+        run(proc, 120);                  // let the string settle to rest
+        proc.take_control_rms(0);
+        run(proc, 200);
+        const double bare = proc.take_control_rms(0);
+        std::printf("  cloth running   ctl rms %.5f\n", cloth);
+        std::printf("  RAW             ctl rms %.5f   %s\n", bare,
+                    (bare < cloth * 0.1) ? "PASS (string is bare)"
+                                         : "*** FAIL ***");
+        set(proc, "raw", 0.0f);
+        set(proc, "test", 0.0f);
+    }
+
     std::printf("\n=== 9. PHYSICS RATE vs PRECISION ===\n");
     std::printf("VALIDATE FIRST: the string's fundamental goes as wave speed,\n");
     std::printf("so doubling Tension must roughly double the measured rate.\n\n");

@@ -218,6 +218,7 @@ private:
     // a time, which is what keeps a 26-knob panel readable.
     juce::TextButton dual_button_{"DUAL"};
     juce::TextButton link_button_{"LINK"};
+    juce::TextButton raw_button_{"RAW"};
     juce::TextButton voice_l_{"L"};
     juce::TextButton voice_r_{"R"};
     CurvesKnobLook knob_look_;
@@ -240,6 +241,11 @@ private:
     juce::Slider detail_knob_;
     Knob* smooth_knob_ = nullptr;
     juce::Rectangle<int> detail_box_;
+    // Magnitude minis, parked on the LEFT shoulder of the dial they
+    // modify (the randomisers already own the right). Waves is how big the
+    // wind's waves are; Character is how much flutter there is.
+    juce::Slider waves_knob_, character_knob_;
+    juce::Rectangle<int> waves_box_, character_box_;
     // Small dials live outside knobs_, so they do not get rebound when the
     // voice changes. This re-reads all three from the live voice.
     void refresh_small_dials();

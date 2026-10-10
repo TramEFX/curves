@@ -91,6 +91,28 @@ per-voice panels tag their titles `[L]`/`[R]`.
 - Adding a parameter means adding it to `add_voice_params` **and** to
   `voice_param_ids`, or the editor cannot rebind it.
 
+## Knob layout is not cosmetic
+
+Three dials are **magnitude minis** parked on the shoulder of the control
+they modify, because that is how they are actually used:
+
+| mini | parked on | what it is |
+|---|---|---|
+| Waves | Wind (left) | how big the wind's waves are |
+| Character | Flutter Hz (left) | how much flutter |
+| Detail | Smooth (right) | smooths small waves harder |
+
+The seeded randomisers hold the **right** shoulder of Wind and Flutter, so
+the magnitude minis take the **left**. All of them live OUTSIDE `knobs_`,
+so they need `refresh_small_dials()` to follow a voice change and their own
+branch in `sliderValueChanged` — a new one added to `knobs_` would get both
+for free, these do not.
+
+**`RAW`** strips every modifier and leaves the bare string: physics forced
+to Free, and wind/shed/wrinkle/mid-ripple zeroed. What is left is the
+STRING panel plus whatever you draw. Verified at 155x less control-signal
+rms than the same patch with the cloth running.
+
 ## Build
 
 `cmake` is **not on PATH**. Use:

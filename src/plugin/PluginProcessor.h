@@ -133,6 +133,14 @@ public:
         drawing_.store(on, std::memory_order_relaxed);
     }
 
+    // RAW strips every modifier and leaves the bare string: no gusts, no
+    // shedding, no wrinkle, no mid-band ripples, no cloth geometry. What
+    // is left is the STRING panel -- Damping, Stiffness, Tension, Velocity
+    // -- plus whatever you draw on it. The physics mode is forced to Free
+    // for the duration, so the anchors and the mass taper go too.
+    bool raw_on() const { return raw_ != nullptr && raw_->get() > 0.5f; }
+    void set_raw(bool on);
+
     bool dual_on() const { return dual_ != nullptr && dual_->get() > 0.5f; }
     void set_dual(bool on);
     // LINK mirrors every per-voice edit onto the other voice, so a patch can
@@ -557,6 +565,7 @@ private:
     // not, and rides in the state tree instead.
     juce::AudioParameterFloat* dual_ = nullptr;
     juce::AudioParameterFloat* link_ = nullptr;
+    juce::AudioParameterFloat* raw_ = nullptr;
     juce::AudioParameterFloat* draw_mode_ = nullptr;
     juce::AudioParameterFloat* tip_ = nullptr;
     std::atomic<bool> drawing_{false};
