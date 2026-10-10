@@ -196,6 +196,9 @@ static Levels level_sweep(int nb, double q, bool correct, double depth_db, doubl
 // PARALLEL additive bank: it cannot notch deeply on a slope. Raising Q
 // shrinks the neighbour weights and so shrinks B.
 static bool g_verbose = false;
+// argv[2] == "raw" turns the zero-mean normalisation off, to separate the
+// bank's own bias from the shape's.
+static bool g_zero_mean = true;
 static double wysiwyg_err_db(int nb, double q, bool correct, double depth_db) {
     std::vector<double> shape(nb);
     for (int b = 0; b < nb; ++b)
@@ -311,13 +314,28 @@ static void null_probe(int nb, double q, bool correct, double depth_db) {
     std::vector<double> big(nb), re(nb), im(nb);
     // A smooth, realistic string shape -- nothing sharp in it at all.
     for (int i = 0; i < nb; ++i) {
-        const double d = std::sin(2.0 * kPi * 1.5 * i / nb);
+        // TWO whole cycles. 1.5 cycles is not zero-mean in dB on its own
+        // (the mean of sin over 1.5 periods is 2/3pi, so a +-18 dB shape
+        // carries a +3.8 dB offset before the bank touches it) -- measuring
+        // the bank's bias against that would be measuring the test.
+        const double d = std::sin(2.0 * kPi * 2.0 * i / nb);
         bk.g[i] = db2lin(depth_db * d);
         big[i] = bk.g[i] - 1.0;
     }
+    // Mirror the processor: zero-mean the gains before they reach the bank.
+    if (g_zero_mean) {
+        double m = 0.0;
+        for (int k = 0; k < nb; ++k) m += bk.g[k];
+        m /= nb;
+        if (m > 1e-9)
+            for (int k = 0; k < nb; ++k) {
+                bk.g[k] /= m;
+                big[k] = bk.g[k] - 1.0;
+            }
+    }
     bk.b.response_curve(big.data(), 1.0, re.data(), im.data());
     int crossings = 0;
-    double worst = 1e9, nominal_worst = 1e9, best = -1e9;
+    double worst = 1e9, nominal_worst = 1e9, best = -1e9, mean_db = 0.0;
     double prev = 1.0 + re[0];
     for (int i = 0; i < nb; ++i) {
         const double r = 1.0 + re[i];
@@ -326,23 +344,26 @@ static void null_probe(int nb, double q, bool correct, double depth_db) {
         const double mag = std::sqrt(r * r + im[i] * im[i]);
         worst = std::min(worst, 20.0 * std::log10(std::max(mag, 1e-12)));
         best = std::max(best, 20.0 * std::log10(std::max(mag, 1e-12)));
+        mean_db += 20.0 * std::log10(std::max(mag, 1e-12));
         nominal_worst = std::min(nominal_worst, 20.0 * std::log10(bk.g[i]));
     }
-    std::printf("%6d %10.2f %9s %12d %13.1fdB %13.1fdB %12.1fdB\n",
+    std::printf("%6d %10.2f %9s %12d %13.1fdB %13.1fdB %12.1fdB %11.2fdB\n",
                 nb, q, correct ? "yes" : "no", crossings, nominal_worst,
-                worst, best);
+                worst, best, mean_db / nb);
 }
 
 int main(int argc, char** argv) {
 
     if (argc > 1 && std::string(argv[1]) == "nulls") {
+        g_zero_mean = !(argc > 2 && std::string(argv[2]) == "raw");
+        std::printf("zero-mean normalisation: %s\n", g_zero_mean ? "ON" : "OFF");
         std::printf("=== L. WHERE THE SHARP DIPS COME FROM ===\n");
         std::printf("A SMOOTH +-18 dB string shape, nothing sharp in it.\n");
         std::printf("\"sign flips\" = times 1+Re crosses zero across the band map;\n");
         std::printf("each one is a magnitude NULL in the drawn curve.\n\n");
-std::printf("%6s %10s %9s %12s %13s %13s %13s\n", "bands", "Q",
+std::printf("%6s %10s %9s %12s %13s %13s %13s %12s\n", "bands", "Q",
                     "1/K corr", "sign flips", "nominal min", "drawn min",
-                    "drawn max");
+                    "drawn max", "MEAN");
         for (int nb : {128, 512}) {
             const double qm = matched_q(nb);
             // Band Q now corrects FULLY at every setting, so every point

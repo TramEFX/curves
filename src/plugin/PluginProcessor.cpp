@@ -65,7 +65,9 @@ constexpr double kMotionPeak = 0.85;
 // Velocity blend scale: |v| / |u| measures about 10 at Tension 300, so
 // 30/Tension brings the velocity term to roughly the same rms and peak as
 // the displacement term.
-constexpr double kVelScale = 30.0;
+// +45%: at high Tension the velocity term flattens out even with the
+// knob up, and strong Smoothing accentuates it further.
+constexpr double kVelScale = 43.5;
 
 // Second-order correction. Linear addition gets most of the way, but two
 // INCOHERENT sources do not add their peaks exactly - the peaks rarely
@@ -340,7 +342,7 @@ void CurvesAudioProcessor::add_voice_params(VoiceParams& p, int voice) {
     // instance ran at half the set time. Fixing that doubled the real
     // smoothing at any given setting; 15 ms restores the previous feel.
     addParameter(p.smoothing = new APF(ID("smoothing"), NM("Smoothing ms"), R{2.0f, 100.0f}, 15.0f));
-    addParameter(p.drive = new APF(ID("drive"), NM("Max gain dB"), R{3.0f, 24.0f}, 18.0f));
+    addParameter(p.drive = new APF(ID("drive"), NM("Max gain dB"), R{3.0f, 30.0f}, 18.0f));
     addParameter(p.steady = new APF(ID("steady"), NM("Steady (per-band)"), R{0.0f, 1.0f}, 0.35f));
     addParameter(p.physics = new APF(ID("physics"), NM("Physics"), R(0.0f, 3.0f, 1.0f), 0.0f));
     addParameter(p.velocity = new APF(ID("velocity"), NM("Velocity"), R{0.0f, 1.0f}, 0.0f));
@@ -911,7 +913,26 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
     // 0.87), i.e. the effect stays where it was asked for.
     // +30% amplitude on user request: 3.0 -> 3.9 at the top of the dial.
     v.sim->wrinkle = wrinkle_units;
-    v.sim->shed_freq_hz = knob(v, kFlutterHz, p.flutter_hz->get());
+    {
+        // The Flutter randomiser now moves the RATE as well as the per-node
+        // amplitude field. A seed that only reshaped amplitude left every
+        // seed flapping at the same tempo, which is most of why reseeding
+        // read as "extremely even".
+        //
+        // ONE multiplier for the whole string, not a per-node spread: a
+        // frequency GRADIENT along the cloth sets a travel direction and
+        // inverts it (measured +0.269 -> -0.43), which is why the per-node
+        // randomisation is amplitude and static phase only. A global rate
+        // shift cannot do that -- every oscillator still shares a frequency.
+        double hz = knob(v, kFlutterHz, p.flutter_hz->get());
+        const double fr = std::clamp((double)p.flutter_rnd->get(), 0.0, 1.0);
+        if (fr > 0.0) {
+            const double j = curves::StringSim::hash_pm1(
+                static_cast<unsigned>(v.flutter_seed.load()) + 31337u, 0u);
+            hz *= std::pow(2.0, 0.7 * fr * j);   // up to +-0.7 octaves
+        }
+        v.sim->shed_freq_hz = hz;
+    }
     v.sim->shed_spread = p.flutter_rnd->get();
     v.sim->shed_seed = v.flutter_seed.load(std::memory_order_relaxed);
     // Smoothing is now a one-pole on disp at the sim tick rate. Both of
@@ -942,7 +963,7 @@ void CurvesAudioProcessor::prepare_voice(Voice& v, const VoiceParams& p,
         // As a fraction of N so "small" means the same number of waves
         // across the string at every precision.
         const double tau_nodes =
-            0.018 * std::max(8, n_nodes_) * v.detail_amt;
+            0.009 * std::max(8, n_nodes_) * v.detail_amt;
         v.detail_b = (tau_nodes > 1e-3) ? 1.0 - std::exp(-1.0 / tau_nodes) : 1.0;
     }
     v.bank.set_steady(knob(v, kSteady, p.steady->get()), 0.25);
@@ -1174,7 +1195,7 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
       // away. 1500 blurs a second instead of 24000.
       const double* ctl = v.smoothed_disp.data();
       if (v.detail_amt > 0.0) {
-          constexpr int kDetailPasses = 8;
+          constexpr int kDetailPasses = 12;   // 24th order
           const double db = v.detail_b;
           for (int i = 0; i < n_nodes_; ++i)
               v.disp_tmp[i] = v.smoothed_disp[i];
@@ -1189,6 +1210,21 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                   acc += db * (v.disp_tmp[i] - acc);
                   v.disp_tmp[i] = acc;
               }
+          }
+          // Hold the big waves at their original height. The blur takes
+          // amplitude off everything, so without this the large waves sag
+          // as the knob comes up -- which is the opposite of the point.
+          // Clamped: on a signal that is mostly small waves the ratio
+          // would otherwise run away.
+          double in2 = 0.0, out2 = 0.0;
+          for (int i = 0; i < n_nodes_; ++i) {
+              in2 += v.smoothed_disp[i] * v.smoothed_disp[i];
+              out2 += v.disp_tmp[i] * v.disp_tmp[i];
+          }
+          if (out2 > 1e-18) {
+              const double g = std::min(2.0, std::sqrt(in2 / out2));
+              for (int i = 0; i < n_nodes_; ++i)
+                  v.disp_tmp[i] *= g;
           }
           ctl = v.disp_tmp.data();
       }
@@ -1210,6 +1246,33 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
               v.side_targets[i] = std::exp2((db + d * width_db * w)
                                            * (1.0 / 6.020599913279624));
               v.pan_targets[i] = d * pan_amt * w;
+          }
+      }
+      // ZERO-MEAN THE GAINS. The control signal is zero-mean in dB by
+      // construction (the sim runs DC and tilt blockers), so the response
+      // should be zero-mean in dB too. It is not: a parallel additive bank
+      // averages gains LINEARLY, and a dB-symmetric curve is violently
+      // asymmetric in linear terms -- +18 dB is x7.94 while -18 dB is only
+      // x0.126 -- so the average always lands positive. Measured +9.3 dB
+      // of standing boost on a symmetric +-18 dB shape, at every Band Q.
+      //
+      // That is the reported "strong bias towards positive dB", and it is
+      // most of why the EQ felt weak until the string got large: the
+      // Leveler was spending its range undoing a constant 9 dB lift.
+      //
+      // Dividing by the arithmetic mean restores the intent. It is applied
+      // to mid and side ALIKE, so it cannot move the stereo image, and it
+      // is a deterministic function of the control surface, so the drawn
+      // curve follows it for free.
+      {
+          double m = 0.0;
+          for (int i = 0; i < n_nodes_; ++i) m += v.gain_targets[i];
+          m /= std::max(1, n_nodes_);
+          if (m > 1e-9) {
+              const double inv = 1.0 / m;
+              for (int i = 0; i < n_nodes_; ++i) v.gain_targets[i] *= inv;
+              if (spatial_on)
+                  for (int i = 0; i < n_nodes_; ++i) v.side_targets[i] *= inv;
           }
       }
       v.bank.set_block_targets(v.gain_targets.data(), len);

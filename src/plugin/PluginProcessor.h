@@ -337,7 +337,13 @@ private:
 
     static constexpr double kFMin = 30.0, kFMax = 18000.0;
     static constexpr int kPrecisionNodes[3] = {128, 256, 512};
-    static constexpr int kPrecisionDivisor[3] = {4, 2, 2};
+    // Sim ticks per audio sample, per precision. 512 went 2 -> 4: at
+    // divisor 2 the cloth ticked at 24 kHz, and Flagpole + Dual measured
+    // 90.7% of a core, which starves after a couple of seconds -- the
+    // reported hitch. Halving it measures IDENTICAL physics (rate 2.518 Hz,
+    // control rms 0.0569 either way: the sim is dt-converged) and takes
+    // Dual at 512 to 58.0%.
+    static constexpr int kPrecisionDivisor[3] = {4, 2, 4};
 
     // Everything that belongs to ONE string. This was a flat set of members
     // on the processor; gathering it into a struct is what lets it exist

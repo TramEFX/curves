@@ -390,8 +390,27 @@ int main() {
                         "  = %4.1f%% of a core\n",
                         w ? "ON " : "OFF", ms, audio_ms, 100.0 * ms / audio_ms);
         }
-        set(proc, "precision", 0.0f);
+        // The reported hitch: Flagpole + Dual. Measure the real cost.
         set(proc, "detail", 0.0f);
+        set(proc, "wind", 0.5f);
+        set(proc, "flutter_hz", 3.0f);
+        for (int pr = 0; pr < 3; ++pr) {
+            set(proc, "precision", (float)pr);
+            for (int du = 0; du < 2; ++du) {
+                proc.set_dual(du != 0);
+                run(proc, 40);
+                const clock_t t0 = clock();
+                run(proc, 300);
+                const double ms = 1000.0 * double(clock() - t0) / CLOCKS_PER_SEC;
+                const double audio_ms = 300.0 * 256.0 / 48.0;
+                std::printf("  %4d nodes  Dual %s  %6.1f%% of a core  %s\n",
+                            proc.active_nodes(), du ? "ON " : "OFF",
+                            100.0 * ms / audio_ms,
+                            (ms / audio_ms > 0.85) ? "*** WILL DROP OUT" : "");
+            }
+        }
+        proc.set_dual(false);
+        set(proc, "precision", 0.0f);
         set(proc, "test", 0.0f);
     }
     std::printf("\n=== 9. PHYSICS RATE vs PRECISION ===\n");
