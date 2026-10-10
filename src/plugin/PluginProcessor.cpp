@@ -342,7 +342,7 @@ void CurvesAudioProcessor::add_voice_params(VoiceParams& p, int voice) {
     // instance ran at half the set time. Fixing that doubled the real
     // smoothing at any given setting; 15 ms restores the previous feel.
     addParameter(p.smoothing = new APF(ID("smoothing"), NM("Smoothing ms"), R{2.0f, 100.0f}, 15.0f));
-    addParameter(p.drive = new APF(ID("drive"), NM("Max gain dB"), R{3.0f, 30.0f}, 18.0f));
+    addParameter(p.drive = new APF(ID("drive"), NM("Max gain dB"), R{3.0f, 39.0f}, 18.0f));
     addParameter(p.steady = new APF(ID("steady"), NM("Steady (per-band)"), R{0.0f, 1.0f}, 0.35f));
     addParameter(p.physics = new APF(ID("physics"), NM("Physics"), R(0.0f, 3.0f, 1.0f), 0.0f));
     addParameter(p.velocity = new APF(ID("velocity"), NM("Velocity"), R{0.0f, 1.0f}, 0.0f));
@@ -1248,32 +1248,50 @@ void CurvesAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
               v.pan_targets[i] = d * pan_amt * w;
           }
       }
-      // ZERO-MEAN THE GAINS. The control signal is zero-mean in dB by
-      // construction (the sim runs DC and tilt blockers), so the response
-      // should be zero-mean in dB too. It is not: a parallel additive bank
-      // averages gains LINEARLY, and a dB-symmetric curve is violently
-      // asymmetric in linear terms -- +18 dB is x7.94 while -18 dB is only
-      // x0.126 -- so the average always lands positive. Measured +9.3 dB
-      // of standing boost on a symmetric +-18 dB shape, at every Band Q.
+      // ZERO-MEAN THE GAINS -- SLOWLY, and with a floor under the cuts.
       //
-      // That is the reported "strong bias towards positive dB", and it is
-      // most of why the EQ felt weak until the string got large: the
-      // Leveler was spending its range undoing a constant 9 dB lift.
+      // The standing bias is real (+7.3 dB on a symmetric shape: a parallel
+      // additive bank averages gains LINEARLY and a dB-symmetric curve is
+      // violently asymmetric in linear terms). But correcting it with the
+      // INSTANTANEOUS arithmetic mean caused two worse faults, both
+      // reported:
       //
-      // Dividing by the arithmetic mean restores the intent. It is applied
-      // to mid and side ALIKE, so it cannot move the stereo image, and it
-      // is a deterministic function of the control surface, so the drawn
-      // curve follows it for free.
+      //  - the arithmetic mean of exponential gains is dominated by the
+      //    largest one, so a small wave riding onto a big crest spiked the
+      //    mean and pulled the WHOLE curve down. A local event moving the
+      //    entire string: the "glitch and bounce".
+      //  - it pushed cuts deeper (-25.6 dB for a +-18 ask), toward where
+      //    1 + S passes through zero. A magnitude through zero is a sharp
+      //    POINT, and only on the cut side: the "pitches into a point that
+      //    gets clipped", negative only.
+      //
+      // So: smooth the normaliser over ~400 ms, which removes the standing
+      // bias while being far too slow to react to a passing crest; and
+      // floor the gains so the response cannot reach the null that makes
+      // the cusp.
       {
           double m = 0.0;
           for (int i = 0; i < n_nodes_; ++i) m += v.gain_targets[i];
           m /= std::max(1, n_nodes_);
-          if (m > 1e-9) {
-              const double inv = 1.0 / m;
-              for (int i = 0; i < n_nodes_; ++i) v.gain_targets[i] *= inv;
-              if (spatial_on)
-                  for (int i = 0; i < n_nodes_; ++i) v.side_targets[i] *= inv;
-          }
+          if (v.norm_mean <= 0.0)
+              v.norm_mean = m;
+          // 1 s. The correction is UNAVOIDABLY peak-sensitive -- the bias
+          // is caused by the peaks, so a statistic that ignores them (dB
+          // mean, median) would correct nothing -- which means the only
+          // defence against a passing crest moving the whole string is to
+          // be far slower than the crest. 400 ms still moved noticeably on
+          // a slow one.
+          const double na = 1.0 - std::exp(-double(len) / (1.0 * fs_));
+          v.norm_mean += na * (m - v.norm_mean);
+          const double inv = (v.norm_mean > 1e-9) ? 1.0 / v.norm_mean : 1.0;
+          // -30 dB floor: 1 + S*(g-1) stays clear of zero, so no cusp.
+          constexpr double kGainFloor = 0.0316;
+          for (int i = 0; i < n_nodes_; ++i)
+              v.gain_targets[i] = std::max(v.gain_targets[i] * inv, kGainFloor);
+          if (spatial_on)
+              for (int i = 0; i < n_nodes_; ++i)
+                  v.side_targets[i] = std::max(v.side_targets[i] * inv,
+                                               kGainFloor);
       }
       v.bank.set_block_targets(v.gain_targets.data(), len);
       if (spatial_on)

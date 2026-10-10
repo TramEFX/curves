@@ -329,7 +329,9 @@ static void null_probe(int nb, double q, bool correct, double depth_db) {
         m /= nb;
         if (m > 1e-9)
             for (int k = 0; k < nb; ++k) {
-                bk.g[k] /= m;
+                // mirrors the processor: normalise, then floor at -30 dB
+                // so the response cannot reach the null that makes a cusp
+                bk.g[k] = std::max(bk.g[k] / m, 0.0316);
                 big[k] = bk.g[k] - 1.0;
             }
     }
